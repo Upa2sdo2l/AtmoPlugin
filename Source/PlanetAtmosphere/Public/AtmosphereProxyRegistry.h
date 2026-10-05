@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/CriticalSection.h"
-#include "Misc/ScopeLock.h"
+#include "PlanetAtmosphereTypes.h"
 
 class FPlanetAtmosphereSceneProxy;
 class FSceneView;
@@ -12,43 +12,34 @@ class FSceneView;
 /**
  * Render-side registry of atmosphere scene proxies for one UWorld.
  *
- * NOT a UObject: it is owned via TSharedPtr<..., ThreadSafe> by both
- * UAtmosphereWorldSubsystem (Game Thread) and every FPlanetAtmosphereSceneProxy.
- * Therefore it stays alive as long as any proxy references it, even if the
- * subsystem is already deinitialized / garbage collected.
+ * NOT a UObject: it is owned via TSharedPtr<..., ThreadSafe> by UAtmosphereWorldSubsystem,
+ * by that world's FPlanetAtmosphereViewExtension and by every FPlanetAtmosphereSceneProxy.
+ * It therefore stays alive as long as any of them references it.
  *
  * Add/Remove are called from FPlanetAtmosphereSceneProxy::CreateRenderThreadResources /
- * DestroyRenderThreadResources (render side). Access is guarded by a lock, so it is
- * also safe if the engine calls those from a render worker task.
+ * DestroyRenderThreadResources (render side). All access is guarded by a lock.
+ *
+ * The stored proxy pointers NEVER leave the lock: consumers receive POD copies
+ * (FAtmosphereVisibleInstance), so nothing downstream can outlive a proxy.
  */
 class PLANETATMOSPHERE_API FAtmosphereProxyRegistry
 {
 public:
-	void Add(FPlanetAtmosphereSceneProxy* Proxy)
-	{
-		FScopeLock Lock(&Mutex);
-		Proxies.AddUnique(Proxy);
-		UE_LOG(LogTemp, Log, TEXT("AtmosphereProxyRegistry: Registered proxy (Total: %d)"), Proxies.Num());
-	}
-
-	void Remove(FPlanetAtmosphereSceneProxy* Proxy)
-	{
-		FScopeLock Lock(&Mutex);
-		Proxies.RemoveSingleSwap(Proxy);
-		UE_LOG(LogTemp, Log, TEXT("AtmosphereProxyRegistry: Unregistered proxy (Remaining: %d)"), Proxies.Num());
-	}
+	void Add(FPlanetAtmosphereSceneProxy* Proxy);
+	void Remove(FPlanetAtmosphereSceneProxy* Proxy);
 
 	/**
-	 * Render Thread only. Returned pointers are valid for the duration of the
-	 * current render frame (proxies are destroyed on the render side between frames).
+	 * Render Thread. PLUGIN-SIDE culling (this is NOT the UE renderer's visibility result,
+	 * which is private to the Renderer module and computed later in the frame):
+	 *   1. FPrimitiveSceneProxy::IsShown(View)  - hidden-in-game/editor, hidden actors, owner flags;
+	 *   2. View.ViewFrustum.IntersectSphere()  - frustum test of the proxy's world bounds
+	 *      (atmosphere top sphere, UU, kept up to date by the engine when the actor moves).
+	 * Distance alone never culls: a planet in front of the camera stays visible at any range.
+	 * Appends copies to OutInstances; returns the number of registered proxies (before culling).
 	 */
-	TArray<FPlanetAtmosphereSceneProxy*> GetVisibleProxies(const FSceneView& View) const;
+	int32 GatherVisibleInstances(const FSceneView& View, TArray<FAtmosphereVisibleInstance>& OutInstances) const;
 
-	int32 Num() const
-	{
-		FScopeLock Lock(&Mutex);
-		return Proxies.Num();
-	}
+	int32 Num() const;
 
 private:
 	mutable FCriticalSection Mutex;

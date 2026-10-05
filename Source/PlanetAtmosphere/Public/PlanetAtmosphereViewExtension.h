@@ -6,11 +6,22 @@
 #include "SceneViewExtension.h"
 
 class FAtmosphereProxyRegistry;
+class UWorld;
 
-class FPlanetAtmosphereViewExtension : public FSceneViewExtensionBase
+/**
+ * One instance per UWorld, owned by UAtmosphereWorldSubsystem (the engine keeps only a weak ref).
+ *
+ * Derives from FWorldSceneViewExtension (UE 5.6: Runtime/Engine/Public/SceneViewExtension.h,
+ * ctor FWorldSceneViewExtension(const FAutoRegister&, UWorld*)), whose IsActiveThisFrame_Internal
+ * restricts it to view families rendering this extension's world.
+ *
+ * NOTE: PreRenderView_RenderThread runs before the renderer's InitViews (no scene depth yet).
+ * It is kept only for culling diagnostics; the render hook moves in Step 5.
+ */
+class FPlanetAtmosphereViewExtension : public FWorldSceneViewExtension
 {
 public:
-	FPlanetAtmosphereViewExtension(const FAutoRegister& AutoRegister, TSharedPtr<FAtmosphereProxyRegistry, ESPMode::ThreadSafe> InRegistry);
+	FPlanetAtmosphereViewExtension(const FAutoRegister& AutoRegister, UWorld* InWorld, TSharedPtr<FAtmosphereProxyRegistry, ESPMode::ThreadSafe> InRegistry);
 	virtual ~FPlanetAtmosphereViewExtension();
 
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}

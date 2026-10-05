@@ -8,17 +8,12 @@
 
 FPlanetAtmosphereSceneProxy::FPlanetAtmosphereSceneProxy(const UPlanetAtmosphereComponent* InComponent)
 	: FPrimitiveSceneProxy(InComponent)
-	, PlanetCenterWorld(InComponent->GetComponentLocation())
-	, PlanetRadius(InComponent->PlanetRadius)
-	, AtmosphereBottomRadius(InComponent->AtmosphereBottomRadius)
-	, AtmosphereTopRadius(InComponent->AtmosphereTopRadius)
-	, CloudBottomRadius(InComponent->CloudBottomRadius)
-	, CloudTopRadius(InComponent->CloudTopRadius)
+	, RadiiUU(InComponent->GetValidatedRadiiUU())
 	, CloudCoverage(InComponent->CloudCoverage)
 	, CloudDensity(InComponent->CloudDensity)
 	, RaymarchSteps(InComponent->RaymarchSteps)
 {
-	// Game Thread: grab a shared reference to the plain-C++ registry.
+	// Grab a shared reference to the plain-C++ registry.
 	// After this point the proxy never touches any UObject.
 	if (const UWorld* World = InComponent->GetWorld())
 	{
@@ -60,13 +55,24 @@ void FPlanetAtmosphereSceneProxy::DestroyRenderThreadResources()
 	FPrimitiveSceneProxy::DestroyRenderThreadResources();
 }
 
+FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() const
+{
+	FAtmosphereVisibleInstance Instance;
+	Instance.PlanetCenterWorld = GetPlanetCenterWorld();
+	Instance.RadiiUU = RadiiUU;
+	Instance.CloudCoverage = CloudCoverage;
+	Instance.CloudDensity = CloudDensity;
+	Instance.RaymarchSteps = RaymarchSteps;
+	return Instance;
+}
+
 void FPlanetAtmosphereSceneProxy::GetDynamicMeshElements(
 	const TArray<const FSceneView*>& Views,
 	const FSceneViewFamily& ViewFamily,
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
-	// No mesh rendering — volumetric atmosphere is rendered by compute passes (Step 4+).
+	// No mesh rendering — volumetric atmosphere is rendered by compute passes (Step 5+).
 }
 
 FPrimitiveViewRelevance FPlanetAtmosphereSceneProxy::GetViewRelevance(const FSceneView* View) const

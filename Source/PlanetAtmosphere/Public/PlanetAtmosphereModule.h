@@ -4,22 +4,14 @@
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
-#include "SceneViewExtension.h"
 
-class FAtmosphereProxyRegistry;
-class FPlanetAtmosphereViewExtension;
-class UWorld;
-
+/**
+ * Plugin module: maps the shader directory.
+ * View extensions are owned per world by UAtmosphereWorldSubsystem, not by the module.
+ */
 class FPlanetAtmosphereModule : public IModuleInterface
 {
 public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
-
-	void RegisterViewExtensionForWorld(UWorld* World, TSharedPtr<FAtmosphereProxyRegistry, ESPMode::ThreadSafe> Registry);
-	void UnregisterViewExtensionForWorld(UWorld* World);
-
-private:
-	TSharedPtr<FSceneViewExtensionIsActiveFunctor> ViewExtensionFactory;
-	TMap<UWorld*, TSharedPtr<FPlanetAtmosphereViewExtension, ESPMode::ThreadSafe>> WorldViewExtensions;
 };
