@@ -11,20 +11,16 @@ class UPlanetAtmosphereComponent;
 /**
  * Actor that represents a planet with volumetric atmosphere.
  * This is a thin wrapper around UPlanetAtmosphereComponent.
+ * Registration in UAtmosphereWorldSubsystem is done by the component (OnRegister/OnUnregister),
+ * so it works in Editor as well as in Game/PIE.
  */
 UCLASS()
 class PLANETATMOSPHERE_API APlanetAtmosphereActor : public AActor
 {
 	GENERATED_BODY()
-	
-public:	
-	APlanetAtmosphereActor();
 
-protected:
-	//~ Begin AActor Interface
-	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	//~ End AActor Interface
+public:
+	APlanetAtmosphereActor();
 
 public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Atmosphere")
