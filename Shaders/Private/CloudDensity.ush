@@ -1,0 +1,86 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// ============================================================================================
+//  SINGLE SOURCE OF TRUTH FOR CLOUD DENSITY  (architecture decision AD-1)
+//
+//  This file is the ONLY place where the cloud density formula exists.
+//  Raymarch, debug views and (Phase 4) cloud shadows MUST call PA_SampleCloudDensity()
+//  and PA_CloudHeightFraction() — never copy, simplify or re-derive any part of the formula
+//  in another file. Cheaper variants are expressed through the Footprint (LOD) argument
+//  or a future quality argument of THIS function, never as a separate copy.
+// ============================================================================================
+
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereNoise.ush"
+
+/** Everything the density function needs about one planet's cloud layer (planet-local, cm). */
+struct FPACloudLayer
+{
+	float PlanetRadius;    // cm
+	float BottomAltitude;  // cm above the planet radius
+	float Thickness;       // cm (> 0)
+	float Coverage;        // [0, 1]: 0 = clear sky, 1 = mostly overcast
+	float ShapeScale;      // cm, size of the base cloud features
+	float Erosion;         // [0, 1]: how much high-frequency noise erodes the cloud edges
+};
+
+float PA_Remap(float Value, float OldLow, float OldHigh, float NewLow, float NewHigh)
+{
+	return NewLow + (Value - OldLow) * (NewHigh - NewLow) / max(OldHigh - OldLow, 1e-5);
+}
+
+/** 0 at the cloud layer bottom, 1 at its top (unclamped). */
+float PA_CloudHeightFraction(FPACloudLayer Layer, float Altitude)
+{
+	return (Altitude - Layer.BottomAltitude) / Layer.Thickness;
+}
+
+/**
+ * Normalized cloud density in [0, 1] (multiply by the extinction coefficient to get sigma_t).
+ *
+ * PosPlanetLocal : sample position relative to the planet center, in the planet's local frame (cm).
+ * Altitude       : |PosPlanetLocal| - PlanetRadius (cm).
+ * Footprint      : size of one screen pixel at this sample (cm); fades noise octaves smaller than a pixel.
+ *
+ * Pipeline: height profile -> weather/coverage mask on the sphere -> base shape -> coverage remap -> erosion.
+ */
+float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint)
+{
+	const float H = PA_CloudHeightFraction(Layer, Altitude);
+	if (H <= 0.0 || H >= 1.0)
+	{
+		return 0.0;
+	}
+
+	// Rounded bottom, softer top.
+	const float HeightProfile = smoothstep(0.0, 0.1, H) * (1.0 - smoothstep(0.35, 1.0, H));
+
+	// Weather / coverage: large-scale pattern on the sphere (direction only), ~6x the base feature size.
+	const float WeatherScale = Layer.ShapeScale * 6.0;
+	const float3 Direction = PosPlanetLocal / max(length(PosPlanetLocal), 1.0);
+	const float Weather = saturate(0.5 + 1.5 * PA_Fbm(Direction * (Layer.PlanetRadius / WeatherScale), 3, Footprint / WeatherScale));
+	// Threshold spans [1.1, -0.1] so that Coverage 0 gives exactly no clouds and Coverage 1 a full mask
+	// (Weather is clamped to [0, 1], the +-0.1 ramp must lie fully outside that range at both ends).
+	const float CoverageThreshold = 1.1 - 1.2 * Layer.Coverage;
+	const float CoverageMask = smoothstep(CoverageThreshold - 0.1, CoverageThreshold + 0.1, Weather);
+	if (CoverageMask <= 0.0)
+	{
+		return 0.0; // exact: with mask 0 the base threshold below is 1, so the remap yields <= 0
+	}
+
+	// Base shape: inside covered regions the base noise still carves individual clouds.
+	const float Base = saturate(0.5 + 1.5 * PA_Fbm(PosPlanetLocal / Layer.ShapeScale, 4, Footprint / Layer.ShapeScale));
+	float Shape = saturate(PA_Remap(Base * HeightProfile, lerp(1.0, 0.35, CoverageMask), 1.0, 0.0, 1.0));
+	if (Shape <= 0.0)
+	{
+		return 0.0;
+	}
+
+	// Erosion: high-frequency noise eats into the edges.
+	const float ErosionScale = Layer.ShapeScale * 0.15;
+	const float ErosionNoise = saturate(0.5 + 1.5 * PA_Fbm(PosPlanetLocal / ErosionScale, 2, Footprint / ErosionScale));
+	Shape = saturate(PA_Remap(Shape, ErosionNoise * Layer.Erosion * 0.6, 1.0, 0.0, 1.0));
+
+	return Shape;
+}

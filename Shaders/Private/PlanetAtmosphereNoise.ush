@@ -1,0 +1,86 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Noise primitives used by CloudDensity.ush.
+//
+// Phase 1: procedural, evaluated in the shader (no textures, no persistent resources).
+// Phase 2 replaces the implementation with baked 3D noise textures BEHIND THE SAME SIGNATURES,
+// so CloudDensity.ush (the single source of truth for density) does not change.
+//
+// Value ranges (measured): PA_GradientNoise ~[-1, 1]; PA_Fbm has std ~0.19-0.23 (95% within +-0.33),
+// which CloudDensity.ush stretches to an approximately uniform [0, 1].
+
+/** PCG3D hash (Jarzynski & Olano, "Hash Functions for GPU Rendering", 2020). */
+uint3 PA_Pcg3d(uint3 V)
+{
+	V = V * 1664525u + 1013904223u;
+	V.x += V.y * V.z;
+	V.y += V.z * V.x;
+	V.z += V.x * V.y;
+	V ^= V >> 16u;
+	V.x += V.y * V.z;
+	V.y += V.z * V.x;
+	V.z += V.x * V.y;
+	return V;
+}
+
+/** Pseudo-random gradient in [-1, 1]^3 for an integer lattice cell. */
+float3 PA_LatticeGradient(int3 Cell)
+{
+	const uint3 H = PA_Pcg3d(asuint(Cell));
+	return float3(H) * (2.0 / 4294967296.0) - 1.0;
+}
+
+/** 3D gradient (Perlin-style) noise with quintic interpolation, ~[-1, 1]. */
+float PA_GradientNoise(float3 P)
+{
+	const float3 CellF = floor(P);
+	const int3 Cell = int3(CellF);
+	const float3 F = P - CellF;
+	const float3 U = F * F * F * (F * (F * 6.0 - 15.0) + 10.0);
+
+	const float N000 = dot(PA_LatticeGradient(Cell + int3(0, 0, 0)), F - float3(0, 0, 0));
+	const float N100 = dot(PA_LatticeGradient(Cell + int3(1, 0, 0)), F - float3(1, 0, 0));
+	const float N010 = dot(PA_LatticeGradient(Cell + int3(0, 1, 0)), F - float3(0, 1, 0));
+	const float N110 = dot(PA_LatticeGradient(Cell + int3(1, 1, 0)), F - float3(1, 1, 0));
+	const float N001 = dot(PA_LatticeGradient(Cell + int3(0, 0, 1)), F - float3(0, 0, 1));
+	const float N101 = dot(PA_LatticeGradient(Cell + int3(1, 0, 1)), F - float3(1, 0, 1));
+	const float N011 = dot(PA_LatticeGradient(Cell + int3(0, 1, 1)), F - float3(0, 1, 1));
+	const float N111 = dot(PA_LatticeGradient(Cell + int3(1, 1, 1)), F - float3(1, 1, 1));
+
+	const float X00 = lerp(N000, N100, U.x);
+	const float X10 = lerp(N010, N110, U.x);
+	const float X01 = lerp(N001, N101, U.x);
+	const float X11 = lerp(N011, N111, U.x);
+	const float Y0 = lerp(X00, X10, U.y);
+	const float Y1 = lerp(X01, X11, U.y);
+	return lerp(Y0, Y1, U.z) * 1.6;
+}
+
+/**
+ * Fractal sum of PA_GradientNoise, normalized to the same range as one octave.
+ * FootprintInNoiseUnits = size of the screen pixel at this sample, in the units of P.
+ * Octaves whose features are smaller than ~1/2..1/4 of the pixel fade out (anti-aliasing / LOD),
+ * which also skips their cost.
+ */
+float PA_Fbm(float3 P, int Octaves, float FootprintInNoiseUnits)
+{
+	float Sum = 0.0;
+	float Amplitude = 0.5;
+	float Norm = 0.0;
+	float Frequency = 1.0;
+	for (int Octave = 0; Octave < Octaves; ++Octave)
+	{
+		const float Weight = saturate(2.0 - 4.0 * FootprintInNoiseUnits * Frequency);
+		if (Weight > 0.0)
+		{
+			Sum += Amplitude * Weight * PA_GradientNoise(P);
+		}
+		Norm += Amplitude;
+		Amplitude *= 0.5;
+		P = P * 2.03 + 17.13;
+		Frequency *= 2.03;
+	}
+	return Sum / Norm;
+}

@@ -22,6 +22,12 @@ namespace PlanetAtmosphere
 	 * The conversion happens exactly once: in the component when computing bounds / building the proxy.
 	 */
 	inline constexpr double MetersToUnrealUnits = 100.0;
+
+	/**
+	 * Cloud extinction coefficient at normalized density 1 and CloudDensity = 1, in 1/m
+	 * (typical cumulus: 0.02..0.1 1/m). Final sigma_t = Density(x) * CloudDensity * this.
+	 */
+	inline constexpr double BaseCloudExtinctionPerMeter = 0.04;
 }
 
 /**
@@ -51,8 +57,16 @@ struct FPlanetAtmosphereRadii
 struct FAtmosphereVisibleInstance
 {
 	FVector3d PlanetCenterWorld = FVector3d::ZeroVector;
+
+	/** Planet local axes in world space (unit length, scale removed). Clouds are evaluated in this frame. */
+	FVector3d PlanetAxisX = FVector3d::XAxisVector;
+	FVector3d PlanetAxisY = FVector3d::YAxisVector;
+	FVector3d PlanetAxisZ = FVector3d::ZAxisVector;
+
 	FPlanetAtmosphereRadii RadiiUU;
 	float CloudCoverage = 0.0f;
 	float CloudDensity = 0.0f;
+	double CloudShapeScaleUU = 0.0;
+	float CloudErosion = 0.0f;
 	int32 RaymarchSteps = 0;
 };

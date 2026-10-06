@@ -47,7 +47,8 @@ void FPlanetAtmosphereViewExtension::SubscribeToPostProcessingPass(
 		return;
 	}
 
-	if (!Registry.IsValid() || !PlanetAtmosphere::CVars::IsEnabled() || PlanetAtmosphere::CVars::GetDebugMode() == 0)
+	// r.PlanetAtmosphere.Enable 0 -> nothing is subscribed, so no callback and no GPU work at all.
+	if (!Registry.IsValid() || !PlanetAtmosphere::CVars::IsEnabled())
 	{
 		return;
 	}
@@ -80,5 +81,5 @@ FScreenPassTexture FPlanetAtmosphereViewExtension::PostProcessBeforeDOF_RenderTh
 	UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("ViewExtension: %d of %d atmosphere(s) pass plugin frustum culling"),
 		VisibleInstances.Num(), RegisteredCount);
 
-	return PlanetAtmosphere::AddAtmosphereBoundsDebugPass(GraphBuilder, View, Inputs, VisibleInstances);
+	return PlanetAtmosphere::AddAtmospherePasses(GraphBuilder, View, Inputs, VisibleInstances);
 }

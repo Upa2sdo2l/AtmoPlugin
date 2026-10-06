@@ -24,7 +24,11 @@ PlanetAtmosphere/
 │       └── AtmosphereCVars.*                r.PlanetAtmosphere.* console variables
 └── Shaders/Private/
     ├── PlanetAtmosphereCommon.ush           precision-safe ray/sphere math, compositing helpers
-    └── AtmosphereBoundsDebug.usf            Step 5 debug visualization (compute)
+    ├── PlanetAtmosphereShaderData.ush       shared view/atmosphere parameters, per-pixel ray setup
+    ├── PlanetAtmosphereNoise.ush            noise primitives (Phase 1: procedural)
+    ├── CloudDensity.ush                     SINGLE SOURCE OF TRUTH for cloud density (see below)
+    ├── CloudRaymarch.usf                    cloud raymarch (Final Clouds / Density views)
+    └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
 
 ## Installation
@@ -43,21 +47,32 @@ The actor's scale is ignored — radii are absolute.
 
 | CVar | Default | Meaning |
 |---|---|---|
-| `r.PlanetAtmosphere.Enable` | 1 | Master switch |
-| `r.PlanetAtmosphere.DebugMode` | 1 | 0 = off, 1 = Atmosphere Bounds |
-| `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of debug overlays (HDR, before exposure/tonemap) |
+| `r.PlanetAtmosphere.Enable` | 1 | Master switch (0 = nothing is dispatched) |
+| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final Clouds, 1 = Atmosphere Bounds, 2 = Density |
+| `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
+| `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
+| `r.PlanetAtmosphere.CloudAmbientIntensity` | 1.0 | Temporary ambient-only cloud lighting (Phase 1) |
 
 Per-frame diagnostics: `log LogPlanetAtmosphere Verbose`.
 
+## Single source of truth for cloud density
+
+`Shaders/Private/CloudDensity.ush` is the only place where the cloud density formula exists.
+Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` / `PA_CloudHeightFraction()`
+and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
+
 ## Current Status
 
-**Phase 1 — Step 5: first RDG pass (Atmosphere Bounds debug)**
-- `SubscribeToPostProcessingPass(BeforeDOF)` — public API, HDR scene color + depth, before DOF/TSR/tonemap
-- One compute pass: analytical planet sphere / atmosphere shell / cloud shell, depth-clipped, multi-planet (near → far)
-- Camera-relative, precision-safe at Earth scale: camera offset and altitudes computed in double on the CPU
+**Phase 1 — Step 6: cloud density + basic raymarch**
+- Analytical density: height profile → weather/coverage mask on the sphere → base shape → erosion; evaluated in the planet-local frame
+- Pixel-footprint LOD: noise octaves smaller than a pixel fade out (no sparkle from orbit / far away)
+- Raymarch over up to two cloud-shell segments, uniform steps (`Raymarch Steps`), Beer–Lambert, ambient-only lighting
+- Component: `Cloud Shape Scale` (m), `Cloud Erosion`; `Cloud Coverage` / `Cloud Density` now drive the clouds
 
-Next: Step 6 — analytical cloud density + basic raymarch.
+Done before: Step 5 — first RDG pass (BeforeDOF hook, Atmosphere Bounds), precision-safe camera-relative math.
+
+Next: Step 7 — sun lighting (Directional Light), phase function, light march, planet shadow.
 
 ## Dependencies
 

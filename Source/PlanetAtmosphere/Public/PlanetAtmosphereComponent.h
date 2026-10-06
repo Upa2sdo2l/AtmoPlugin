@@ -86,9 +86,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CloudCoverage = 0.5f;
 
-	/** Base cloud density */
+	/** Base cloud density (scales the extinction coefficient; 1 = typical cumulus) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "10.0"))
 	float CloudDensity = 1.0f;
+
+	/** Size of the base cloud formations in meters (larger = bigger, smoother clouds) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "100.0", ClampMax = "1000000.0"))
+	double CloudShapeScale = 8000.0;
+
+	/** How strongly high-frequency noise erodes cloud edges (0 = smooth blobs, 1 = ragged edges) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float CloudErosion = 0.5f;
 
 	// ===== RENDERING PARAMETERS =====
 

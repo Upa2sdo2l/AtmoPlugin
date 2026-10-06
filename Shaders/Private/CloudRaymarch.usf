@@ -1,0 +1,180 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Step 6 — basic cloud raymarch (r.PlanetAtmosphere.DebugMode 0 = Final Clouds, 2 = Density).
+//
+// For every visible atmosphere (sorted near -> far on the CPU):
+//   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
+//      clipped by the scene depth and the planet surface;
+//   2. march RaymarchSteps uniform steps distributed over the segments by length;
+//   3. density comes ONLY from PA_SampleCloudDensity() (CloudDensity.ush, AD-1);
+//   4. Beer-Lambert transmittance, energy-conserving integration, ambient-only lighting (sun arrives in Step 7).
+// Composited front-to-back across planets; the scene behind is attenuated by the final transmittance.
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
+
+int DebugMode;               // 0 = final clouds, 2 = density (optical depth heat map)
+int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
+float CloudAmbientIntensity; // temporary ambient-only lighting until Step 7
+
+static const float PA_MIN_TRANSMITTANCE = 0.01;
+
+/** Marches one segment [TStart, TEnd] of the ray with NumSteps uniform steps. */
+void PA_MarchCloudSegment(
+	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray,
+	float TStart, float TEnd, int NumSteps,
+	inout float3 Accum, inout float Transmittance, inout float OpticalDepth)
+{
+	if (NumSteps <= 0 || TEnd <= TStart)
+	{
+		return;
+	}
+
+	const float Dt = (TEnd - TStart) / (float)NumSteps;
+	for (int Step = 0; Step < NumSteps; ++Step)
+	{
+		const float T = TStart + ((float)Step + 0.5) * Dt;
+		const float3 P = A.CameraRel + Ray.Dir * T;           // planet-relative, world axes
+		const float Altitude = length(P) - A.PlanetRadius;
+
+		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, T * Ray.FootprintPerUnitDistance);
+		if (Density > 0.0)
+		{
+			const float Sigma = Density * A.CloudExtinction;
+			const float StepTransmittance = exp(-Sigma * Dt);
+
+			// Ambient-only lighting: slightly darker cloud bottoms. Energy-conserving: the scattered
+			// light of the step is Ambient * (1 - StepTransmittance) for single-scattering albedo 1.
+			const float HeightFraction = saturate(PA_CloudHeightFraction(Layer, Altitude));
+			const float Ambient = (0.55 + 0.45 * HeightFraction) * CloudAmbientIntensity;
+
+			Accum += Transmittance * Ambient * (1.0 - StepTransmittance);
+			Transmittance *= StepTransmittance;
+			OpticalDepth += Sigma * Dt;
+
+			if (Transmittance < PA_MIN_TRANSMITTANCE)
+			{
+				break;
+			}
+		}
+	}
+}
+
+float3 PA_HeatColor(float X)
+{
+	X = saturate(X);
+	return float3(saturate(X * 3.0), saturate(X * 3.0 - 1.0), saturate(X * 3.0 - 2.0));
+}
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	FPAPixelRay Ray;
+	if (!PA_SetupPixelRay(DispatchThreadId.xy, Ray))
+	{
+		return;
+	}
+
+	float3 Accum = 0.0;
+	float Transmittance = 1.0;
+	float OpticalDepth = 0.0;
+
+	for (int Index = 0; Index < NumAtmospheres && Index < PA_MAX_ATMOSPHERES; ++Index)
+	{
+		const FPAAtmosphere A = PA_LoadAtmosphere(Index);
+		const FPACloudLayer Layer = PA_MakeCloudLayer(A);
+
+		// The planet sphere is inside the cloud-top sphere, so missing the latter means missing everything.
+		const float2 TopHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.CloudTop);
+		if (TopHit.x > TopHit.y || TopHit.y <= 0.0)
+		{
+			continue;
+		}
+
+		// The ray ends at the scene geometry or at the planet surface, whichever is closer.
+		float TMax = Ray.SceneDistance;
+		bool bSurfaceVisible = false;
+		float SurfaceT = 0.0;
+		const float2 PlanetHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, 0.0);
+		if (PlanetHit.x <= PlanetHit.y && PlanetHit.y > 0.0)
+		{
+			SurfaceT = max(PlanetHit.x, 0.0);
+			if (SurfaceT < TMax)
+			{
+				TMax = SurfaceT;
+				bSurfaceVisible = true;
+			}
+		}
+
+		// Cloud shell segments: inside the top sphere and outside the bottom sphere.
+		float Seg1Start = max(TopHit.x, 0.0);
+		float Seg1End = TopHit.y;
+		float Seg2Start = 0.0;
+		float Seg2End = 0.0;
+		const float2 BottomHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.CloudBottom);
+		if (BottomHit.x <= BottomHit.y && BottomHit.y > 0.0)
+		{
+			// The bottom sphere is crossed ahead of the camera: [top entry, bottom entry] and [bottom exit, top exit].
+			Seg1End = BottomHit.x;                  // <= 0 when the camera is below the cloud layer -> empty
+			Seg2Start = max(BottomHit.y, 0.0);
+			Seg2End = TopHit.y;
+		}
+		Seg1End = min(Seg1End, TMax);
+		Seg2End = min(Seg2End, TMax);
+		const float Seg1Length = max(Seg1End - Seg1Start, 0.0);
+		const float Seg2Length = max(Seg2End - Seg2Start, 0.0);
+		const float TotalLength = Seg1Length + Seg2Length;
+
+		if (TotalLength > 0.0)
+		{
+			// Distribute the step budget over the two segments proportionally to their length.
+			const int TotalSteps = max(A.RaymarchSteps, 1);
+			int Seg1Steps = 0;
+			int Seg2Steps = 0;
+			if (Seg1Length > 0.0 && Seg2Length > 0.0)
+			{
+				Seg1Steps = clamp((int)round(TotalSteps * Seg1Length / TotalLength), 1, max(TotalSteps - 1, 1));
+				Seg2Steps = max(TotalSteps - Seg1Steps, 1);
+			}
+			else if (Seg1Length > 0.0)
+			{
+				Seg1Steps = TotalSteps;
+			}
+			else
+			{
+				Seg2Steps = TotalSteps;
+			}
+
+			PA_MarchCloudSegment(A, Layer, Ray, Seg1Start, Seg1End, Seg1Steps, Accum, Transmittance, OpticalDepth);
+			if (Transmittance >= PA_MIN_TRANSMITTANCE)
+			{
+				PA_MarchCloudSegment(A, Layer, Ray, Seg2Start, Seg2End, Seg2Steps, Accum, Transmittance, OpticalDepth);
+			}
+		}
+
+		// Debug placeholder surface (behind this planet's clouds). Opaque: hides everything farther away.
+		if (bSurfaceVisible && bDrawPlanetSurface != 0)
+		{
+			const float3 SurfaceNormal = normalize(A.CameraRel + Ray.Dir * SurfaceT);
+			const float Facing = saturate(dot(SurfaceNormal, -Ray.Dir));
+			Accum += Transmittance * float3(0.06, 0.08, 0.1) * (0.25 + 0.75 * Facing);
+			Transmittance = 0.0;
+		}
+
+		if (Transmittance < PA_MIN_TRANSMITTANCE)
+		{
+			break;
+		}
+	}
+
+	if (DebugMode == 2)
+	{
+		// Density view: optical depth along the ray as a heat map over a darkened scene.
+		const float Opacity = 1.0 - exp(-OpticalDepth);
+		OutputTexture[Ray.Pixel] = float4(Ray.SceneColor.rgb * 0.15 + PA_HeatColor(Opacity), Ray.SceneColor.a);
+	}
+	else
+	{
+		OutputTexture[Ray.Pixel] = float4(Ray.SceneColor.rgb * Transmittance + Accum, Ray.SceneColor.a);
+	}
+}

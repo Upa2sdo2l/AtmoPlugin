@@ -9,15 +9,41 @@
 #include "PlanetAtmosphereTypes.h"
 
 /**
- * Step 5: analytical "Atmosphere Bounds" debug visualization.
- * Reads scene color + scene depth, writes a new scene color with planet / atmosphere / cloud shells overlaid.
- * Shader: Shaders/Private/AtmosphereBoundsDebug.usf (MainCS).
- *
- * Per-atmosphere data is passed as small constant arrays (<= PLANET_ATMOSPHERE_MAX_VISIBLE entries),
- * with the camera position RELATIVE to each planet computed on the CPU in double precision.
- * Sphere radii are passed as altitudes above the planet radius, together with the camera altitude
- * (also computed in double): see the precision note in PlanetAtmosphereCommon.ush.
+ * Parameters shared by all PlanetAtmosphere passes. Included into each pass with
+ * SHADER_PARAMETER_STRUCT_INCLUDE (members bound without prefix). HLSL declarations:
+ * Shaders/Private/PlanetAtmosphereShaderData.ush — names and layouts must match.
  */
+BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereViewParameters, )
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthTexture)
+	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTexture)
+	SHADER_PARAMETER(FMatrix44f, ClipToTranslatedWorld)
+	SHADER_PARAMETER(FVector3f, CameraTranslatedWorld)
+	SHADER_PARAMETER(FVector4f, ViewRectMinAndSize)
+END_SHADER_PARAMETER_STRUCT()
+
+/**
+ * Per-atmosphere data, sorted near -> far, at most PLANET_ATMOSPHERE_MAX_VISIBLE entries.
+ * All distances in cm. The camera position relative to each planet and every altitude are computed
+ * on the CPU in double precision (see the precision note in PlanetAtmosphereCommon.ush).
+ */
+BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
+	SHADER_PARAMETER(int32, NumAtmospheres)
+	// xyz = camera - planet center (world axes), w = planet radius
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereData0, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// x = camera altitude, y = atmosphere bottom, z = atmosphere top, w = cloud bottom (altitudes above planet radius)
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereData1, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// x = cloud top altitude, y = coverage, z = extinction at density 1 (1/cm), w = shape scale (cm)
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereData2, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// x = erosion, y = raymarch steps, zw = reserved
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereData3, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// Planet local axes in world space (unit); clouds are evaluated in this frame.
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAxisX, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAxisY, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAxisZ, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+END_SHADER_PARAMETER_STRUCT()
+
+/** r.PlanetAtmosphere.DebugMode 1 — analytical planet / atmosphere / cloud shells. Shaders/Private/AtmosphereBoundsDebug.usf */
 class FAtmosphereBoundsDebugCS : public FGlobalShader
 {
 public:
@@ -28,19 +54,30 @@ public:
 	static constexpr int32 ThreadGroupSize = 8;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthTexture)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTexture)
-		SHADER_PARAMETER(FMatrix44f, ClipToTranslatedWorld)
-		SHADER_PARAMETER(FVector3f, CameraTranslatedWorld)
-		SHADER_PARAMETER(FVector4f, ViewRectMinAndSize)
-		SHADER_PARAMETER(int32, NumAtmospheres)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, Atmospheres)
 		SHADER_PARAMETER(float, DebugIntensity)
-		// xyz = camera - planet center (cm), w = planet radius (cm)
-		SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereCameraRelAndPlanetRadius, [PLANET_ATMOSPHERE_MAX_VISIBLE])
-		// x = camera altitude above planet radius, y = atmosphere bottom, z = atmosphere top, w = cloud bottom (altitudes, cm)
-		SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAltitudes0, [PLANET_ATMOSPHERE_MAX_VISIBLE])
-		// x = cloud top altitude (cm), yzw = reserved
-		SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAltitudes1, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * r.PlanetAtmosphere.DebugMode 0 / 2 — cloud raymarch (final clouds / density view).
+ * Shaders/Private/CloudRaymarch.usf. Density comes only from CloudDensity.ush (AD-1).
+ */
+class FAtmosphereCloudRaymarchCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereCloudRaymarchCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereCloudRaymarchCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, Atmospheres)
+		SHADER_PARAMETER(int32, DebugMode)
+		SHADER_PARAMETER(int32, bDrawPlanetSurface)
+		SHADER_PARAMETER(float, CloudAmbientIntensity)
 	END_SHADER_PARAMETER_STRUCT()
 };
