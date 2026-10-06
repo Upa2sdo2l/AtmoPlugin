@@ -16,6 +16,8 @@ namespace PlanetAtmosphere::CVars
 		FinalClouds = 0,
 		AtmosphereBounds = 1,
 		Density = 2,
+		CloudHeight = 3,
+		RaySteps = 4,
 	};
 
 	/** r.PlanetAtmosphere.Enable — master switch; 0 = nothing is rendered or dispatched. */

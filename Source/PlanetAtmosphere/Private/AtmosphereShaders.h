@@ -62,7 +62,7 @@ public:
 };
 
 /**
- * r.PlanetAtmosphere.DebugMode 0 / 2 — cloud raymarch (final clouds / density view).
+ * r.PlanetAtmosphere.DebugMode 0 / 2 / 3 / 4 — cloud raymarch (final clouds / density / cloud height / ray steps).
  * Shaders/Private/CloudRaymarch.usf. Density comes only from CloudDensity.ush (AD-1).
  */
 class FAtmosphereCloudRaymarchCS : public FGlobalShader

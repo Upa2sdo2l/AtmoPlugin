@@ -14,7 +14,11 @@
 #include "EngineUtils.h"
 #include "RenderingThread.h"
 #include "RHICommandList.h"
+#include "AtmosphereStats.h"
 #include <atomic>
+
+DECLARE_CYCLE_STAT(TEXT("Find Sun Light (GT)"), STAT_PlanetAtmosphere_FindSun, STATGROUP_PlanetAtmosphere);
+DECLARE_CYCLE_STAT(TEXT("Gather Visible Atmospheres (RT)"), STAT_PlanetAtmosphere_Gather, STATGROUP_PlanetAtmosphere);
 
 namespace
 {
@@ -27,6 +31,8 @@ namespace
 	 */
 	FAtmosphereSunLight FindSunLight_GameThread(UWorld* InWorld)
 	{
+		SCOPE_CYCLE_COUNTER(STAT_PlanetAtmosphere_FindSun);
+
 		FAtmosphereSunLight Sun;
 		if (!InWorld)
 		{
@@ -136,7 +142,11 @@ FScreenPassTexture FPlanetAtmosphereViewExtension::PostProcessBeforeDOF_RenderTh
 	const FPostProcessMaterialInputs& Inputs)
 {
 	TArray<FAtmosphereVisibleInstance> VisibleInstances;
-	const int32 RegisteredCount = Registry->GatherVisibleInstances(View, VisibleInstances);
+	int32 RegisteredCount = 0;
+	{
+		SCOPE_CYCLE_COUNTER(STAT_PlanetAtmosphere_Gather);
+		RegisteredCount = Registry->GatherVisibleInstances(View, VisibleInstances);
+	}
 
 	// Per-frame diagnostics: enable with console command `log LogPlanetAtmosphere Verbose`.
 	UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("ViewExtension: %d of %d atmosphere(s) pass plugin frustum culling"),

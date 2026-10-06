@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-// Cloud raymarch (r.PlanetAtmosphere.DebugMode 0 = Final Clouds, 2 = Density).
+// Cloud raymarch (r.PlanetAtmosphere.DebugMode 0 = Final Clouds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -10,12 +10,13 @@
 //   4. Beer-Lambert transmittance, energy-conserving integration;
 //   5. lighting (Step 7, CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient.
 // Composited front-to-back across planets; the scene behind is attenuated by the final transmittance.
+// Debug views reuse exactly the same march (same density calls), they only change what is written out.
 
 #include "/Engine/Private/Common.ush"
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
 #include "/Plugin/PlanetAtmosphere/Private/CloudLighting.ush"
 
-int DebugMode;               // 0 = final clouds, 2 = density (optical depth heat map)
+int DebugMode;               // 0 = final clouds, 2 = density, 3 = cloud height, 4 = ray steps
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -38,11 +39,22 @@ struct FPACloudLightingContext
 
 static const float PA_MIN_TRANSMITTANCE = 0.01;
 
+/** Everything accumulated along one view ray (final image + debug views). */
+struct FPACloudMarchState
+{
+	float3 Accum;            // in-scattered radiance (absolute, not pre-exposed)
+	float Transmittance;     // of clouds and the placeholder surface
+	float OpticalDepth;      // clouds only (Density view)
+	float HeightSum;         // sum of height fraction * contribution weight (Cloud Height view)
+	float HeightWeight;      // sum of contribution weights
+	uint DensitySamples;     // PA_SampleCloudDensity() calls, primary + light march (Ray Steps view)
+};
+
 /** Marches one segment [TStart, TEnd] of the ray with NumSteps uniform steps. */
 void PA_MarchCloudSegment(
 	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray, FPACloudLightingContext Light,
 	float TStart, float TEnd, int NumSteps,
-	inout float3 Accum, inout float Transmittance, inout float OpticalDepth)
+	inout FPACloudMarchState State)
 {
 	if (NumSteps <= 0 || TEnd <= TStart)
 	{
@@ -58,6 +70,7 @@ void PA_MarchCloudSegment(
 
 		const float Footprint = T * Ray.FootprintPerUnitDistance;
 		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, Footprint);
+		State.DensitySamples += 1u;
 		if (Density > 0.0)
 		{
 			const float Sigma = Density * A.CloudExtinction;
@@ -70,7 +83,7 @@ void PA_MarchCloudSegment(
 				const float Shadow = PA_PlanetShadow(P, Light.SunDirection, A.PlanetRadius);
 				if (Shadow > 0.0)
 				{
-					const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, Light.LightSteps);
+					const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, Light.LightSteps, State.DensitySamples);
 					Radiance += Light.SunIlluminance * (Light.Phase * SunTransmittance * Shadow);
 				}
 			}
@@ -79,11 +92,14 @@ void PA_MarchCloudSegment(
 			Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
 
 			// Energy-conserving integration over the step: S * (1 - exp(-sigma dt)) / sigma * sigma.
-			Accum += Transmittance * Radiance * (1.0 - StepTransmittance);
-			Transmittance *= StepTransmittance;
-			OpticalDepth += Sigma * Dt;
+			const float Contribution = State.Transmittance * (1.0 - StepTransmittance);
+			State.Accum += Radiance * Contribution;
+			State.HeightSum += HeightFraction * Contribution;
+			State.HeightWeight += Contribution;
+			State.Transmittance *= StepTransmittance;
+			State.OpticalDepth += Sigma * Dt;
 
-			if (Transmittance < PA_MIN_TRANSMITTANCE)
+			if (State.Transmittance < PA_MIN_TRANSMITTANCE)
 			{
 				break;
 			}
@@ -91,10 +107,18 @@ void PA_MarchCloudSegment(
 	}
 }
 
+/** Black -> red -> yellow -> white. */
 float3 PA_HeatColor(float X)
 {
 	X = saturate(X);
 	return float3(saturate(X * 3.0), saturate(X * 3.0 - 1.0), saturate(X * 3.0 - 2.0));
+}
+
+/** Blue (layer bottom) -> green (middle) -> red (layer top). */
+float3 PA_HeightColor(float H)
+{
+	H = saturate(H);
+	return float3(saturate(2.0 * H - 1.0), 1.0 - abs(2.0 * H - 1.0), saturate(1.0 - 2.0 * H));
 }
 
 [numthreads(8, 8, 1)]
@@ -106,9 +130,13 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	float3 Accum = 0.0;
-	float Transmittance = 1.0;
-	float OpticalDepth = 0.0;
+	FPACloudMarchState State;
+	State.Accum = 0.0;
+	State.Transmittance = 1.0;
+	State.OpticalDepth = 0.0;
+	State.HeightSum = 0.0;
+	State.HeightWeight = 0.0;
+	State.DensitySamples = 0u;
 
 	FPACloudLightingContext Light;
 	Light.SunDirection = SunDirection;
@@ -184,10 +212,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				Seg2Steps = TotalSteps;
 			}
 
-			PA_MarchCloudSegment(A, Layer, Ray, Light, Seg1Start, Seg1End, Seg1Steps, Accum, Transmittance, OpticalDepth);
-			if (Transmittance >= PA_MIN_TRANSMITTANCE)
+			PA_MarchCloudSegment(A, Layer, Ray, Light, Seg1Start, Seg1End, Seg1Steps, State);
+			if (State.Transmittance >= PA_MIN_TRANSMITTANCE)
 			{
-				PA_MarchCloudSegment(A, Layer, Ray, Light, Seg2Start, Seg2End, Seg2Steps, Accum, Transmittance, OpticalDepth);
+				PA_MarchCloudSegment(A, Layer, Ray, Light, Seg2Start, Seg2End, Seg2Steps, State);
 			}
 		}
 
@@ -203,25 +231,41 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			{
 				SurfaceRadiance += Light.SunIlluminance * saturate(dot(SurfaceNormal, Light.SunDirection));
 			}
-			Accum += Transmittance * SurfaceAlbedo / PA_PI * SurfaceRadiance;
-			Transmittance = 0.0;
+			State.Accum += State.Transmittance * SurfaceAlbedo / PA_PI * SurfaceRadiance;
+			State.Transmittance = 0.0;
 		}
 
-		if (Transmittance < PA_MIN_TRANSMITTANCE)
+		if (State.Transmittance < PA_MIN_TRANSMITTANCE)
 		{
 			break;
 		}
 	}
 
+	const float3 DarkenedScene = Ray.SceneColor.rgb * 0.15;
+	const float CloudOpacity = 1.0 - exp(-State.OpticalDepth);
+	float3 Result;
 	if (DebugMode == 2)
 	{
-		// Density view: optical depth along the ray as a heat map over a darkened scene.
-		const float Opacity = 1.0 - exp(-OpticalDepth);
-		OutputTexture[Ray.Pixel] = float4(Ray.SceneColor.rgb * 0.15 + PA_HeatColor(Opacity), Ray.SceneColor.a);
+		// Density: optical depth of the clouds along the ray as a heat map.
+		Result = DarkenedScene + PA_HeatColor(CloudOpacity);
+	}
+	else if (DebugMode == 3)
+	{
+		// Cloud Height: where inside the layer the visible cloud matter is (contribution-weighted).
+		const float MeanHeight = State.HeightWeight > 1e-4 ? State.HeightSum / State.HeightWeight : 0.0;
+		Result = lerp(DarkenedScene, PA_HeightColor(MeanHeight), CloudOpacity);
+	}
+	else if (DebugMode == 4)
+	{
+		// Ray Steps: density-function calls for this pixel (primary + light march), i.e. the cost map.
+		// White = 64 x (1 + LightSteps) calls or more.
+		const float Budget = 64.0 * (1.0 + (float)max(LightSteps, 0));
+		Result = DarkenedScene + PA_HeatColor((float)State.DensitySamples / Budget);
 	}
 	else
 	{
-		// Scene color is pre-exposed; bring our absolute radiance into the same space.
-		OutputTexture[Ray.Pixel] = float4(Ray.SceneColor.rgb * Transmittance + Accum * View.PreExposure, Ray.SceneColor.a);
+		// Final clouds. Scene color is pre-exposed; bring our absolute radiance into the same space.
+		Result = Ray.SceneColor.rgb * State.Transmittance + State.Accum * View.PreExposure;
 	}
+	OutputTexture[Ray.Pixel] = float4(Result, Ray.SceneColor.a);
 }

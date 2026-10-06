@@ -21,6 +21,7 @@ PlanetAtmosphere/
 │   └── Private/
 │       ├── AtmosphereRenderer.*             RDG pass setup (camera-relative data, dispatch)
 │       ├── AtmosphereShaders.*              global shader classes
+│       ├── AtmosphereStats.h                CPU stat group (`stat PlanetAtmosphere`)
 │       └── AtmosphereCVars.*                r.PlanetAtmosphere.* console variables
 └── Shaders/Private/
     ├── PlanetAtmosphereCommon.ush           precision-safe ray/sphere math, compositing helpers
@@ -28,7 +29,7 @@ PlanetAtmosphere/
     ├── PlanetAtmosphereNoise.ush            noise primitives (Phase 1: procedural)
     ├── CloudDensity.ush                     SINGLE SOURCE OF TRUTH for cloud density (see below)
     ├── CloudLighting.ush                    phase function, light march toward the sun, planet shadow
-    ├── CloudRaymarch.usf                    cloud raymarch (Final Clouds / Density views)
+    ├── CloudRaymarch.usf                    cloud raymarch (Final Clouds + Density / Cloud Height / Ray Steps views)
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
 
@@ -49,7 +50,7 @@ The actor's scale is ignored — radii are absolute.
 | CVar | Default | Meaning |
 |---|---|---|
 | `r.PlanetAtmosphere.Enable` | 1 | Master switch (0 = nothing is dispatched) |
-| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final Clouds, 1 = Atmosphere Bounds, 2 = Density |
+| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final Clouds, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps |
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
@@ -62,7 +63,19 @@ The clouds are lit by one Directional Light per level: the first visible one wit
 enabled and index 0, otherwise the first visible Directional Light. Its direction, color, temperature and
 intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 
-Per-frame diagnostics: `log LogPlanetAtmosphere Verbose`.
+## Debug views and profiling
+
+| `DebugMode` | View |
+|---|---|
+| 0 | Final clouds |
+| 1 | Atmosphere Bounds: planet sphere (green), atmosphere shell (blue), cloud shell (white) |
+| 2 | Density: optical depth along the view ray (black → red → yellow → white) |
+| 3 | Cloud Height: where in the layer the visible clouds are (blue = bottom, green = middle, red = top) |
+| 4 | Ray Steps: density-function calls per pixel incl. light march — the cost map (white = 64 × (1 + LightSteps)) |
+
+- GPU: `stat gpu` → **PlanetAtmosphere** (all plugin passes of a view); `ProfileGPU` shows the individual passes.
+- CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
+- Per-frame log: `log LogPlanetAtmosphere Verbose`.
 
 ## Single source of truth for cloud density
 
@@ -72,15 +85,15 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 1 — Step 7: sun lighting**
-- Sun from the level's Directional Light (game thread → render thread copy each frame)
-- Two-lobe Henyey–Greenstein phase (forward glow toward the sun), light march toward the sun (self-shadowing,
-  density from `PA_SampleCloudDensity()` only), soft planet shadow / terminator, ambient fading at night
-- Output pre-exposed (`View.PreExposure`) to match the scene; placeholder planet surface is sun-lit too
+**Phase 1 — Step 8: debug views, profiling, Phase 1 final test**
+- Cloud Height and Ray Steps debug views (same march, same density calls as the final image)
+- GPU stat `PlanetAtmosphere`, CPU stat group `PlanetAtmosphere`
 
-Done before: Step 6 — analytical density + basic raymarch; Step 5 — first RDG pass, precision-safe math.
+Phase 1 so far: plugin + actor/component/world subsystem, multi-planet registry with frustum culling,
+precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
+analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow.
 
-Next: Step 8 — Density/Height/Ray Steps debug modes, GPU profiling, Phase 1 final test.
+Next: Phase 2 — variable stepping, jitter, early exit, density optimization (baked 3D noise).
 
 ## Dependencies
 
