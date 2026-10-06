@@ -13,7 +13,9 @@ struct FScreenPassTexture;
 namespace PlanetAtmosphere
 {
 	/**
-	 * Render thread. Adds the Step 5 "Atmosphere Bounds" debug pass for one view.
+	 * Render thread. Adds the PlanetAtmosphere pass for one view according to r.PlanetAtmosphere.DebugMode:
+	 *   0 = Final Clouds, 2 = Density  -> FAtmosphereCloudRaymarchCS
+	 *   1 = Atmosphere Bounds          -> FAtmosphereBoundsDebugCS
 	 *
 	 * Called from the EPostProcessingPass::BeforeDOF callback (HDR scene color, before DOF/TSR/tonemapping).
 	 * Returns the new scene color. If there is nothing to draw (no instances, missing inputs,
@@ -22,7 +24,7 @@ namespace PlanetAtmosphere
 	 * Instances are sorted near -> far in place and truncated to r.PlanetAtmosphere.MaxVisible.
 	 * Only POD copies are used, nothing references scene proxies.
 	 */
-	FScreenPassTexture AddAtmosphereBoundsDebugPass(
+	FScreenPassTexture AddAtmospherePasses(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs,

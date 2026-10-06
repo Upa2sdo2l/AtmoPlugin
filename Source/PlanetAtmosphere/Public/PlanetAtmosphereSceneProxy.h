@@ -58,6 +58,8 @@ public:
 	const FPlanetAtmosphereRadii RadiiUU;
 	const float CloudCoverage;
 	const float CloudDensity;
+	const double CloudShapeScaleUU;
+	const float CloudErosion;
 	const int32 RaymarchSteps;
 
 private:

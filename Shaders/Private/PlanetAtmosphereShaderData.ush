@@ -1,0 +1,141 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Shader-side declarations of the parameters shared by all PlanetAtmosphere passes.
+// C++ counterparts: FAtmosphereViewParameters and FAtmosphereInstanceParameters (AtmosphereShaders.h),
+// included into each pass with SHADER_PARAMETER_STRUCT_INCLUDE (members are bound without prefix).
+
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereCommon.ush"
+#include "/Plugin/PlanetAtmosphere/Private/CloudDensity.ush"
+
+// ---- View (FAtmosphereViewParameters) -------------------------------------------------------
+Texture2D SceneColorTexture;
+Texture2D SceneDepthTexture;
+RWTexture2D<float4> OutputTexture;
+float4x4 ClipToTranslatedWorld;      // inverse translated view-projection (includes TAA jitter)
+float3 CameraTranslatedWorld;        // camera position in translated world space (close to origin)
+float4 ViewRectMinAndSize;           // xy = view rect min (pixels), zw = view rect size
+
+// ---- Atmospheres (FAtmosphereInstanceParameters), sorted near -> far ------------------------
+// All values in cm; every difference of large numbers was computed in double on the CPU.
+int NumAtmospheres;
+float4 AtmosphereData0[PA_MAX_ATMOSPHERES]; // xyz = camera - planet center (world axes), w = planet radius
+float4 AtmosphereData1[PA_MAX_ATMOSPHERES]; // x = camera altitude, y = atmosphere bottom, z = atmosphere top, w = cloud bottom (altitudes)
+float4 AtmosphereData2[PA_MAX_ATMOSPHERES]; // x = cloud top altitude, y = coverage, z = extinction at density 1 (1/cm), w = shape scale (cm)
+float4 AtmosphereData3[PA_MAX_ATMOSPHERES]; // x = erosion, y = raymarch steps, zw = reserved
+float4 AtmosphereAxisX[PA_MAX_ATMOSPHERES]; // planet local X axis in world space (unit), w unused
+float4 AtmosphereAxisY[PA_MAX_ATMOSPHERES];
+float4 AtmosphereAxisZ[PA_MAX_ATMOSPHERES];
+
+struct FPAAtmosphere
+{
+	float3 CameraRel;        // camera - planet center, world axes
+	float PlanetRadius;
+	float CameraAltitude;    // |CameraRel| - PlanetRadius
+	float AtmosphereBottom;  // altitudes above PlanetRadius
+	float AtmosphereTop;
+	float CloudBottom;
+	float CloudTop;
+	float CloudCoverage;
+	float CloudExtinction;   // 1/cm at normalized density 1
+	float CloudShapeScale;   // cm
+	float CloudErosion;
+	int RaymarchSteps;
+	float3 AxisX;
+	float3 AxisY;
+	float3 AxisZ;
+};
+
+FPAAtmosphere PA_LoadAtmosphere(int Index)
+{
+	FPAAtmosphere A;
+	A.CameraRel = AtmosphereData0[Index].xyz;
+	A.PlanetRadius = AtmosphereData0[Index].w;
+	A.CameraAltitude = AtmosphereData1[Index].x;
+	A.AtmosphereBottom = AtmosphereData1[Index].y;
+	A.AtmosphereTop = AtmosphereData1[Index].z;
+	A.CloudBottom = AtmosphereData1[Index].w;
+	A.CloudTop = AtmosphereData2[Index].x;
+	A.CloudCoverage = AtmosphereData2[Index].y;
+	A.CloudExtinction = AtmosphereData2[Index].z;
+	A.CloudShapeScale = AtmosphereData2[Index].w;
+	A.CloudErosion = AtmosphereData3[Index].x;
+	A.RaymarchSteps = (int)AtmosphereData3[Index].y;
+	A.AxisX = AtmosphereAxisX[Index].xyz;
+	A.AxisY = AtmosphereAxisY[Index].xyz;
+	A.AxisZ = AtmosphereAxisZ[Index].xyz;
+	return A;
+}
+
+/** World-axis vector (planet-relative) -> planet local frame. */
+float3 PA_ToPlanetLocal(FPAAtmosphere A, float3 V)
+{
+	return float3(dot(V, A.AxisX), dot(V, A.AxisY), dot(V, A.AxisZ));
+}
+
+/** Data mapping only: packs this planet's parameters for the density function (CloudDensity.ush). */
+FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
+{
+	FPACloudLayer Layer;
+	Layer.PlanetRadius = A.PlanetRadius;
+	Layer.BottomAltitude = A.CloudBottom;
+	Layer.Thickness = max(A.CloudTop - A.CloudBottom, 1.0);
+	Layer.Coverage = A.CloudCoverage;
+	Layer.ShapeScale = max(A.CloudShapeScale, 1.0);
+	Layer.Erosion = A.CloudErosion;
+	return Layer;
+}
+
+// ---- Per-pixel ray --------------------------------------------------------------------------
+
+struct FPAPixelRay
+{
+	uint2 Pixel;                      // absolute pixel in the scene textures
+	float4 SceneColor;
+	float3 Dir;                       // normalized, world axes
+	float SceneDistance;              // distance to opaque scene geometry along Dir (PA_INFINITY for sky)
+	float FootprintPerUnitDistance;   // pixel size at distance 1 (multiply by t to get the footprint)
+};
+
+float3 PA_ClipToTranslatedWorldPosition(float2 NDC, float DeviceZ)
+{
+	const float4 P = mul(float4(NDC, DeviceZ, 1.0), ClipToTranslatedWorld);
+	return P.xyz / P.w;
+}
+
+float3 PA_RayDirFromNDC(float2 NDC)
+{
+	// A point between the camera and infinity (reversed-Z: 0 = infinity).
+	return normalize(PA_ClipToTranslatedWorldPosition(NDC, 0.5) - CameraTranslatedWorld);
+}
+
+/** Returns false for threads outside the view rect. */
+bool PA_SetupPixelRay(uint2 LocalPixel, out FPAPixelRay Ray)
+{
+	Ray = (FPAPixelRay)0;
+	const float2 RectSize = ViewRectMinAndSize.zw;
+	if (LocalPixel.x >= (uint)RectSize.x || LocalPixel.y >= (uint)RectSize.y)
+	{
+		return false;
+	}
+
+	Ray.Pixel = (uint2)ViewRectMinAndSize.xy + LocalPixel;
+	Ray.SceneColor = SceneColorTexture.Load(int3(Ray.Pixel, 0));
+	const float DeviceZ = SceneDepthTexture.Load(int3(Ray.Pixel, 0)).r;
+
+	const float2 UV = (float2(LocalPixel) + 0.5) / RectSize;
+	const float2 NDC = float2(UV.x * 2.0 - 1.0, 1.0 - UV.y * 2.0);
+	Ray.Dir = PA_RayDirFromNDC(NDC);
+
+	// Angular size of one pixel, from the neighbouring pixel's ray (used for noise LOD).
+	const float3 NeighbourDir = PA_RayDirFromNDC(NDC + float2(2.0 / RectSize.x, 0.0));
+	Ray.FootprintPerUnitDistance = length(NeighbourDir - Ray.Dir);
+
+	Ray.SceneDistance = PA_INFINITY;
+	if (DeviceZ > 0.0)
+	{
+		Ray.SceneDistance = length(PA_ClipToTranslatedWorldPosition(NDC, DeviceZ) - CameraTranslatedWorld);
+	}
+	return true;
+}

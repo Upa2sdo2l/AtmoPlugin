@@ -10,15 +10,29 @@
  */
 namespace PlanetAtmosphere::CVars
 {
-	/** r.PlanetAtmosphere.Enable — master switch for all plugin rendering. */
+	/** Values of r.PlanetAtmosphere.DebugMode. */
+	enum class EDebugMode : int32
+	{
+		FinalClouds = 0,
+		AtmosphereBounds = 1,
+		Density = 2,
+	};
+
+	/** r.PlanetAtmosphere.Enable — master switch; 0 = nothing is rendered or dispatched. */
 	bool IsEnabled();
 
-	/** r.PlanetAtmosphere.DebugMode — 0 = off, 1 = Atmosphere Bounds. */
-	int32 GetDebugMode();
+	/** r.PlanetAtmosphere.DebugMode — see EDebugMode; unknown values fall back to FinalClouds. */
+	EDebugMode GetDebugMode();
 
-	/** r.PlanetAtmosphere.DebugIntensity — brightness multiplier of debug overlays (HDR, before tonemapping). */
+	/** r.PlanetAtmosphere.DebugIntensity — brightness multiplier of the Atmosphere Bounds overlay. */
 	float GetDebugIntensity();
 
 	/** r.PlanetAtmosphere.MaxVisible — max atmospheres per view, clamped to [1, PLANET_ATMOSPHERE_MAX_VISIBLE]. */
 	int32 GetMaxVisible();
+
+	/** r.PlanetAtmosphere.DebugPlanetSurface — draw a placeholder planet surface (for levels without terrain). */
+	bool ShouldDrawPlanetSurface();
+
+	/** r.PlanetAtmosphere.CloudAmbientIntensity — temporary ambient-only cloud lighting (Phase 1, until sun lighting). */
+	float GetCloudAmbientIntensity();
 }

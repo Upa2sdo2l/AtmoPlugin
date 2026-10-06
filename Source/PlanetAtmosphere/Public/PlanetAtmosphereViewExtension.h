@@ -18,9 +18,10 @@ struct FScreenPassTexture;
  * ctor FWorldSceneViewExtension(const FAutoRegister&, UWorld*)), whose IsActiveThisFrame_Internal
  * restricts it to view families rendering this extension's world.
  *
- * Render hook (Step 5): SubscribeToPostProcessingPass(EPostProcessingPass::BeforeDOF) — public API,
+ * Render hook: SubscribeToPostProcessingPass(EPostProcessingPass::BeforeDOF) — public API,
  * HDR scene color + scene depth available, before DOF / TSR / tonemapping. The callback gathers
- * visible atmospheres (plugin frustum culling) and returns the new scene color.
+ * visible atmospheres (plugin frustum culling) and returns the new scene color
+ * (clouds, or a debug view selected by r.PlanetAtmosphere.DebugMode).
  */
 class FPlanetAtmosphereViewExtension : public FWorldSceneViewExtension
 {
