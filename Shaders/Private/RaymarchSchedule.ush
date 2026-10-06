@@ -1,0 +1,157 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Phase 2 / Step 9 — where the primary raymarch puts its samples along one view ray.
+//
+// The part of the ray inside a cloud shell is up to two segments (Near, Far). The step budget
+// (RaymarchSteps) is split into "bins"; one sample per bin, at Jitter in [0, 1) inside the bin, and the
+// sample represents the whole bin width.
+//
+//   Uniform        : all bins of a ray have the same length (Phase 1 behaviour).
+//   Camera-centered: bins are equal in ln(t + T0), i.e. the step grows proportionally to (t + T0):
+//                    small steps near the camera, larger ones far away. T0 = NearDistance keeps the
+//                    first step finite when the camera is inside the layer.
+//                    MaxStepRatio caps the ratio last step / first step of a ray by raising T0 per ray
+//                    (validated on the CPU prototype: without the cap, some scenes with far isolated clouds
+//                    get up to 3-5x worse; with cap 4 the worst case is ~2x, the median is 15-25% better).
+//
+// Precision: sample positions are offsets from the segment start computed in log1p / expm1 form,
+// so nothing cancels when the segment is far away (e.g. another planet thousands of km away).
+// Every bin of both segments is addressed by one global index, so the march is a single loop.
+
+/** Accurate ln(1 + Z) for Z >= 0 (no cancellation for small Z). */
+float PA_Log1pSafe(float Z)
+{
+	return Z < 1e-3 ? Z * (1.0 - Z * (0.5 - Z * (1.0 / 3.0))) : log(1.0 + Z);
+}
+
+/** Accurate exp(Y) - 1 (no cancellation for small Y). */
+float PA_Expm1Safe(float Y)
+{
+	return abs(Y) < 1e-3 ? Y * (1.0 + Y * (0.5 + Y * (1.0 / 6.0))) : exp(Y) - 1.0;
+}
+
+struct FPAMarchSegment
+{
+	float TStart;     // distance along the ray, cm
+	float Length;     // >= 0
+	float Base;       // TStart + T0 (camera-centered only)
+	float LnRatio;    // ln((TEnd + T0) / (TStart + T0)) (camera-centered only)
+	int NumBins;
+};
+
+struct FPAMarchSchedule
+{
+	FPAMarchSegment Near;
+	FPAMarchSegment Far;
+	int NumBins;            // Near.NumBins + Far.NumBins
+	bool bCameraCentered;
+};
+
+FPAMarchSegment PA_MakeMarchSegment(float TStart, float TEnd, float T0, bool bCameraCentered)
+{
+	FPAMarchSegment S;
+	S.TStart = TStart;
+	S.Length = max(TEnd - TStart, 0.0);
+	S.Base = max(TStart + T0, 1e-3);
+	S.LnRatio = bCameraCentered ? PA_Log1pSafe(S.Length / S.Base) : 0.0;
+	S.NumBins = 0;
+	return S;
+}
+
+/** Offset from the segment start at the parameter U in [0, 1]. */
+float PA_MarchSegmentOffset(FPAMarchSegment S, bool bCameraCentered, float U)
+{
+	return bCameraCentered ? S.Base * PA_Expm1Safe(U * S.LnRatio) : U * S.Length;
+}
+
+/**
+ * Builds the schedule for the two segments [NearStart, NearEnd] and [FarStart, FarEnd] (empty if End <= Start).
+ * TotalSteps     : step budget of this ray (RaymarchSteps of the planet).
+ * NearDistance   : T0 in cm (camera-centered).
+ * MaxStepRatio   : per-ray cap of last step / first step (<= 1 disables the cap).
+ */
+FPAMarchSchedule PA_MakeMarchSchedule(
+	float NearStart, float NearEnd, float FarStart, float FarEnd,
+	int TotalSteps, bool bCameraCentered, float NearDistance, float MaxStepRatio)
+{
+	const float NearLength = max(NearEnd - NearStart, 0.0);
+	const float FarLength = max(FarEnd - FarStart, 0.0);
+
+	// Extent of the ray that receives samples (first sample ... last sample).
+	const float RayStart = NearLength > 0.0 ? NearStart : FarStart;
+	const float RayEnd = FarLength > 0.0 ? FarEnd : NearEnd;
+	float T0 = max(NearDistance, 1.0);
+	if (bCameraCentered && MaxStepRatio > 1.0)
+	{
+		// (RayEnd + T0) / (RayStart + T0) <= MaxStepRatio
+		T0 = max(T0, (RayEnd - MaxStepRatio * RayStart) / (MaxStepRatio - 1.0));
+	}
+
+	FPAMarchSchedule Sch;
+	Sch.bCameraCentered = bCameraCentered;
+	Sch.Near = PA_MakeMarchSegment(NearStart, NearEnd, T0, bCameraCentered);
+	Sch.Far = PA_MakeMarchSegment(FarStart, FarEnd, T0, bCameraCentered);
+
+	// Bins are distributed proportionally to the parametric length (cm or ln units).
+	const float NearMeasure = NearLength > 0.0 ? (bCameraCentered ? Sch.Near.LnRatio : NearLength) : 0.0;
+	const float FarMeasure = FarLength > 0.0 ? (bCameraCentered ? Sch.Far.LnRatio : FarLength) : 0.0;
+	TotalSteps = max(TotalSteps, 1);
+	if (NearMeasure > 0.0 && FarMeasure > 0.0)
+	{
+		Sch.Near.NumBins = clamp((int)round(TotalSteps * NearMeasure / (NearMeasure + FarMeasure)), 1, max(TotalSteps - 1, 1));
+		Sch.Far.NumBins = max(TotalSteps - Sch.Near.NumBins, 1);
+	}
+	else if (NearMeasure > 0.0)
+	{
+		Sch.Near.NumBins = TotalSteps;
+	}
+	else if (FarMeasure > 0.0)
+	{
+		Sch.Far.NumBins = TotalSteps;
+	}
+	Sch.NumBins = Sch.Near.NumBins + Sch.Far.NumBins;
+	return Sch;
+}
+
+/** Bin -> sample distance T (at Jitter inside the bin) and bin width Dt. Bin in [0, Sch.NumBins). */
+void PA_GetMarchBin(FPAMarchSchedule Sch, int Bin, float Jitter, out float T, out float Dt)
+{
+	FPAMarchSegment S = Sch.Near;
+	int LocalBin = Bin;
+	if (Bin >= Sch.Near.NumBins)
+	{
+		S = Sch.Far;
+		LocalBin = Bin - Sch.Near.NumBins;
+	}
+	const float InvBins = 1.0 / (float)max(S.NumBins, 1);
+	const float Offset0 = PA_MarchSegmentOffset(S, Sch.bCameraCentered, (float)LocalBin * InvBins);
+	const float Offset1 = PA_MarchSegmentOffset(S, Sch.bCameraCentered, (float)(LocalBin + 1) * InvBins);
+	const float OffsetSample = PA_MarchSegmentOffset(S, Sch.bCameraCentered, ((float)LocalBin + Jitter) * InvBins);
+	T = S.TStart + OffsetSample;
+	Dt = max(Offset1 - Offset0, 0.0);
+}
+
+// ---- Jitter ------------------------------------------------------------------------------------
+
+/**
+ * Interleaved gradient noise (Jimenez 2014, "Next Generation Post Processing in Call of Duty: Advanced Warfare"),
+ * animated with the 5.588238 pixel offset per frame (64-frame cycle). Own copy with a PA_ prefix:
+ * independent of the engine's helper of the same idea. Result in [0, 1).
+ */
+float PA_InterleavedGradientNoise(float2 Pixel, uint FrameIndex)
+{
+	Pixel += 5.588238 * (float)(FrameIndex % 64u);
+	return frac(52.9829189 * frac(dot(Pixel, float2(0.06711056, 0.00583715))));
+}
+
+/** JitterMode: 0 = off (bin centers), 1 = static per-pixel pattern, 2 = animated per frame. */
+float PA_GetRayJitter(uint2 Pixel, int JitterMode, uint FrameIndex)
+{
+	if (JitterMode <= 0)
+	{
+		return 0.5;
+	}
+	return PA_InterleavedGradientNoise(float2(Pixel), JitterMode >= 2 ? FrameIndex : 0u);
+}

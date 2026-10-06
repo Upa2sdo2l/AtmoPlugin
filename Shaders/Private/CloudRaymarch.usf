@@ -5,16 +5,18 @@
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
 //      clipped by the scene depth and the planet surface;
-//   2. march RaymarchSteps uniform steps distributed over the segments by length;
+//   2. distribute RaymarchSteps over the segments (RaymarchSchedule.ush): uniform or camera-centered steps,
+//      per-pixel jitter inside each step, optional empty-space skipping (Phase 2 / Step 9);
 //   3. density comes ONLY from PA_SampleCloudDensity() (CloudDensity.ush, AD-1);
-//   4. Beer-Lambert transmittance, energy-conserving integration;
-//   5. lighting (Step 7, CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient.
+//   4. Beer-Lambert transmittance, energy-conserving integration over each step;
+//   5. lighting (CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient.
 // Composited front-to-back across planets; the scene behind is attenuated by the final transmittance.
 // Debug views reuse exactly the same march (same density calls), they only change what is written out.
 
 #include "/Engine/Private/Common.ush"
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
 #include "/Plugin/PlanetAtmosphere/Private/CloudLighting.ush"
+#include "/Plugin/PlanetAtmosphere/Private/RaymarchSchedule.ush"
 
 int DebugMode;               // 0 = final clouds, 2 = density, 3 = cloud height, 4 = ray steps
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
@@ -25,6 +27,14 @@ float3 SunIlluminance;       // 0 when there is no sun
 float3 AmbientIlluminance;   // sky/ambient light on the clouds
 int bHasSun;
 int LightSteps;
+
+// Sample distribution (Step 9). See RaymarchSchedule.ush.
+int StepDistribution;        // 0 = uniform, 1 = camera-centered
+float StepNearDistanceScale; // T0 of the camera-centered distribution, in cloud-layer thicknesses
+float StepRatioMax;          // per-ray cap of last step / first step (camera-centered)
+int JitterMode;              // 0 = off, 1 = static, 2 = animated (View.StateFrameIndex)
+int EmptySpaceSkipSpan;      // 0 = off; otherwise steps covered by one coarse probe in empty space
+float MinTransmittance;      // the ray stops when the transmittance drops below this
 
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
@@ -37,7 +47,12 @@ struct FPACloudLightingContext
 	int LightSteps;
 };
 
-static const float PA_MIN_TRANSMITTANCE = 0.01;
+// A sample whose contribution to the pixel (transmittance before it * its opacity) is below this
+// does not run the light march (Step 9 early exit; error <= this x the sample radiance).
+static const float PA_MIN_LIGHTING_CONTRIBUTION = 1e-4;
+
+// Empty-space skipping: back to coarse probes after this many consecutive empty fine samples.
+static const int PA_EMPTY_SPACE_RESUME = 2;
 
 /** Everything accumulated along one view ray (final image + debug views). */
 struct FPACloudMarchState
@@ -47,62 +62,116 @@ struct FPACloudMarchState
 	float OpticalDepth;      // clouds only (Density view)
 	float HeightSum;         // sum of height fraction * contribution weight (Cloud Height view)
 	float HeightWeight;      // sum of contribution weights
-	uint DensitySamples;     // PA_SampleCloudDensity() calls, primary + light march (Ray Steps view)
+	uint DensitySamples;     // PA_SampleCloudDensity() calls: primary + empty-space probes + light march (Ray Steps view)
 };
 
-/** Marches one segment [TStart, TEnd] of the ray with NumSteps uniform steps. */
-void PA_MarchCloudSegment(
+/** Cloud density at distance T along the ray (one density call). Outputs the planet-relative position and altitude. */
+float PA_SampleCloudAlongRay(
+	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray, float T,
+	out float3 P, out float Altitude, inout FPACloudMarchState State)
+{
+	P = A.CameraRel + Ray.Dir * T;           // planet-relative, world axes
+	Altitude = length(P) - A.PlanetRadius;
+	const float Footprint = T * Ray.FootprintPerUnitDistance;
+	State.DensitySamples += 1u;
+	return PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, Footprint);
+}
+
+/** Integrates one step: sample at T representing the step width Dt. Returns the density of the sample. */
+float PA_IntegrateCloudStep(
 	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray, FPACloudLightingContext Light,
-	float TStart, float TEnd, int NumSteps,
+	float T, float Dt,
 	inout FPACloudMarchState State)
 {
-	if (NumSteps <= 0 || TEnd <= TStart)
+	float3 P;
+	float Altitude;
+	const float Density = PA_SampleCloudAlongRay(A, Layer, Ray, T, P, Altitude, State);
+	if (Density <= 0.0)
 	{
-		return;
+		return Density;
 	}
 
-	const float Dt = (TEnd - TStart) / (float)NumSteps;
-	for (int Step = 0; Step < NumSteps; ++Step)
+	const float Sigma = Density * A.CloudExtinction;
+	const float StepTransmittance = exp(-Sigma * Dt);
+	// Energy-conserving integration over the step: S * (1 - exp(-sigma dt)) / sigma * sigma.
+	const float Contribution = State.Transmittance * (1.0 - StepTransmittance);
+	const float HeightFraction = saturate(PA_CloudHeightFraction(Layer, Altitude));
+
+	// In-scattered radiance at this sample (single-scattering albedo 1).
+	float3 Radiance = 0.0;
+	if (Contribution > PA_MIN_LIGHTING_CONTRIBUTION)
 	{
-		const float T = TStart + ((float)Step + 0.5) * Dt;
-		const float3 P = A.CameraRel + Ray.Dir * T;           // planet-relative, world axes
-		const float Altitude = length(P) - A.PlanetRadius;
-
-		const float Footprint = T * Ray.FootprintPerUnitDistance;
-		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, Footprint);
-		State.DensitySamples += 1u;
-		if (Density > 0.0)
+		if (Light.bHasSun)
 		{
-			const float Sigma = Density * A.CloudExtinction;
-			const float StepTransmittance = exp(-Sigma * Dt);
-
-			// In-scattered radiance at this sample (single-scattering albedo 1).
-			float3 Radiance = 0.0;
-			if (Light.bHasSun)
+			const float Shadow = PA_PlanetShadow(P, Light.SunDirection, A.PlanetRadius);
+			if (Shadow > 0.0)
 			{
-				const float Shadow = PA_PlanetShadow(P, Light.SunDirection, A.PlanetRadius);
-				if (Shadow > 0.0)
-				{
-					const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, Light.LightSteps, State.DensitySamples);
-					Radiance += Light.SunIlluminance * (Light.Phase * SunTransmittance * Shadow);
-				}
+				const float Footprint = T * Ray.FootprintPerUnitDistance;
+				const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, Light.LightSteps, State.DensitySamples);
+				Radiance += Light.SunIlluminance * (Light.Phase * SunTransmittance * Shadow);
 			}
-			const float HeightFraction = saturate(PA_CloudHeightFraction(Layer, Altitude));
-			const float Daylight = Light.bHasSun ? PA_DaylightFactor(P, Light.SunDirection) : 1.0;
-			Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
+		}
+		const float Daylight = Light.bHasSun ? PA_DaylightFactor(P, Light.SunDirection) : 1.0;
+		Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
+	}
 
-			// Energy-conserving integration over the step: S * (1 - exp(-sigma dt)) / sigma * sigma.
-			const float Contribution = State.Transmittance * (1.0 - StepTransmittance);
-			State.Accum += Radiance * Contribution;
-			State.HeightSum += HeightFraction * Contribution;
-			State.HeightWeight += Contribution;
-			State.Transmittance *= StepTransmittance;
-			State.OpticalDepth += Sigma * Dt;
+	State.Accum += Radiance * Contribution;
+	State.HeightSum += HeightFraction * Contribution;
+	State.HeightWeight += Contribution;
+	State.Transmittance *= StepTransmittance;
+	State.OpticalDepth += Sigma * Dt;
+	return Density;
+}
 
-			if (State.Transmittance < PA_MIN_TRANSMITTANCE)
+/**
+ * Marches all steps of the schedule (both segments, one loop).
+ * Empty-space skipping (EmptySpaceSkipSpan > 1): while the ray is in empty space one coarse probe covers
+ * EmptySpaceSkipSpan steps; if the probe finds density, the same steps are marched finely (step back).
+ * After PA_EMPTY_SPACE_RESUME empty fine samples the march returns to coarse probes.
+ * Note: a probe only sees one point of its span, so thin structures inside a span can be missed
+ * (CPU prototype: clearly measurable loss) -> off by default.
+ */
+void PA_MarchClouds(
+	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray, FPACloudLightingContext Light,
+	FPAMarchSchedule Sch, float Jitter,
+	inout FPACloudMarchState State)
+{
+	const int Span = EmptySpaceSkipSpan;
+	bool bCoarse = Span > 1;
+	int EmptyRun = 0;
+	int Bin = 0;
+	const int MaxIterations = 2 * Sch.NumBins + 2;
+	for (int Iteration = 0; Iteration < MaxIterations && Bin < Sch.NumBins; ++Iteration)
+	{
+		float T;
+		float Dt;
+		if (bCoarse)
+		{
+			const int ProbeBin = min(Bin + Span - 1, Sch.NumBins - 1);
+			PA_GetMarchBin(Sch, ProbeBin, Jitter, T, Dt);
+			float3 ProbeP;
+			float ProbeAltitude;
+			if (PA_SampleCloudAlongRay(A, Layer, Ray, T, ProbeP, ProbeAltitude, State) <= 0.0)
 			{
-				break;
+				Bin = ProbeBin + 1;   // the whole span is treated as empty
+				continue;
 			}
+			bCoarse = false;          // step back: march this span finely, starting at Bin
+			EmptyRun = 0;
+		}
+
+		PA_GetMarchBin(Sch, Bin, Jitter, T, Dt);
+		const float Density = PA_IntegrateCloudStep(A, Layer, Ray, Light, T, Dt, State);
+		++Bin;
+
+		if (State.Transmittance < MinTransmittance)
+		{
+			break;
+		}
+		if (Span > 1)
+		{
+			EmptyRun = Density > 0.0 ? 0 : EmptyRun + 1;
+			bCoarse = EmptyRun >= PA_EMPTY_SPACE_RESUME;
 		}
 	}
 }
@@ -146,6 +215,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Light.bHasSun = bHasSun != 0;
 	Light.LightSteps = LightSteps;
 
+	// Same jitter for every planet of this pixel; animated jitter changes every frame (StateFrameIndex).
+	const float Jitter = PA_GetRayJitter(Ray.Pixel, JitterMode, View.StateFrameIndex);
+
 	for (int Index = 0; Index < NumAtmospheres && Index < PA_MAX_ATMOSPHERES; ++Index)
 	{
 		const FPAAtmosphere A = PA_LoadAtmosphere(Index);
@@ -188,35 +260,15 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		}
 		Seg1End = min(Seg1End, TMax);
 		Seg2End = min(Seg2End, TMax);
-		const float Seg1Length = max(Seg1End - Seg1Start, 0.0);
-		const float Seg2Length = max(Seg2End - Seg2Start, 0.0);
-		const float TotalLength = Seg1Length + Seg2Length;
-
-		if (TotalLength > 0.0)
+		if (Seg1End > Seg1Start || Seg2End > Seg2Start)
 		{
-			// Distribute the step budget over the two segments proportionally to their length.
-			const int TotalSteps = max(A.RaymarchSteps, 1);
-			int Seg1Steps = 0;
-			int Seg2Steps = 0;
-			if (Seg1Length > 0.0 && Seg2Length > 0.0)
-			{
-				Seg1Steps = clamp((int)round(TotalSteps * Seg1Length / TotalLength), 1, max(TotalSteps - 1, 1));
-				Seg2Steps = max(TotalSteps - Seg1Steps, 1);
-			}
-			else if (Seg1Length > 0.0)
-			{
-				Seg1Steps = TotalSteps;
-			}
-			else
-			{
-				Seg2Steps = TotalSteps;
-			}
-
-			PA_MarchCloudSegment(A, Layer, Ray, Light, Seg1Start, Seg1End, Seg1Steps, State);
-			if (State.Transmittance >= PA_MIN_TRANSMITTANCE)
-			{
-				PA_MarchCloudSegment(A, Layer, Ray, Light, Seg2Start, Seg2End, Seg2Steps, State);
-			}
+			const FPAMarchSchedule Schedule = PA_MakeMarchSchedule(
+				Seg1Start, Seg1End, Seg2Start, Seg2End,
+				A.RaymarchSteps,
+				StepDistribution != 0,
+				StepNearDistanceScale * Layer.Thickness,
+				StepRatioMax);
+			PA_MarchClouds(A, Layer, Ray, Light, Schedule, Jitter, State);
 		}
 
 		// Debug placeholder surface (behind this planet's clouds). Opaque: hides everything farther away.
@@ -235,7 +287,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			State.Transmittance = 0.0;
 		}
 
-		if (State.Transmittance < PA_MIN_TRANSMITTANCE)
+		if (State.Transmittance < MinTransmittance)
 		{
 			break;
 		}

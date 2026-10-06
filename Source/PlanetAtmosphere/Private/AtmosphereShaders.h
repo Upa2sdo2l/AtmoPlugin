@@ -75,7 +75,7 @@ public:
 	static constexpr int32 ThreadGroupSize = 8;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		// Engine view uniform buffer: only View.PreExposure is used (scene color is pre-exposed).
+		// Engine view uniform buffer: View.PreExposure (scene color is pre-exposed), View.StateFrameIndex (jitter).
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, ViewParams)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
@@ -87,5 +87,12 @@ public:
 		SHADER_PARAMETER(FVector3f, SunIlluminance)
 		SHADER_PARAMETER(int32, LightSteps)
 		SHADER_PARAMETER(FVector3f, AmbientIlluminance)
+		// Sample distribution (Phase 2 / Step 9). Shaders/Private/RaymarchSchedule.ush.
+		SHADER_PARAMETER(int32, StepDistribution)
+		SHADER_PARAMETER(float, StepNearDistanceScale)
+		SHADER_PARAMETER(float, StepRatioMax)
+		SHADER_PARAMETER(int32, JitterMode)
+		SHADER_PARAMETER(int32, EmptySpaceSkipSpan)
+		SHADER_PARAMETER(float, MinTransmittance)
 	END_SHADER_PARAMETER_STRUCT()
 };
