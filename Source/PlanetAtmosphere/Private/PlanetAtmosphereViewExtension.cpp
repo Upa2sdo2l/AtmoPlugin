@@ -9,12 +9,58 @@
 #include "ScreenPass.h"
 #include "SceneView.h"
 #include "Engine/World.h"
+#include "Engine/DirectionalLight.h"
+#include "Components/DirectionalLightComponent.h"
+#include "EngineUtils.h"
+#include "RenderingThread.h"
+#include "RHICommandList.h"
 #include <atomic>
 
 namespace
 {
 	/** Diagnostics: number of live extensions (expected: one per Editor/Game/PIE world). */
 	std::atomic<int32> GLiveViewExtensionCount{0};
+
+	/**
+	 * Game thread. Picks the sun: the first visible Directional Light marked "Atmosphere Sun Light"
+	 * with index 0 (the flag Unreal uses for its own sky); otherwise the first visible Directional Light.
+	 */
+	FAtmosphereSunLight FindSunLight_GameThread(UWorld* InWorld)
+	{
+		FAtmosphereSunLight Sun;
+		if (!InWorld)
+		{
+			return Sun;
+		}
+
+		const UDirectionalLightComponent* Chosen = nullptr;
+		for (TActorIterator<ADirectionalLight> It(InWorld); It; ++It)
+		{
+			const UDirectionalLightComponent* LightComponent = Cast<UDirectionalLightComponent>(It->GetLightComponent());
+			if (!LightComponent || !LightComponent->IsVisible())
+			{
+				continue;
+			}
+			if (LightComponent->bAtmosphereSunLight && LightComponent->AtmosphereSunLightIndex == 0)
+			{
+				Chosen = LightComponent;
+				break;
+			}
+			if (!Chosen)
+			{
+				Chosen = LightComponent;
+			}
+		}
+
+		if (Chosen)
+		{
+			// GetDirection() is the direction the light travels; the sun is the opposite way.
+			Sun.DirectionToSun = (-Chosen->GetDirection()).GetSafeNormal();
+			Sun.Illuminance = Chosen->GetColoredLightBrightness();
+			Sun.bValid = !Sun.DirectionToSun.IsNearlyZero();
+		}
+		return Sun;
+	}
 }
 
 FPlanetAtmosphereViewExtension::FPlanetAtmosphereViewExtension(
@@ -34,6 +80,21 @@ FPlanetAtmosphereViewExtension::~FPlanetAtmosphereViewExtension()
 	// May run on the render thread (if it held the last ref) — do not touch the UWorld here.
 	const int32 Live = --GLiveViewExtensionCount;
 	UE_LOG(LogPlanetAtmosphere, Log, TEXT("PlanetAtmosphereViewExtension: Destroyed (live: %d)"), Live);
+}
+
+void FPlanetAtmosphereViewExtension::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
+{
+	// Game thread: read the sun from UObjects here, hand a plain copy to the render thread.
+	// The command captures a strong reference, so the extension outlives the command even if the
+	// world subsystem releases it in the meantime. Commands execute in order, before this family renders.
+	const FAtmosphereSunLight Sun = FindSunLight_GameThread(GetWorld());
+	TSharedRef<FPlanetAtmosphereViewExtension, ESPMode::ThreadSafe> Self =
+		StaticCastSharedRef<FPlanetAtmosphereViewExtension>(AsShared());
+
+	ENQUEUE_RENDER_COMMAND(PlanetAtmosphereUpdateSun)([Self, Sun](FRHICommandListImmediate&)
+	{
+		Self->SunLight_RenderThread = Sun;
+	});
 }
 
 void FPlanetAtmosphereViewExtension::SubscribeToPostProcessingPass(
@@ -81,5 +142,5 @@ FScreenPassTexture FPlanetAtmosphereViewExtension::PostProcessBeforeDOF_RenderTh
 	UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("ViewExtension: %d of %d atmosphere(s) pass plugin frustum culling"),
 		VisibleInstances.Num(), RegisteredCount);
 
-	return PlanetAtmosphere::AddAtmospherePasses(GraphBuilder, View, Inputs, VisibleInstances);
+	return PlanetAtmosphere::AddAtmospherePasses(GraphBuilder, View, Inputs, VisibleInstances, SunLight_RenderThread);
 }

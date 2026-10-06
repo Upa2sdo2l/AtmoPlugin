@@ -22,11 +22,13 @@ namespace PlanetAtmosphere
 	 * an override output is requested), returns Inputs.ReturnUntouchedSceneColorForPostProcessing().
 	 *
 	 * Instances are sorted near -> far in place and truncated to r.PlanetAtmosphere.MaxVisible.
-	 * Only POD copies are used, nothing references scene proxies.
+	 * Only POD copies are used, nothing references scene proxies or UObjects.
+	 * Sun: copy gathered on the game thread (FPlanetAtmosphereViewExtension::BeginRenderViewFamily).
 	 */
 	FScreenPassTexture AddAtmospherePasses(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs,
-		TArray<FAtmosphereVisibleInstance>& Instances);
+		TArray<FAtmosphereVisibleInstance>& Instances,
+		const FAtmosphereSunLight& Sun);
 }

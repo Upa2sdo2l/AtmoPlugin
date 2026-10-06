@@ -82,6 +82,33 @@ namespace PlanetAtmosphere
 				static_cast<float>(Setup.ViewRect.Width()), static_cast<float>(Setup.ViewRect.Height()));
 		}
 
+		/**
+		 * Lighting inputs (Step 7). Illuminance in lux. Ambient is a fraction of the sun
+		 * (r.PlanetAtmosphere.CloudAmbientIntensity); without a sun, a neutral fallback keeps clouds visible.
+		 */
+		void FillLightingParameters(const FAtmosphereSunLight& Sun, FAtmosphereCloudRaymarchCS::FParameters& OutParameters)
+		{
+			constexpr float FallbackAmbientIlluminanceLux = 10.0f; // ~ the default Directional Light intensity
+			const float AmbientFraction = CVars::GetCloudAmbientIntensity();
+
+			if (Sun.bValid)
+			{
+				const FVector3f SunIlluminance(Sun.Illuminance.R, Sun.Illuminance.G, Sun.Illuminance.B);
+				OutParameters.SunDirection = FVector3f(Sun.DirectionToSun.GetSafeNormal());
+				OutParameters.SunIlluminance = SunIlluminance;
+				OutParameters.AmbientIlluminance = SunIlluminance * AmbientFraction;
+				OutParameters.bHasSun = 1;
+			}
+			else
+			{
+				OutParameters.SunDirection = FVector3f(0.0f, 0.0f, 1.0f);
+				OutParameters.SunIlluminance = FVector3f(0.0f, 0.0f, 0.0f);
+				OutParameters.AmbientIlluminance = FVector3f(FallbackAmbientIlluminanceLux * AmbientFraction);
+				OutParameters.bHasSun = 0;
+			}
+			OutParameters.LightSteps = CVars::GetLightSteps();
+		}
+
 		FVector4f ToAxis4f(const FVector3d& Axis)
 		{
 			return FVector4f(static_cast<float>(Axis.X), static_cast<float>(Axis.Y), static_cast<float>(Axis.Z), 0.0f);
@@ -161,7 +188,8 @@ namespace PlanetAtmosphere
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs,
-		TArray<FAtmosphereVisibleInstance>& Instances)
+		TArray<FAtmosphereVisibleInstance>& Instances,
+		const FAtmosphereSunLight& Sun)
 	{
 		FAtmospherePassSetup Setup;
 		if (!PrepareCommon(GraphBuilder, Inputs, Instances, Setup))
@@ -175,15 +203,15 @@ namespace PlanetAtmosphere
 		if (DebugMode == CVars::EDebugMode::AtmosphereBounds)
 		{
 			FAtmosphereBoundsDebugCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereBoundsDebugCS::FParameters>();
-			FillViewParameters(GraphBuilder, View, Setup, Parameters->View);
-			FillInstanceParameters(View, Instances, Parameters->Atmospheres);
+			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
+			FillInstanceParameters(View, Instances, Parameters->AtmosphereParams);
 			Parameters->DebugIntensity = CVars::GetDebugIntensity();
 
 			TShaderMapRef<FAtmosphereBoundsDebugCS> ComputeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
 				RDG_EVENT_NAME("PlanetAtmosphere.BoundsDebug %dx%d (%d atmospheres)",
-					Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->Atmospheres.NumAtmospheres),
+					Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->AtmosphereParams.NumAtmospheres),
 				ComputeShader,
 				Parameters,
 				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereBoundsDebugCS::ThreadGroupSize));
@@ -191,17 +219,18 @@ namespace PlanetAtmosphere
 		else
 		{
 			FAtmosphereCloudRaymarchCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudRaymarchCS::FParameters>();
-			FillViewParameters(GraphBuilder, View, Setup, Parameters->View);
-			FillInstanceParameters(View, Instances, Parameters->Atmospheres);
+			Parameters->View = View.ViewUniformBuffer;
+			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
+			FillInstanceParameters(View, Instances, Parameters->AtmosphereParams);
 			Parameters->DebugMode = static_cast<int32>(DebugMode);
 			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
-			Parameters->CloudAmbientIntensity = CVars::GetCloudAmbientIntensity();
+			FillLightingParameters(Sun, *Parameters);
 
 			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
 				RDG_EVENT_NAME("PlanetAtmosphere.CloudRaymarch %dx%d (%d atmospheres, mode %d)",
-					Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->Atmospheres.NumAtmospheres, Parameters->DebugMode),
+					Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->AtmosphereParams.NumAtmospheres, Parameters->DebugMode),
 				ComputeShader,
 				Parameters,
 				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCloudRaymarchCS::ThreadGroupSize));

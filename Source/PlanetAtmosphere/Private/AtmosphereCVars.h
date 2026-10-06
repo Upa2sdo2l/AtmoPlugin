@@ -33,6 +33,9 @@ namespace PlanetAtmosphere::CVars
 	/** r.PlanetAtmosphere.DebugPlanetSurface — draw a placeholder planet surface (for levels without terrain). */
 	bool ShouldDrawPlanetSurface();
 
-	/** r.PlanetAtmosphere.CloudAmbientIntensity — temporary ambient-only cloud lighting (Phase 1, until sun lighting). */
+	/** r.PlanetAtmosphere.CloudAmbientIntensity — ambient (sky) light on clouds as a fraction of the sun illuminance. */
 	float GetCloudAmbientIntensity();
+
+	/** r.PlanetAtmosphere.LightSteps — samples of the light march toward the sun, clamped to [1, 16]. */
+	int32 GetLightSteps();
 }

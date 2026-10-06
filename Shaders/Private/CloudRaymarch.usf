@@ -1,27 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-// Step 6 — basic cloud raymarch (r.PlanetAtmosphere.DebugMode 0 = Final Clouds, 2 = Density).
+// Cloud raymarch (r.PlanetAtmosphere.DebugMode 0 = Final Clouds, 2 = Density).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
 //      clipped by the scene depth and the planet surface;
 //   2. march RaymarchSteps uniform steps distributed over the segments by length;
 //   3. density comes ONLY from PA_SampleCloudDensity() (CloudDensity.ush, AD-1);
-//   4. Beer-Lambert transmittance, energy-conserving integration, ambient-only lighting (sun arrives in Step 7).
+//   4. Beer-Lambert transmittance, energy-conserving integration;
+//   5. lighting (Step 7, CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient.
 // Composited front-to-back across planets; the scene behind is attenuated by the final transmittance.
 
 #include "/Engine/Private/Common.ush"
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
+#include "/Plugin/PlanetAtmosphere/Private/CloudLighting.ush"
 
 int DebugMode;               // 0 = final clouds, 2 = density (optical depth heat map)
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
-float CloudAmbientIntensity; // temporary ambient-only lighting until Step 7
+
+// Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
+float3 SunDirection;         // unit, world axes, pointing TOWARD the sun
+float3 SunIlluminance;       // 0 when there is no sun
+float3 AmbientIlluminance;   // sky/ambient light on the clouds
+int bHasSun;
+int LightSteps;
+
+// Lighting inputs that are constant along one view ray.
+struct FPACloudLightingContext
+{
+	float3 SunDirection;
+	float3 SunIlluminance;
+	float3 AmbientIlluminance;
+	float Phase;          // PA_CloudPhase(dot(ray, sun))
+	bool bHasSun;
+	int LightSteps;
+};
 
 static const float PA_MIN_TRANSMITTANCE = 0.01;
 
 /** Marches one segment [TStart, TEnd] of the ray with NumSteps uniform steps. */
 void PA_MarchCloudSegment(
-	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray,
+	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray, FPACloudLightingContext Light,
 	float TStart, float TEnd, int NumSteps,
 	inout float3 Accum, inout float Transmittance, inout float OpticalDepth)
 {
@@ -37,18 +56,30 @@ void PA_MarchCloudSegment(
 		const float3 P = A.CameraRel + Ray.Dir * T;           // planet-relative, world axes
 		const float Altitude = length(P) - A.PlanetRadius;
 
-		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, T * Ray.FootprintPerUnitDistance);
+		const float Footprint = T * Ray.FootprintPerUnitDistance;
+		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, Footprint);
 		if (Density > 0.0)
 		{
 			const float Sigma = Density * A.CloudExtinction;
 			const float StepTransmittance = exp(-Sigma * Dt);
 
-			// Ambient-only lighting: slightly darker cloud bottoms. Energy-conserving: the scattered
-			// light of the step is Ambient * (1 - StepTransmittance) for single-scattering albedo 1.
+			// In-scattered radiance at this sample (single-scattering albedo 1).
+			float3 Radiance = 0.0;
+			if (Light.bHasSun)
+			{
+				const float Shadow = PA_PlanetShadow(P, Light.SunDirection, A.PlanetRadius);
+				if (Shadow > 0.0)
+				{
+					const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, Light.LightSteps);
+					Radiance += Light.SunIlluminance * (Light.Phase * SunTransmittance * Shadow);
+				}
+			}
 			const float HeightFraction = saturate(PA_CloudHeightFraction(Layer, Altitude));
-			const float Ambient = (0.55 + 0.45 * HeightFraction) * CloudAmbientIntensity;
+			const float Daylight = Light.bHasSun ? PA_DaylightFactor(P, Light.SunDirection) : 1.0;
+			Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
 
-			Accum += Transmittance * Ambient * (1.0 - StepTransmittance);
+			// Energy-conserving integration over the step: S * (1 - exp(-sigma dt)) / sigma * sigma.
+			Accum += Transmittance * Radiance * (1.0 - StepTransmittance);
 			Transmittance *= StepTransmittance;
 			OpticalDepth += Sigma * Dt;
 
@@ -78,6 +109,14 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	float3 Accum = 0.0;
 	float Transmittance = 1.0;
 	float OpticalDepth = 0.0;
+
+	FPACloudLightingContext Light;
+	Light.SunDirection = SunDirection;
+	Light.SunIlluminance = SunIlluminance;
+	Light.AmbientIlluminance = AmbientIlluminance;
+	Light.Phase = PA_CloudPhase(dot(Ray.Dir, SunDirection));
+	Light.bHasSun = bHasSun != 0;
+	Light.LightSteps = LightSteps;
 
 	for (int Index = 0; Index < NumAtmospheres && Index < PA_MAX_ATMOSPHERES; ++Index)
 	{
@@ -145,19 +184,26 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				Seg2Steps = TotalSteps;
 			}
 
-			PA_MarchCloudSegment(A, Layer, Ray, Seg1Start, Seg1End, Seg1Steps, Accum, Transmittance, OpticalDepth);
+			PA_MarchCloudSegment(A, Layer, Ray, Light, Seg1Start, Seg1End, Seg1Steps, Accum, Transmittance, OpticalDepth);
 			if (Transmittance >= PA_MIN_TRANSMITTANCE)
 			{
-				PA_MarchCloudSegment(A, Layer, Ray, Seg2Start, Seg2End, Seg2Steps, Accum, Transmittance, OpticalDepth);
+				PA_MarchCloudSegment(A, Layer, Ray, Light, Seg2Start, Seg2End, Seg2Steps, Accum, Transmittance, OpticalDepth);
 			}
 		}
 
 		// Debug placeholder surface (behind this planet's clouds). Opaque: hides everything farther away.
 		if (bSurfaceVisible && bDrawPlanetSurface != 0)
 		{
-			const float3 SurfaceNormal = normalize(A.CameraRel + Ray.Dir * SurfaceT);
-			const float Facing = saturate(dot(SurfaceNormal, -Ray.Dir));
-			Accum += Transmittance * float3(0.06, 0.08, 0.1) * (0.25 + 0.75 * Facing);
+			// Lambertian placeholder (dark ocean-like albedo), lit by the same sun and ambient as the clouds.
+			const float3 SurfaceP = A.CameraRel + Ray.Dir * SurfaceT;
+			const float3 SurfaceNormal = normalize(SurfaceP);
+			const float3 SurfaceAlbedo = float3(0.04, 0.06, 0.09);
+			float3 SurfaceRadiance = Light.AmbientIlluminance * (Light.bHasSun ? PA_DaylightFactor(SurfaceP, Light.SunDirection) : 1.0);
+			if (Light.bHasSun)
+			{
+				SurfaceRadiance += Light.SunIlluminance * saturate(dot(SurfaceNormal, Light.SunDirection));
+			}
+			Accum += Transmittance * SurfaceAlbedo / PA_PI * SurfaceRadiance;
 			Transmittance = 0.0;
 		}
 
@@ -175,6 +221,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	else
 	{
-		OutputTexture[Ray.Pixel] = float4(Ray.SceneColor.rgb * Transmittance + Accum, Ray.SceneColor.a);
+		// Scene color is pre-exposed; bring our absolute radiance into the same space.
+		OutputTexture[Ray.Pixel] = float4(Ray.SceneColor.rgb * Transmittance + Accum * View.PreExposure, Ray.SceneColor.a);
 	}
 }

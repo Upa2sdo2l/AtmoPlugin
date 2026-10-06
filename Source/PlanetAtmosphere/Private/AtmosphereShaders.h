@@ -6,6 +6,7 @@
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
 #include "RenderGraphResources.h"
+#include "SceneView.h"
 #include "PlanetAtmosphereTypes.h"
 
 /**
@@ -54,8 +55,8 @@ public:
 	static constexpr int32 ThreadGroupSize = 8;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, View)
-		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, Atmospheres)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, ViewParams)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
 		SHADER_PARAMETER(float, DebugIntensity)
 	END_SHADER_PARAMETER_STRUCT()
 };
@@ -74,10 +75,17 @@ public:
 	static constexpr int32 ThreadGroupSize = 8;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, View)
-		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, Atmospheres)
+		// Engine view uniform buffer: only View.PreExposure is used (scene color is pre-exposed).
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, ViewParams)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
 		SHADER_PARAMETER(int32, DebugMode)
 		SHADER_PARAMETER(int32, bDrawPlanetSurface)
-		SHADER_PARAMETER(float, CloudAmbientIntensity)
+		// Lighting (Step 7). Illuminance in lux; SunDirection points toward the sun (world axes).
+		SHADER_PARAMETER(FVector3f, SunDirection)
+		SHADER_PARAMETER(int32, bHasSun)
+		SHADER_PARAMETER(FVector3f, SunIlluminance)
+		SHADER_PARAMETER(int32, LightSteps)
+		SHADER_PARAMETER(FVector3f, AmbientIlluminance)
 	END_SHADER_PARAMETER_STRUCT()
 };
