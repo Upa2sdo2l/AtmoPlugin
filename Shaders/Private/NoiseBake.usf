@@ -1,0 +1,26 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Phase 2 / Step 10 — bakes one mip of a tileable 3D noise texture (run once per mip, once per RHI lifetime).
+// Mip m texel centers cover [0, PA_NOISE_TILE)^3; the value is PA_FbmPeriodic with the octaves that survive
+// a footprint of one mip-m texel (TexelSize), i.e. exactly what PA_Fbm would return for that pixel footprint.
+
+#define PA_NOISE_BAKE_PASS 1
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereNoise.ush"
+
+RWTexture3D<float> OutNoise;   // UAV of one mip
+int MipSize;                   // texels per side of this mip
+int Octaves;
+float TexelSize;               // PA_NOISE_TILE / MipSize, in noise units
+
+[numthreads(4, 4, 4)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (any(DispatchThreadId >= (uint)MipSize))
+	{
+		return;
+	}
+	const float3 P = ((float3)DispatchThreadId + 0.5) * TexelSize;
+	OutNoise[DispatchThreadId] = PA_FbmPeriodic(P, Octaves, TexelSize);
+}

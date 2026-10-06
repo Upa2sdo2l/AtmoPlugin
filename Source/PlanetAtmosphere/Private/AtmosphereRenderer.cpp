@@ -11,6 +11,8 @@
 #include "GlobalShader.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "AtmosphereStats.h"
+#include "AtmosphereNoiseTextures.h"
+#include "RHIStaticStates.h"
 
 // `stat gpu` -> "PlanetAtmosphere" (all plugin passes of a view are inside this scope).
 // Distinct identifier: the macros paste it into symbol names, and "PlanetAtmosphere" is also our namespace.
@@ -242,6 +244,13 @@ namespace PlanetAtmosphere
 		}
 		else
 		{
+			// Shared noise textures (baked on first use). Unavailable only after module shutdown -> draw nothing.
+			FPlanetAtmosphereNoiseTexturesRDG NoiseTextures;
+			if (!GetNoiseTextures().GetOrBake(GraphBuilder, GlobalShaderMap, NoiseTextures))
+			{
+				return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+			}
+
 			FAtmosphereCloudRaymarchCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudRaymarchCS::FParameters>();
 			Parameters->View = View.ViewUniformBuffer;
 			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
@@ -250,6 +259,10 @@ namespace PlanetAtmosphere
 			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
 			FillLightingParameters(Sun, *Parameters);
 			FillMarchParameters(*Parameters);
+			Parameters->BaseNoiseTexture = NoiseTextures.BaseShape;
+			Parameters->ErosionNoiseTexture = NoiseTextures.Erosion;
+			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
+			Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
 
 			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(

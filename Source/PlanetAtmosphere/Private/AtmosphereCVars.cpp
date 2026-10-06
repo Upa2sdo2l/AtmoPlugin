@@ -100,6 +100,16 @@ namespace
 		0.01f,
 		TEXT("The view ray stops when the remaining transmittance drops below this (early exit). Clamped to [0, 0.2]."),
 		ECVF_RenderThreadSafe);
+
+	// ---- Noise (Phase 2 / Step 10) ----
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereNoiseSource(
+		TEXT("r.PlanetAtmosphere.NoiseSource"),
+		1,
+		TEXT("Source of the cloud base-shape and erosion noise (the weather mask is always procedural).\n")
+		TEXT(" 0 = Procedural (Phase 1 noise, reference and fallback)\n")
+		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 R16F, baked once on the GPU"),
+		ECVF_RenderThreadSafe);
 }
 
 namespace PlanetAtmosphere::CVars
@@ -182,5 +192,12 @@ namespace PlanetAtmosphere::CVars
 	float GetMinTransmittance()
 	{
 		return FMath::Clamp(CVarPlanetAtmosphereMinTransmittance.GetValueOnAnyThread(false), 0.0f, 0.2f);
+	}
+
+	ENoiseSource GetNoiseSource()
+	{
+		return CVarPlanetAtmosphereNoiseSource.GetValueOnAnyThread(false) == 0
+			? ENoiseSource::Procedural
+			: ENoiseSource::BakedTextures;
 	}
 }
