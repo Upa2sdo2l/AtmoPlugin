@@ -27,6 +27,7 @@ PlanetAtmosphere/
     ├── PlanetAtmosphereShaderData.ush       shared view/atmosphere parameters, per-pixel ray setup
     ├── PlanetAtmosphereNoise.ush            noise primitives (Phase 1: procedural)
     ├── CloudDensity.ush                     SINGLE SOURCE OF TRUTH for cloud density (see below)
+    ├── CloudLighting.ush                    phase function, light march toward the sun, planet shadow
     ├── CloudRaymarch.usf                    cloud raymarch (Final Clouds / Density views)
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
@@ -52,7 +53,14 @@ The actor's scale is ignored — radii are absolute.
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
-| `r.PlanetAtmosphere.CloudAmbientIntensity` | 1.0 | Temporary ambient-only cloud lighting (Phase 1) |
+| `r.PlanetAtmosphere.CloudAmbientIntensity` | 0.1 | Ambient (sky) light on clouds as a fraction of the sun; fades out at night |
+| `r.PlanetAtmosphere.LightSteps` | 6 | Light-march samples toward the sun (cloud self-shadowing) |
+
+## Sun
+
+The clouds are lit by one Directional Light per level: the first visible one with **Atmosphere Sun Light**
+enabled and index 0, otherwise the first visible Directional Light. Its direction, color, temperature and
+intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 
 Per-frame diagnostics: `log LogPlanetAtmosphere Verbose`.
 
@@ -64,15 +72,15 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 1 — Step 6: cloud density + basic raymarch**
-- Analytical density: height profile → weather/coverage mask on the sphere → base shape → erosion; evaluated in the planet-local frame
-- Pixel-footprint LOD: noise octaves smaller than a pixel fade out (no sparkle from orbit / far away)
-- Raymarch over up to two cloud-shell segments, uniform steps (`Raymarch Steps`), Beer–Lambert, ambient-only lighting
-- Component: `Cloud Shape Scale` (m), `Cloud Erosion`; `Cloud Coverage` / `Cloud Density` now drive the clouds
+**Phase 1 — Step 7: sun lighting**
+- Sun from the level's Directional Light (game thread → render thread copy each frame)
+- Two-lobe Henyey–Greenstein phase (forward glow toward the sun), light march toward the sun (self-shadowing,
+  density from `PA_SampleCloudDensity()` only), soft planet shadow / terminator, ambient fading at night
+- Output pre-exposed (`View.PreExposure`) to match the scene; placeholder planet surface is sun-lit too
 
-Done before: Step 5 — first RDG pass (BeforeDOF hook, Atmosphere Bounds), precision-safe camera-relative math.
+Done before: Step 6 — analytical density + basic raymarch; Step 5 — first RDG pass, precision-safe math.
 
-Next: Step 7 — sun lighting (Directional Light), phase function, light march, planet shadow.
+Next: Step 8 — Density/Height/Ray Steps debug modes, GPU profiling, Phase 1 final test.
 
 ## Dependencies
 

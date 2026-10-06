@@ -42,8 +42,15 @@ namespace
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudAmbientIntensity(
 		TEXT("r.PlanetAtmosphere.CloudAmbientIntensity"),
-		1.0f,
-		TEXT("Ambient light on the clouds (temporary Phase 1 lighting until sun lighting arrives)."),
+		0.1f,
+		TEXT("Ambient (sky) light on the clouds as a fraction of the sun illuminance; fades out on the night side.\n")
+		TEXT("Without a Directional Light a neutral ambient of 10 lux x this value is used."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightSteps(
+		TEXT("r.PlanetAtmosphere.LightSteps"),
+		6,
+		TEXT("Samples of the light march toward the sun per cloud sample (self-shadowing). Clamped to [1, 16]."),
 		ECVF_RenderThreadSafe);
 }
 
@@ -82,5 +89,10 @@ namespace PlanetAtmosphere::CVars
 	float GetCloudAmbientIntensity()
 	{
 		return FMath::Max(0.0f, CVarPlanetAtmosphereCloudAmbientIntensity.GetValueOnAnyThread(false));
+	}
+
+	int32 GetLightSteps()
+	{
+		return FMath::Clamp(CVarPlanetAtmosphereLightSteps.GetValueOnAnyThread(false), 1, 16);
 	}
 }

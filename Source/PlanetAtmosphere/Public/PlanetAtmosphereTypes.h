@@ -49,6 +49,22 @@ struct FPlanetAtmosphereRadii
 };
 
 /**
+ * The sun used to light all atmospheres of one world (Step 7: a single sun per level).
+ * Gathered on the game thread from a Directional Light, copied to the render thread by value.
+ */
+struct FAtmosphereSunLight
+{
+	/** Unit vector, world space, pointing TOWARD the sun (= -ULightComponent::GetDirection()). */
+	FVector3d DirectionToSun = FVector3d::ZAxisVector;
+
+	/** Illuminance in lux, including light color and temperature (ULightComponent::GetColoredLightBrightness()). */
+	FLinearColor Illuminance = FLinearColor::Black;
+
+	/** False if the world has no usable Directional Light. */
+	bool bValid = false;
+};
+
+/**
  * POD snapshot of one visible atmosphere for one view, produced on the render side by
  * FAtmosphereProxyRegistry::GatherVisibleInstances(). Contains copies only (no proxy pointers),
  * so it can safely outlive the scene proxy (e.g. be captured into future RDG passes).
