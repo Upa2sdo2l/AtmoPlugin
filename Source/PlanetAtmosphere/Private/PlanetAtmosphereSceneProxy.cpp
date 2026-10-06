@@ -60,16 +60,16 @@ void FPlanetAtmosphereSceneProxy::DestroyRenderThreadResources()
 
 FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() const
 {
-	const FMatrix& LocalToWorld = GetLocalToWorld();
+	const FMatrix& PrimitiveLocalToWorld = GetLocalToWorld();
 
 	FAtmosphereVisibleInstance Instance;
-	Instance.PlanetCenterWorld = LocalToWorld.GetOrigin();
+	Instance.PlanetCenterWorld = PrimitiveLocalToWorld.GetOrigin();
 
 	// Rows 0..2 of UE's (row-vector) matrix are the local X/Y/Z axes in world space, scaled.
 	// Normalize to remove the actor scale (radii are absolute, see UPlanetAtmosphereComponent).
-	Instance.PlanetAxisX = FVector3d(LocalToWorld.M[0][0], LocalToWorld.M[0][1], LocalToWorld.M[0][2]).GetSafeNormal();
-	Instance.PlanetAxisY = FVector3d(LocalToWorld.M[1][0], LocalToWorld.M[1][1], LocalToWorld.M[1][2]).GetSafeNormal();
-	Instance.PlanetAxisZ = FVector3d(LocalToWorld.M[2][0], LocalToWorld.M[2][1], LocalToWorld.M[2][2]).GetSafeNormal();
+	Instance.PlanetAxisX = FVector3d(PrimitiveLocalToWorld.M[0][0], PrimitiveLocalToWorld.M[0][1], PrimitiveLocalToWorld.M[0][2]).GetSafeNormal();
+	Instance.PlanetAxisY = FVector3d(PrimitiveLocalToWorld.M[1][0], PrimitiveLocalToWorld.M[1][1], PrimitiveLocalToWorld.M[1][2]).GetSafeNormal();
+	Instance.PlanetAxisZ = FVector3d(PrimitiveLocalToWorld.M[2][0], PrimitiveLocalToWorld.M[2][1], PrimitiveLocalToWorld.M[2][2]).GetSafeNormal();
 
 	Instance.RadiiUU = RadiiUU;
 	Instance.CloudCoverage = CloudCoverage;
