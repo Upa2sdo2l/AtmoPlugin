@@ -9,6 +9,15 @@
 #include "SceneTexturesConfig.h"
 #include "RenderGraphUtils.h"
 #include "GlobalShader.h"
+#include "ProfilingDebugging/RealtimeGPUProfiler.h"
+#include "AtmosphereStats.h"
+
+// `stat gpu` -> "PlanetAtmosphere" (all plugin passes of a view are inside this scope).
+// Distinct identifier: the macros paste it into symbol names, and "PlanetAtmosphere" is also our namespace.
+DECLARE_GPU_STAT_NAMED(PlanetAtmosphereGPU, TEXT("PlanetAtmosphere"));
+
+// `stat PlanetAtmosphere` (render thread CPU cost of building the passes).
+DECLARE_CYCLE_STAT(TEXT("Setup Passes (RT)"), STAT_PlanetAtmosphere_SetupPasses, STATGROUP_PlanetAtmosphere);
 
 namespace PlanetAtmosphere
 {
@@ -191,11 +200,15 @@ namespace PlanetAtmosphere
 		TArray<FAtmosphereVisibleInstance>& Instances,
 		const FAtmosphereSunLight& Sun)
 	{
+		SCOPE_CYCLE_COUNTER(STAT_PlanetAtmosphere_SetupPasses);
+
 		FAtmospherePassSetup Setup;
 		if (!PrepareCommon(GraphBuilder, Inputs, Instances, Setup))
 		{
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 		}
+
+		RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
 
 		const CVars::EDebugMode DebugMode = CVars::GetDebugMode();
 		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());

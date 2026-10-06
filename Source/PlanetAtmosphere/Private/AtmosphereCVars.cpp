@@ -18,7 +18,9 @@ namespace
 		TEXT("PlanetAtmosphere view mode.\n")
 		TEXT(" 0 = Final Clouds (default)\n")
 		TEXT(" 1 = Atmosphere Bounds (planet sphere, atmosphere shell, cloud shell)\n")
-		TEXT(" 2 = Density (optical depth of the clouds along the view ray)"),
+		TEXT(" 2 = Density (optical depth of the clouds along the view ray)\n")
+		TEXT(" 3 = Cloud Height (where inside the cloud layer the visible clouds are: blue = bottom, red = top)\n")
+		TEXT(" 4 = Ray Steps (density-function calls per pixel incl. light march; white = 64 x (1 + LightSteps))"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -67,6 +69,8 @@ namespace PlanetAtmosphere::CVars
 		{
 		case 1:  return EDebugMode::AtmosphereBounds;
 		case 2:  return EDebugMode::Density;
+		case 3:  return EDebugMode::CloudHeight;
+		case 4:  return EDebugMode::RaySteps;
 		default: return EDebugMode::FinalClouds;
 		}
 	}

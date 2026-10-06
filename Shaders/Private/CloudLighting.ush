@@ -32,7 +32,8 @@ float PA_CloudPhase(float CosTheta)
 float PA_CloudSunTransmittance(
 	FPAAtmosphere A, FPACloudLayer Layer,
 	float3 P, float Altitude, float3 SunDirection,
-	float BaseFootprint, int NumSteps)
+	float BaseFootprint, int NumSteps,
+	inout uint NumDensitySamples)   // incremented per density call (Ray Steps debug view)
 {
 	// Exit of the cloud-top sphere along the sun direction (precision-safe form, sample altitude known).
 	const float2 TopHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudTop);
@@ -53,6 +54,7 @@ float PA_CloudSunTransmittance(
 
 		// LOD: the light march does not need detail finer than its own step.
 		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, SampleP), SampleAltitude, max(BaseFootprint, Ds));
+		NumDensitySamples += 1u;
 		OpticalDepth += Density * A.CloudExtinction * Ds;
 	}
 	return exp(-OpticalDepth);
