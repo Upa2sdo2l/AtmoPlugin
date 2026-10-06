@@ -7,6 +7,13 @@
 /** Plugin log category. Per-frame output uses Verbose: `log LogPlanetAtmosphere Verbose`. */
 PLANETATMOSPHERE_API DECLARE_LOG_CATEGORY_EXTERN(LogPlanetAtmosphere, Log, All);
 
+/**
+ * Maximum number of atmospheres rendered per view (closest ones win).
+ * Must match PA_MAX_ATMOSPHERES in Shaders/Private/PlanetAtmosphereCommon.ush.
+ * A #define (not constexpr) because it is used inside SHADER_PARAMETER_ARRAY declarations.
+ */
+#define PLANET_ATMOSPHERE_MAX_VISIBLE 16
+
 namespace PlanetAtmosphere
 {
 	/**

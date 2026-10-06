@@ -1,0 +1,128 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Step 5 — "Atmosphere Bounds" debug visualization.
+// For every visible atmosphere (sorted near -> far on the CPU) draws, analytically:
+//   - the atmosphere shell [AtmosphereBottom, AtmosphereTop]  (blue haze, thicker along longer paths)
+//   - the cloud shell      [CloudBottom, CloudTop]            (white haze)
+//   - the planet sphere surface                                (shaded opaque-ish green)
+// Everything is clipped by the scene depth, so scene geometry in front correctly occludes it.
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereCommon.ush"
+
+Texture2D SceneColorTexture;
+Texture2D SceneDepthTexture;
+RWTexture2D<float4> OutputTexture;
+
+float4x4 ClipToTranslatedWorld;      // inverse translated view-projection (includes TAA jitter)
+float3 CameraTranslatedWorld;        // camera position in translated world space (close to origin)
+float4 ViewRectMinAndSize;           // xy = view rect min (pixels), zw = view rect size
+int NumAtmospheres;
+float DebugIntensity;
+
+// Per-atmosphere data (all values in cm, all differences computed in double on the CPU):
+float4 AtmosphereCameraRelAndPlanetRadius[PA_MAX_ATMOSPHERES]; // xyz = camera - planet center, w = planet radius
+float4 AtmosphereAltitudes0[PA_MAX_ATMOSPHERES];               // x = camera altitude (|camera - center| - planet radius),
+                                                               // y = atmosphere bottom, z = atmosphere top, w = cloud bottom (altitudes above planet radius)
+float4 AtmosphereAltitudes1[PA_MAX_ATMOSPHERES];               // x = cloud top altitude, yzw = reserved
+
+float3 ClipToTranslatedWorldPosition(float2 NDC, float DeviceZ)
+{
+	const float4 P = mul(float4(NDC, DeviceZ, 1.0), ClipToTranslatedWorld);
+	return P.xyz / P.w;
+}
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint2 LocalPixel = DispatchThreadId.xy;
+	const float2 RectSize = ViewRectMinAndSize.zw;
+	if (LocalPixel.x >= (uint)RectSize.x || LocalPixel.y >= (uint)RectSize.y)
+	{
+		return;
+	}
+	const uint2 Pixel = (uint2)ViewRectMinAndSize.xy + LocalPixel;
+
+	const float4 SceneColor = SceneColorTexture.Load(int3(Pixel, 0));
+	const float DeviceZ = SceneDepthTexture.Load(int3(Pixel, 0)).r;
+
+	const float2 UV = (float2(LocalPixel) + 0.5) / RectSize;
+	const float2 NDC = float2(UV.x * 2.0 - 1.0, 1.0 - UV.y * 2.0);
+
+	// Ray direction from a point between the camera and infinity (reversed-Z: 0 = infinity).
+	const float3 RayDir = normalize(ClipToTranslatedWorldPosition(NDC, 0.5) - CameraTranslatedWorld);
+
+	// Distance to the opaque scene along the ray; sky / empty space (DeviceZ == 0) is infinitely far.
+	float SceneDistance = PA_INFINITY;
+	if (DeviceZ > 0.0)
+	{
+		SceneDistance = length(ClipToTranslatedWorldPosition(NDC, DeviceZ) - CameraTranslatedWorld);
+	}
+
+	const float3 AtmosphereColor = float3(0.25, 0.5, 1.0);
+	const float3 CloudColor = float3(1.0, 1.0, 1.0);
+	const float3 SurfaceColor = float3(0.15, 0.4, 0.2);
+
+	float3 Accum = 0.0;
+	float Transmittance = 1.0;
+
+	for (int Index = 0; Index < NumAtmospheres && Index < PA_MAX_ATMOSPHERES; ++Index)
+	{
+		const float3 O = AtmosphereCameraRelAndPlanetRadius[Index].xyz;
+		const float PlanetRadius = AtmosphereCameraRelAndPlanetRadius[Index].w;
+		const float CameraAltitude = AtmosphereAltitudes0[Index].x;
+		const float AtmosphereBottom = AtmosphereAltitudes0[Index].y;
+		const float AtmosphereTop = AtmosphereAltitudes0[Index].z;
+		const float CloudBottom = AtmosphereAltitudes0[Index].w;
+		const float CloudTop = AtmosphereAltitudes1[Index].x;
+
+		// Quick reject: the ray misses the whole atmosphere.
+		const float2 TopHit = PA_RaySphereIntersect(O, RayDir, PlanetRadius, CameraAltitude, AtmosphereTop);
+		if (TopHit.x > TopHit.y || TopHit.y <= 0.0)
+		{
+			continue;
+		}
+
+		// The ray ends at the scene geometry or at the planet surface, whichever is closer.
+		float TMax = SceneDistance;
+		bool bSurfaceVisible = false;
+		float SurfaceT = 0.0;
+		const float2 PlanetHit = PA_RaySphereIntersect(O, RayDir, PlanetRadius, CameraAltitude, 0.0);
+		if (PlanetHit.x <= PlanetHit.y && PlanetHit.y > 0.0)
+		{
+			SurfaceT = max(PlanetHit.x, 0.0);
+			if (SurfaceT < TMax)
+			{
+				TMax = SurfaceT;
+				bSurfaceVisible = true;
+			}
+		}
+
+		const float AtmosphereThickness = max(AtmosphereTop - AtmosphereBottom, 1.0);
+		const float CloudThickness = max(CloudTop - CloudBottom, 1.0);
+
+		const float AtmosphereLength = PA_LengthInsideShell(O, RayDir, PlanetRadius, CameraAltitude, AtmosphereBottom, AtmosphereTop, TMax);
+		const float CloudLength = PA_LengthInsideShell(O, RayDir, PlanetRadius, CameraAltitude, CloudBottom, CloudTop, TMax);
+
+		// Opacity grows with the path length measured in shell thicknesses (limb looks denser).
+		const float AtmosphereAlpha = 0.45 * (1.0 - exp(-0.5 * AtmosphereLength / AtmosphereThickness));
+		const float CloudAlpha = 0.65 * (1.0 - exp(-0.5 * CloudLength / CloudThickness));
+
+		PA_CompositeFrontToBack(Accum, Transmittance, AtmosphereColor, AtmosphereAlpha);
+		PA_CompositeFrontToBack(Accum, Transmittance, CloudColor, CloudAlpha);
+
+		if (bSurfaceVisible)
+		{
+			const float3 SurfaceNormal = normalize(O + RayDir * SurfaceT);
+			const float Facing = saturate(dot(SurfaceNormal, -RayDir));
+			PA_CompositeFrontToBack(Accum, Transmittance, SurfaceColor * (0.25 + 0.75 * Facing), 0.9);
+		}
+
+		if (Transmittance < 0.001)
+		{
+			break;
+		}
+	}
+
+	OutputTexture[Pixel] = float4(SceneColor.rgb * Transmittance + Accum * DebugIntensity, SceneColor.a);
+}

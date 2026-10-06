@@ -2,7 +2,11 @@
 
 #include "PlanetAtmosphereViewExtension.h"
 #include "AtmosphereProxyRegistry.h"
+#include "AtmosphereRenderer.h"
+#include "AtmosphereCVars.h"
 #include "PlanetAtmosphereTypes.h"
+#include "PostProcess/PostProcessMaterialInputs.h"
+#include "ScreenPass.h"
 #include "SceneView.h"
 #include "Engine/World.h"
 #include <atomic>
@@ -32,11 +36,18 @@ FPlanetAtmosphereViewExtension::~FPlanetAtmosphereViewExtension()
 	UE_LOG(LogPlanetAtmosphere, Log, TEXT("PlanetAtmosphereViewExtension: Destroyed (live: %d)"), Live);
 }
 
-void FPlanetAtmosphereViewExtension::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
+void FPlanetAtmosphereViewExtension::SubscribeToPostProcessingPass(
+	EPostProcessingPass Pass,
+	const FSceneView& InView,
+	FPostProcessingPassDelegateArray& InOutPassCallbacks,
+	bool bIsPassEnabled)
 {
-	check(IsInRenderingThread());
+	if (Pass != EPostProcessingPass::BeforeDOF)
+	{
+		return;
+	}
 
-	if (!Registry.IsValid())
+	if (!Registry.IsValid() || !PlanetAtmosphere::CVars::IsEnabled() || PlanetAtmosphere::CVars::GetDebugMode() == 0)
 	{
 		return;
 	}
@@ -47,10 +58,27 @@ void FPlanetAtmosphereViewExtension::PreRenderView_RenderThread(FRDGBuilder& Gra
 		return;
 	}
 
+	if (!bIsPassEnabled)
+	{
+		UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("ViewExtension: BeforeDOF pass reported as disabled for this view, not subscribing"));
+		return;
+	}
+
+	// CreateRaw is safe: the view family holds a strong reference to this extension while the frame renders.
+	InOutPassCallbacks.Add(FPostProcessingPassDelegate::CreateRaw(this, &FPlanetAtmosphereViewExtension::PostProcessBeforeDOF_RenderThread));
+}
+
+FScreenPassTexture FPlanetAtmosphereViewExtension::PostProcessBeforeDOF_RenderThread(
+	FRDGBuilder& GraphBuilder,
+	const FSceneView& View,
+	const FPostProcessMaterialInputs& Inputs)
+{
 	TArray<FAtmosphereVisibleInstance> VisibleInstances;
-	const int32 RegisteredCount = Registry->GatherVisibleInstances(InView, VisibleInstances);
+	const int32 RegisteredCount = Registry->GatherVisibleInstances(View, VisibleInstances);
 
 	// Per-frame diagnostics: enable with console command `log LogPlanetAtmosphere Verbose`.
 	UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("ViewExtension: %d of %d atmosphere(s) pass plugin frustum culling"),
 		VisibleInstances.Num(), RegisteredCount);
+
+	return PlanetAtmosphere::AddAtmosphereBoundsDebugPass(GraphBuilder, View, Inputs, VisibleInstances);
 }

@@ -1,0 +1,79 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Shared helpers for PlanetAtmosphere shaders.
+//
+// Coordinate convention: all ray / sphere math is done in PLANET-RELATIVE space
+// (origin at the planet center, Unreal Units = cm). The camera position relative to the
+// planet is computed on the CPU in double precision and uploaded as float, so shaders
+// never subtract huge world-space coordinates.
+//
+// Precision: at Earth scale (|O| ~ 6.4e8 cm) a float position has ~64 cm granularity, so |O| - R
+// cannot be recovered in the shader. Every sphere is therefore described as
+//   R = PlanetRadius + Offset          (Offset = altitude of the sphere, computed in double on the CPU)
+// and the camera altitude CameraAltitude = |O| - PlanetRadius is also computed in double.
+// Then |O| - R = CameraAltitude - Offset is a difference of small numbers and stays exact.
+
+// Must match PLANET_ATMOSPHERE_MAX_VISIBLE in PlanetAtmosphereTypes.h.
+#define PA_MAX_ATMOSPHERES 16
+
+#define PA_INFINITY 1e30
+
+/**
+ * Ray / sphere intersection, sphere centered at the origin with radius PlanetRadius + Offset.
+ * Ray: P(t) = O + t * D, D must be normalized. CameraAltitude = |O| - PlanetRadius (from the CPU, double).
+ * Returns (tNear, tFar). A miss is reported as tNear > tFar.
+ *
+ * Numerically stable form (Ray Tracing Gems, ch. 7 "Precision Improvements for Ray/Sphere Intersection"):
+ *  - discriminant computed as (R - |f|)(R + |f|), f = O - (O.D) D, instead of b^2 - c;
+ *  - c = |O|^2 - R^2 computed as (CameraAltitude - Offset)(2 PlanetRadius + CameraAltitude + Offset);
+ *  - roots computed as q and c/q, so the near root never comes from subtracting nearly equal numbers.
+ */
+float2 PA_RaySphereIntersect(float3 O, float3 D, float PlanetRadius, float CameraAltitude, float Offset)
+{
+	const float R = PlanetRadius + Offset;
+	const float B = dot(O, D);
+	const float3 F = O - B * D;
+	const float FLen = length(F);
+	const float Disc = (R - FLen) * (R + FLen);
+	if (Disc < 0.0)
+	{
+		return float2(1.0, -1.0);
+	}
+
+	const float C = (CameraAltitude - Offset) * (2.0 * PlanetRadius + CameraAltitude + Offset);
+	const float SqrtDisc = sqrt(Disc);
+	const float Q = -B - (B >= 0.0 ? SqrtDisc : -SqrtDisc);
+
+	// Roots of t^2 + 2Bt + C = 0 are Q and C/Q.
+	const float T0 = Q;
+	const float T1 = (abs(Q) > 0.0) ? (C / Q) : -B;
+	return float2(min(T0, T1), max(T0, T1));
+}
+
+/** Length of the part of the ray inside the sphere (PlanetRadius + Offset), clipped to [0, TMax]. */
+float PA_LengthInsideSphere(float3 O, float3 D, float PlanetRadius, float CameraAltitude, float Offset, float TMax)
+{
+	const float2 Hit = PA_RaySphereIntersect(O, D, PlanetRadius, CameraAltitude, Offset);
+	if (Hit.x > Hit.y)
+	{
+		return 0.0;
+	}
+	return max(0.0, min(Hit.y, TMax) - max(Hit.x, 0.0));
+}
+
+/** Length of the part of the ray inside the shell [PlanetRadius + InnerOffset, PlanetRadius + OuterOffset], clipped to [0, TMax]. */
+float PA_LengthInsideShell(float3 O, float3 D, float PlanetRadius, float CameraAltitude, float InnerOffset, float OuterOffset, float TMax)
+{
+	return max(0.0,
+		PA_LengthInsideSphere(O, D, PlanetRadius, CameraAltitude, OuterOffset, TMax) -
+		PA_LengthInsideSphere(O, D, PlanetRadius, CameraAltitude, InnerOffset, TMax));
+}
+
+/** Front-to-back compositing of a layer with premultiplied contribution Color * Alpha. */
+void PA_CompositeFrontToBack(inout float3 Accum, inout float Transmittance, float3 Color, float Alpha)
+{
+	Accum += Transmittance * Alpha * Color;
+	Transmittance *= (1.0 - Alpha);
+}
