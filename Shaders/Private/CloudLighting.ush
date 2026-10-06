@@ -13,6 +13,10 @@
 
 static const float PA_PI = 3.14159265;
 
+// Light march early exit (Step 9): beyond this optical depth the sun is fully blocked for practical purposes
+// (exp(-7) ~ 0.0009), further samples cannot change the result visibly.
+static const float PA_LIGHT_MARCH_MAX_OPTICAL_DEPTH = 7.0;
+
 float PA_HenyeyGreenstein(float CosTheta, float G)
 {
 	const float G2 = G * G;
@@ -56,6 +60,10 @@ float PA_CloudSunTransmittance(
 		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, SampleP), SampleAltitude, max(BaseFootprint, Ds));
 		NumDensitySamples += 1u;
 		OpticalDepth += Density * A.CloudExtinction * Ds;
+		if (OpticalDepth > PA_LIGHT_MARCH_MAX_OPTICAL_DEPTH)
+		{
+			break;
+		}
 	}
 	return exp(-OpticalDepth);
 }

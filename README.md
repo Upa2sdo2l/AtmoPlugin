@@ -29,6 +29,7 @@ PlanetAtmosphere/
     ├── PlanetAtmosphereNoise.ush            noise primitives (Phase 1: procedural)
     ├── CloudDensity.ush                     SINGLE SOURCE OF TRUTH for cloud density (see below)
     ├── CloudLighting.ush                    phase function, light march toward the sun, planet shadow
+    ├── RaymarchSchedule.ush                 where the samples go along a ray: uniform / camera-centered steps, jitter
     ├── CloudRaymarch.usf                    cloud raymarch (Final Clouds + Density / Cloud Height / Ray Steps views)
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
@@ -56,6 +57,12 @@ The actor's scale is ignored — radii are absolute.
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
 | `r.PlanetAtmosphere.CloudAmbientIntensity` | 0.1 | Ambient (sky) light on clouds as a fraction of the sun; fades out at night |
 | `r.PlanetAtmosphere.LightSteps` | 6 | Light-march samples toward the sun (cloud self-shadowing) |
+| `r.PlanetAtmosphere.StepDistribution` | 1 | 0 = uniform steps (Phase 1), 1 = camera-centered: small near the camera, larger far away |
+| `r.PlanetAtmosphere.StepNearDistance` | 1.0 | Camera-centered steps grow with (distance + this × cloud layer thickness) |
+| `r.PlanetAtmosphere.StepRatioMax` | 4 | Camera-centered: max ratio last step / first step of one ray (protects far clouds); ≤ 1 = no cap |
+| `r.PlanetAtmosphere.Jitter` | 2 | 0 = off (banding), 1 = static per-pixel pattern, 2 = animated per frame (averaged by TSR while still) |
+| `r.PlanetAtmosphere.EmptySpaceSkip` | 0 | Coarse probes over N steps in clear air (2..8); off by default — loses thin clouds |
+| `r.PlanetAtmosphere.MinTransmittance` | 0.01 | The view ray stops below this transmittance |
 
 ## Sun
 
@@ -71,7 +78,7 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 | 1 | Atmosphere Bounds: planet sphere (green), atmosphere shell (blue), cloud shell (white) |
 | 2 | Density: optical depth along the view ray (black → red → yellow → white) |
 | 3 | Cloud Height: where in the layer the visible clouds are (blue = bottom, green = middle, red = top) |
-| 4 | Ray Steps: density-function calls per pixel incl. light march — the cost map (white = 64 × (1 + LightSteps)) |
+| 4 | Ray Steps: density-function calls per pixel incl. light march and empty-space probes — the cost map (white = 64 × (1 + LightSteps)) |
 
 - GPU: `stat gpu` → **PlanetAtmosphere** (all plugin passes of a view); `ProfileGPU` shows the individual passes.
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
@@ -85,15 +92,19 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 1 — Step 8: debug views, profiling, Phase 1 final test**
-- Cloud Height and Ray Steps debug views (same march, same density calls as the final image)
-- GPU stat `PlanetAtmosphere`, CPU stat group `PlanetAtmosphere`
+**Phase 2 — Step 9: sample distribution, jitter, early exit**
+- Camera-centered step distribution (steps grow with distance, capped per ray), uniform kept as an option
+- Per-pixel interleaved-gradient-noise jitter inside each step, animated per frame
+- Early exit: light march stops when the sun is blocked; no light march for samples that cannot change the pixel;
+  configurable minimum transmittance of the view ray
+- Optional empty-space skipping (off by default)
 
-Phase 1 so far: plugin + actor/component/world subsystem, multi-planet registry with frustum culling,
+Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry with frustum culling,
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
-analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow.
+analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Phase 2 — variable stepping, jitter, early exit, density optimization (baked 3D noise).
+Next: Step 10 — baked 3D noise textures (density optimization), Step 11 — screen-space LOD.
+Then Phase 2.5 — atmospheric scattering (sky, limb glow, aerial perspective).
 
 ## Dependencies
 

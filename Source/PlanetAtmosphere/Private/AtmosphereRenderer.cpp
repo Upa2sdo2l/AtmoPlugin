@@ -118,6 +118,17 @@ namespace PlanetAtmosphere
 			OutParameters.LightSteps = CVars::GetLightSteps();
 		}
 
+		/** Sample distribution, jitter and early exit of the cloud raymarch (Phase 2 / Step 9). */
+		void FillMarchParameters(FAtmosphereCloudRaymarchCS::FParameters& OutParameters)
+		{
+			OutParameters.StepDistribution = static_cast<int32>(CVars::GetStepDistribution());
+			OutParameters.StepNearDistanceScale = CVars::GetStepNearDistance();
+			OutParameters.StepRatioMax = CVars::GetStepRatioMax();
+			OutParameters.JitterMode = static_cast<int32>(CVars::GetJitterMode());
+			OutParameters.EmptySpaceSkipSpan = CVars::GetEmptySpaceSkipSpan();
+			OutParameters.MinTransmittance = CVars::GetMinTransmittance();
+		}
+
 		FVector4f ToAxis4f(const FVector3d& Axis)
 		{
 			return FVector4f(static_cast<float>(Axis.X), static_cast<float>(Axis.Y), static_cast<float>(Axis.Z), 0.0f);
@@ -238,6 +249,7 @@ namespace PlanetAtmosphere
 			Parameters->DebugMode = static_cast<int32>(DebugMode);
 			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
 			FillLightingParameters(Sun, *Parameters);
+			FillMarchParameters(*Parameters);
 
 			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(
