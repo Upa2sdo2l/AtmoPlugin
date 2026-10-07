@@ -16,7 +16,8 @@
 //      haze (aerial perspective), the part behind is seen through them; then the placeholder surface.
 //   Step 15 cloud lighting with the atmosphere on: sunlight through the atmosphere (transmittance LUT, planet shadow =
 //   the atmosphere's horizon) and sky ambient = Psi_ms (MS LUT) x CloudSkyAmbientScale.
-// Composited front-to-back across planets; the scene behind is attenuated by the final transmittance.
+// Composited front-to-back across planets; the scene behind is attenuated by the final transmittance (applied to the scene
+// color by the composite pass, AtmosphereComposite.usf, since Step 17).
 // Transmittance = scalar part (clouds, surface) x color part (atmospheres of the planets already composited).
 // Debug views reuse exactly the same march (same density calls), they only change what is written out.
 
@@ -25,6 +26,10 @@
 #include "/Plugin/PlanetAtmosphere/Private/CloudLighting.ush"
 #include "/Plugin/PlanetAtmosphere/Private/RaymarchSchedule.ush"
 #include "/Plugin/PlanetAtmosphere/Private/AtmosphereScattering.ush"
+
+// Outputs (Step 17), same pixel coordinates as the scene textures. Applied by AtmosphereComposite.usf.
+RWTexture2D<float4> OutLuminance;      // rgb = pre-exposed luminance added in front of the scene
+RWTexture2D<float4> OutTransmittance;  // rgb = transmittance applied to the scene color
 
 int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
@@ -438,32 +443,41 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		}
 	}
 
-	const float3 DarkenedScene = Ray.SceneColor.rgb * 0.15;
+	// Step 17: the scene color is not read here. Every mode is written as luminance + transmittance, and
+	// AtmosphereComposite.usf produces  final = SceneColor x Transmittance + Luminance.
+	// Luminance is pre-exposed (x View.PreExposure) like the scene color. Alpha channels: reserved (Phase 3).
+	const float DebugSceneScale = 0.15;   // darkened scene under the debug views 2-4
 	const float CloudOpacity = 1.0 - exp(-State.OpticalDepth);
-	float3 Result;
+	float3 Luminance;
+	float3 Transmittance;
 	if (DebugMode == 2)
 	{
 		// Density: optical depth of the clouds along the ray as a heat map.
-		Result = DarkenedScene + PA_HeatColor(CloudOpacity);
+		Transmittance = DebugSceneScale;
+		Luminance = PA_HeatColor(CloudOpacity);
 	}
 	else if (DebugMode == 3)
 	{
 		// Cloud Height: where inside the layer the visible cloud matter is (contribution-weighted).
+		// = lerp(darkened scene, height color, opacity)
 		const float MeanHeight = State.HeightWeight > 1e-4 ? State.HeightSum / State.HeightWeight : 0.0;
-		Result = lerp(DarkenedScene, PA_HeightColor(MeanHeight), CloudOpacity);
+		Transmittance = DebugSceneScale * (1.0 - CloudOpacity);
+		Luminance = PA_HeightColor(MeanHeight) * CloudOpacity;
 	}
 	else if (DebugMode == 4)
 	{
 		// Ray Steps: density-function calls for this pixel (primary + light march), i.e. the cost map.
 		// White = 64 x (1 + LightSteps) calls or more.
 		const float Budget = 64.0 * (1.0 + (float)max(LightSteps, 0));
-		Result = DarkenedScene + PA_HeatColor((float)State.DensitySamples / Budget);
+		Transmittance = DebugSceneScale;
+		Luminance = PA_HeatColor((float)State.DensitySamples / Budget);
 	}
 	else
 	{
 		// Final (0), Atmosphere Only (5), Transmittance LUT (6), MS LUT (7). Scene color is pre-exposed; bring our
 		// absolute radiance into the same space.
-		Result = Ray.SceneColor.rgb * (State.Transmittance * State.AtmosphereTransmittance) + State.Accum * View.PreExposure;
+		Transmittance = State.Transmittance * State.AtmosphereTransmittance;
+		Luminance = State.Accum * View.PreExposure;
 
 		// Transmittance LUT: the atlas in the top-left corner at 2x (planet 0 at the top), over the final image.
 		if (DebugMode == 6)
@@ -473,7 +487,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			{
 				const uint Block = LutTexel.y / PA_TRANSMITTANCE_LUT_HEIGHT;   // planet in view order -> its pool slot
 				const uint Row = (uint)PA_GetLutSlot((int)Block) * PA_TRANSMITTANCE_LUT_HEIGHT + LutTexel.y % PA_TRANSMITTANCE_LUT_HEIGHT;
-				Result = TransmittanceLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb;
+				Transmittance = 0.0;
+				Luminance = TransmittanceLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb;
 			}
 		}
 		// Multiple-scattering LUT: the atlas at 4x (planet 0 at the top; x = sun cos zenith -1..1, y = altitude),
@@ -485,9 +500,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			{
 				const uint Block = LutTexel.y / PA_MS_LUT_HEIGHT;
 				const uint Row = (uint)PA_GetLutSlot((int)Block) * PA_MS_LUT_HEIGHT + LutTexel.y % PA_MS_LUT_HEIGHT;
-				Result = MultipleScatteringLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb * PA_MS_LUT_DEBUG_SCALE;
+				Transmittance = 0.0;
+				Luminance = MultipleScatteringLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb * PA_MS_LUT_DEBUG_SCALE;
 			}
 		}
 	}
-	OutputTexture[Ray.Pixel] = float4(Result, Ray.SceneColor.a);
+	OutLuminance[Ray.Pixel] = float4(Luminance, 0.0);
+	OutTransmittance[Ray.Pixel] = float4(Transmittance, 0.0);
 }

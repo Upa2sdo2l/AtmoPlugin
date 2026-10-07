@@ -11,6 +11,8 @@
 #include "/Engine/Private/Common.ush"
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
 
+Texture2D SceneColorTexture;
+RWTexture2D<float4> OutputTexture;
 float DebugIntensity;
 
 [numthreads(8, 8, 1)]
@@ -81,5 +83,6 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		}
 	}
 
-	OutputTexture[Ray.Pixel] = float4(Ray.SceneColor.rgb * Transmittance + Accum * DebugIntensity, Ray.SceneColor.a);
+	const float4 SceneColor = SceneColorTexture.Load(int3(Ray.Pixel, 0));
+	OutputTexture[Ray.Pixel] = float4(SceneColor.rgb * Transmittance + Accum * DebugIntensity, SceneColor.a);
 }

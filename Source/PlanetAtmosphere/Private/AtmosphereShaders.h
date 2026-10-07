@@ -15,9 +15,7 @@
  * Shaders/Private/PlanetAtmosphereShaderData.ush — names and layouts must match.
  */
 BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereViewParameters, )
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthTexture)
-	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTexture)
 	SHADER_PARAMETER(FMatrix44f, ClipToTranslatedWorld)
 	SHADER_PARAMETER(FVector3f, CameraTranslatedWorld)
 	SHADER_PARAMETER(FVector4f, ViewRectMinAndSize)
@@ -70,6 +68,8 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, ViewParams)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTexture)
 		SHADER_PARAMETER(float, DebugIntensity)
 	END_SHADER_PARAMETER_STRUCT()
 };
@@ -93,6 +93,9 @@ public:
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, ViewParams)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
+		// Outputs (Step 17): pre-exposed luminance and transmittance, applied to the scene by FAtmosphereCompositeCS.
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutLuminance)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutTransmittance)
 		SHADER_PARAMETER(int32, DebugMode)
 		SHADER_PARAMETER(int32, bDrawPlanetSurface)
 		// Lighting (Step 7). Illuminance in lux; SunDirection points toward the sun (world axes).
@@ -132,6 +135,28 @@ public:
 		SHADER_PARAMETER(int32, bMultipleScattering)
 		// Clouds through the atmosphere (Phase 2.5 / Step 15): global multiplier of the per-planet CloudSkyAmbientScale.
 		SHADER_PARAMETER(float, CloudSkyAmbientScaleMultiplier)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * Composite of the raymarch result over the scene (Phase 3 / Step 17): final = SceneColor x Transmittance + Luminance.
+ * Shaders/Private/AtmosphereComposite.usf. The only pass that reads the scene color (besides the bounds debug view).
+ */
+class FAtmosphereCompositeCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereCompositeCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereCompositeCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, LuminanceTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, TransmittanceTexture)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTexture)
+		SHADER_PARAMETER(FVector4f, ViewRectMinAndSize)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

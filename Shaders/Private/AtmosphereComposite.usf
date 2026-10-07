@@ -1,0 +1,30 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Phase 3 / Step 17 — composite of the clouds + atmosphere over the scene:
+//   final = SceneColor x Transmittance + Luminance
+// Luminance (pre-exposed) and Transmittance come from CloudRaymarch.usf (every debug mode of the raymarch is expressed
+// the same way). Same pixel coordinates as the scene textures. Phase 3 puts the temporal reconstruction between the
+// raymarch and this pass; this pass stays the only place that touches the scene color.
+
+#include "/Engine/Private/Common.ush"
+
+Texture2D SceneColorTexture;
+Texture2D<float4> LuminanceTexture;
+Texture2D<float4> TransmittanceTexture;
+RWTexture2D<float4> OutputTexture;
+float4 ViewRectMinAndSize;   // xy = view rect min (pixels), zw = view rect size
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (DispatchThreadId.x >= (uint)ViewRectMinAndSize.z || DispatchThreadId.y >= (uint)ViewRectMinAndSize.w)
+	{
+		return;
+	}
+
+	const int3 Pixel = int3((uint2)ViewRectMinAndSize.xy + DispatchThreadId.xy, 0);
+	const float4 SceneColor = SceneColorTexture.Load(Pixel);
+	const float3 Luminance = LuminanceTexture.Load(Pixel).rgb;
+	const float3 Transmittance = TransmittanceTexture.Load(Pixel).rgb;
+	OutputTexture[Pixel.xy] = float4(SceneColor.rgb * Transmittance + Luminance, SceneColor.a);
+}
