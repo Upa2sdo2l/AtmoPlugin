@@ -48,8 +48,9 @@ namespace
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudAmbientIntensity(
 		TEXT("r.PlanetAtmosphere.CloudAmbientIntensity"),
 		0.1f,
-		TEXT("Ambient (sky) light on the clouds as a fraction of the sun illuminance; fades out on the night side.\n")
-		TEXT("Without a Directional Light a neutral ambient of 10 lux x this value is used."),
+		TEXT("Ambient light on the clouds as a fraction of the sun illuminance; fades out on the night side.\n")
+		TEXT("Used only when the sky ambient of Step 15 is unavailable (r.PlanetAtmosphere.Atmosphere 0 or\n")
+		TEXT("r.PlanetAtmosphere.Atmosphere.MultipleScattering 0). Without a Directional Light a neutral ambient of 10 lux x this value is used."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightSteps(
@@ -169,6 +170,15 @@ namespace
 		1,
 		TEXT("Multiple scattering of the atmosphere (Step 14, Hillaire 2020 LUT, includes ground bounce with SurfaceAlbedo).\n")
 		TEXT("0 = single scattering only (Step 13 image; the MS LUT pass is skipped), 1 = on (default)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudSkyAmbientScale(
+		TEXT("r.PlanetAtmosphere.CloudSkyAmbientScale"),
+		1.0f,
+		TEXT("Global multiplier of the per-planet Cloud Sky Ambient Scale (Details panel, default 5) - Step 15.\n")
+		TEXT("Cloud ambient = sky radiance from the multiple-scattering LUT x Cloud Sky Ambient Scale x this.\n")
+		TEXT("The per-planet value is a TEMPORARY compensation for the missing in-cloud multiple scattering (Phase 7);\n")
+		TEXT("0.2 x the default 5 = the physically correct x1 (clouds much darker). Default 1."),
 		ECVF_RenderThreadSafe);
 
 	// ---- Screen-space LOD (Phase 2 / Step 11) ----
@@ -324,6 +334,11 @@ namespace PlanetAtmosphere::CVars
 	bool IsMultipleScatteringEnabled()
 	{
 		return CVarPlanetAtmosphereAtmosphereMultipleScattering.GetValueOnAnyThread(false) != 0;
+	}
+
+	float GetCloudSkyAmbientScaleMultiplier()
+	{
+		return FMath::Max(0.0f, CVarPlanetAtmosphereCloudSkyAmbientScale.GetValueOnAnyThread(false));
 	}
 
 	FScreenLODSettings GetScreenLODSettings()

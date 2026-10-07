@@ -36,7 +36,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereData1, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	// x = cloud top altitude, y = coverage, z = extinction at density 1 (1/cm), w = shape scale (cm)
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereData2, [PLANET_ATMOSPHERE_MAX_VISIBLE])
-	// x = erosion, y = raymarch steps, z = light steps (both after screen-space LOD, Step 11), w = reserved
+	// x = erosion, y = raymarch steps, z = light steps (both after screen-space LOD, Step 11), w = cloud sky ambient scale (Step 15)
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereData3, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	// Planet local axes in world space (unit); clouds are evaluated in this frame.
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAxisX, [PLANET_ATMOSPHERE_MAX_VISIBLE])
@@ -127,6 +127,8 @@ public:
 		// (bMultipleScattering = 0) the transmittance atlas is bound here instead: the shader never samples it then.
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, MultipleScatteringLutAtlas)
 		SHADER_PARAMETER(int32, bMultipleScattering)
+		// Clouds through the atmosphere (Phase 2.5 / Step 15): global multiplier of the per-planet CloudSkyAmbientScale.
+		SHADER_PARAMETER(float, CloudSkyAmbientScaleMultiplier)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

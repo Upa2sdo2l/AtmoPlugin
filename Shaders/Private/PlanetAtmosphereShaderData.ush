@@ -23,7 +23,7 @@ int NumAtmospheres;
 float4 AtmosphereData0[PA_MAX_ATMOSPHERES]; // xyz = camera - planet center (world axes), w = planet radius
 float4 AtmosphereData1[PA_MAX_ATMOSPHERES]; // x = camera altitude, y = atmosphere bottom, z = atmosphere top, w = cloud bottom (altitudes)
 float4 AtmosphereData2[PA_MAX_ATMOSPHERES]; // x = cloud top altitude, y = coverage, z = extinction at density 1 (1/cm), w = shape scale (cm)
-float4 AtmosphereData3[PA_MAX_ATMOSPHERES]; // x = erosion, y = raymarch steps, z = light steps (both after screen-space LOD), w = reserved
+float4 AtmosphereData3[PA_MAX_ATMOSPHERES]; // x = erosion, y = raymarch steps, z = light steps (both after screen-space LOD), w = cloud sky ambient scale (Step 15)
 float4 AtmosphereAxisX[PA_MAX_ATMOSPHERES]; // planet local X axis in world space (unit), w unused
 float4 AtmosphereAxisY[PA_MAX_ATMOSPHERES];
 float4 AtmosphereAxisZ[PA_MAX_ATMOSPHERES];
@@ -49,6 +49,7 @@ struct FPAAtmosphere
 	float CloudErosion;
 	int RaymarchSteps;       // after screen-space LOD (Step 11)
 	int LightSteps;          // after screen-space LOD (Step 11)
+	float CloudSkyAmbientScale;   // Step 15, temporary compensation until Phase 7
 	float3 AxisX;
 	float3 AxisY;
 	float3 AxisZ;
@@ -70,6 +71,7 @@ FPAAtmosphere PA_LoadAtmosphere(int Index)
 	A.CloudErosion = AtmosphereData3[Index].x;
 	A.RaymarchSteps = (int)AtmosphereData3[Index].y;
 	A.LightSteps = (int)AtmosphereData3[Index].z;
+	A.CloudSkyAmbientScale = AtmosphereData3[Index].w;
 	A.AxisX = AtmosphereAxisX[Index].xyz;
 	A.AxisY = AtmosphereAxisY[Index].xyz;
 	A.AxisZ = AtmosphereAxisZ[Index].xyz;

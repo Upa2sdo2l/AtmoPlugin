@@ -356,7 +356,7 @@ namespace PlanetAtmosphere
 					Instance.CloudErosion,
 					static_cast<float>(RaymarchSteps),
 					static_cast<float>(LightSteps),
-					0.0f);
+					Instance.CloudSkyAmbientScale);
 				OutParameters.AtmosphereAxisX[Index] = ToAxis4f(Instance.PlanetAxisX);
 				OutParameters.AtmosphereAxisY[Index] = ToAxis4f(Instance.PlanetAxisY);
 				OutParameters.AtmosphereAxisZ[Index] = ToAxis4f(Instance.PlanetAxisZ);
@@ -459,6 +459,7 @@ namespace PlanetAtmosphere
 		Parameters->AtmosphereSteps = CVars::GetAtmosphereSteps();
 		Parameters->MultipleScatteringLutAtlas = MultipleScatteringLutAtlas;
 		Parameters->bMultipleScattering = bMultipleScattering ? 1 : 0;
+		Parameters->CloudSkyAmbientScaleMultiplier = CVars::GetCloudSkyAmbientScaleMultiplier();
 
 		TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
 		FComputeShaderUtils::AddPass(

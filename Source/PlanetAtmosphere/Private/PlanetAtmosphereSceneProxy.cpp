@@ -15,6 +15,7 @@ FPlanetAtmosphereSceneProxy::FPlanetAtmosphereSceneProxy(const UPlanetAtmosphere
 	, CloudShapeScaleUU(FMath::Clamp(InComponent->CloudShapeScale, 100.0, 1000000.0) * PlanetAtmosphere::MetersToUnrealUnits)
 	, CloudErosion(FMath::Clamp(InComponent->CloudErosion, 0.0f, 1.0f))
 	, RaymarchSteps(FMath::Clamp(InComponent->RaymarchSteps, 16, 256))
+	, CloudSkyAmbientScale(FMath::Clamp(InComponent->CloudSkyAmbientScale, 0.0f, 100.0f))
 	, ScatteringUU(InComponent->GetValidatedScatteringUU())
 {
 	// Grab a shared reference to the plain-C++ registry.
@@ -78,6 +79,7 @@ FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() co
 	Instance.CloudShapeScaleUU = CloudShapeScaleUU;
 	Instance.CloudErosion = CloudErosion;
 	Instance.RaymarchSteps = RaymarchSteps;
+	Instance.CloudSkyAmbientScale = CloudSkyAmbientScale;
 	Instance.ScatteringUU = ScatteringUU;
 	return Instance;
 }

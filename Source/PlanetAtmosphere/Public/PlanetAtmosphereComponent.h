@@ -166,6 +166,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CloudErosion = 0.5f;
 
+	/**
+	 * Strength of the sky light on the clouds (Step 15). With the atmosphere on, cloud ambient light is the sky radiance
+	 * from the atmosphere (multiple-scattering LUT: blue by day, colored at sunset, dark at night) x this value.
+	 * TEMPORARY ARTISTIC COMPENSATION until Phase 7: the clouds have no multiple scattering inside them yet, so the
+	 * physically correct value 1 makes them far too dark (from orbit ~1/3 of the Phase 2 brightness); ~5 keeps the
+	 * daytime brightness close to Phase 2. Phase 7 brings it towards 1 or replaces it with a full model.
+	 * Not used with r.PlanetAtmosphere.Atmosphere 0 / MultipleScattering 0 (then CloudAmbientIntensity applies).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", UIMax = "20.0"))
+	float CloudSkyAmbientScale = 5.0f;
+
 	// ===== RENDERING PARAMETERS =====
 
 	/** Number of raymarch steps (higher = better quality, more expensive) */

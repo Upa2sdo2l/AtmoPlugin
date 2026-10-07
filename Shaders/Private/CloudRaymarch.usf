@@ -11,9 +11,11 @@
 //   3. density comes ONLY from PA_SampleCloudDensity() (CloudDensity.ush, AD-1);
 //   4. Beer-Lambert transmittance, energy-conserving integration over each step;
 //   5. lighting (CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient;
-//   6. atmosphere single scattering (AtmosphereScattering.ush, Step 13) along the whole ray inside the atmosphere,
-//      composited BEHIND this planet's clouds (aerial perspective on the clouds and atmospheric sunlight on them
-//      come in Step 15), then the placeholder surface behind the atmosphere.
+//   6. atmosphere (AtmosphereScattering.ush, Steps 13-14) along the whole ray inside the atmosphere, split at the
+//      clouds' contribution-weighted mean depth (Step 15): the part in front of the clouds attenuates them and adds
+//      haze (aerial perspective), the part behind is seen through them; then the placeholder surface.
+//   Step 15 cloud lighting with the atmosphere on: sunlight through the atmosphere (transmittance LUT, planet shadow =
+//   the atmosphere's horizon) and sky ambient = Psi_ms (MS LUT) x CloudSkyAmbientScale.
 // Composited front-to-back across planets; the scene behind is attenuated by the final transmittance.
 // Transmittance = scalar part (clouds, surface) x color part (atmospheres of the planets already composited).
 // Debug views reuse exactly the same march (same density calls), they only change what is written out.
@@ -60,6 +62,7 @@ int LightLODMinSteps;
 // Atmosphere (Phase 2.5 / Steps 13-14). LUT atlases, sampler and bMultipleScattering are declared in AtmosphereScattering.ush.
 int bAtmosphereEnabled;      // r.PlanetAtmosphere.Atmosphere
 int AtmosphereSteps;         // r.PlanetAtmosphere.Atmosphere.Steps
+float CloudSkyAmbientScaleMultiplier;   // r.PlanetAtmosphere.CloudSkyAmbientScale (global x per-planet CloudSkyAmbientScale)
 
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
@@ -70,6 +73,13 @@ struct FPACloudLightingContext
 	float Phase;          // PA_CloudPhase(dot(ray, sun))
 	bool bHasSun;
 	float PixelFootprintPerUnitDistance;   // TRUE pixel size at distance 1 (not scaled by NoiseFootprintScale)
+
+	// Step 15, set per planet: clouds lit through this planet's atmosphere.
+	bool bAtmosphereLighting;   // sunlight through the transmittance LUT, planet shadow = the atmosphere's horizon
+	bool bSkyAmbient;           // ambient = Psi_ms (needs the MS LUT) instead of AmbientIlluminance
+	float SkyAmbientScale;      // temporary compensation for the missing in-cloud multiple scattering (until Phase 7)
+	int PlanetIndex;
+	FPAScattering Scattering;
 };
 
 /** Light steps for a cloud sample at distance T (light-march LOD, see LightLODEnable). */
@@ -107,6 +117,8 @@ struct FPACloudMarchState
 	float OpticalDepth;      // clouds only (Density view)
 	float HeightSum;         // sum of height fraction * contribution weight (Cloud Height view)
 	float HeightWeight;      // sum of contribution weights
+	float DepthSum;          // sum of distance * contribution weight, current planet only (Step 15 atmosphere split)
+	float DepthWeight;       // sum of contribution weights, current planet only
 	uint DensitySamples;     // PA_SampleCloudDensity() calls: primary + empty-space probes + light march (Ray Steps view)
 };
 
@@ -146,23 +158,51 @@ float PA_IntegrateCloudStep(
 	float3 Radiance = 0.0;
 	if (Contribution > PA_MIN_LIGHTING_CONTRIBUTION)
 	{
+		// Step 15: altitude above the atmosphere bottom and sun cos zenith for the atmosphere LUTs. Cloud samples above
+		// the medium's effective top are clamped onto it (the LUTs clamp H): negligible air above.
+		const float AtmosphereH = Altitude - Light.Scattering.BottomAltitude;
+		const float SunMu = dot(P, Light.SunDirection) / max(length(P), 1.0);
+
 		if (Light.bHasSun)
 		{
-			const float Shadow = PA_PlanetShadow(P, Light.SunDirection, A.PlanetRadius);
-			if (Shadow > 0.0)
+			// Sun visibility: through the atmosphere (LUT x the atmosphere's horizon), else the Step 7 soft planet shadow.
+			float3 SunVisibility;
+			if (Light.bAtmosphereLighting)
+			{
+				SunVisibility = PA_AtmosphereSunTransmittance(Light.PlanetIndex, Light.Scattering, AtmosphereH, SunMu);
+			}
+			else
+			{
+				SunVisibility = PA_PlanetShadow(P, Light.SunDirection, A.PlanetRadius);
+			}
+			// The light march only runs where the sun is visible at all (night side: skipped).
+			if (max(SunVisibility.r, max(SunVisibility.g, SunVisibility.b)) > 1e-4)
 			{
 				const float Footprint = T * Ray.FootprintPerUnitDistance;
 				const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, PA_GetLightSteps(A, Layer, Light, T), State.DensitySamples);
-				Radiance += Light.SunIlluminance * (Light.Phase * SunTransmittance * Shadow);
+				Radiance += Light.SunIlluminance * SunVisibility * (Light.Phase * SunTransmittance);
 			}
 		}
-		const float Daylight = Light.bHasSun ? PA_DaylightFactor(P, Light.SunDirection) : 1.0;
-		Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
+
+		if (Light.bSkyAmbient)
+		{
+			// Sky ambient: Psi_ms = mean sky radiance around the point (sun illuminance 1), colored by the atmosphere,
+			// dark at night; x SkyAmbientScale (temporary compensation until Phase 7, see CloudSkyAmbientScale).
+			Radiance += Light.SunIlluminance * PA_SampleMultipleScatteringLut(Light.PlanetIndex, Light.Scattering, AtmosphereH, SunMu)
+				* ((0.5 + 0.5 * HeightFraction) * Light.SkyAmbientScale);
+		}
+		else
+		{
+			const float Daylight = Light.bHasSun ? PA_DaylightFactor(P, Light.SunDirection) : 1.0;
+			Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
+		}
 	}
 
 	State.Accum += Radiance * (Contribution * State.AtmosphereTransmittance);
 	State.HeightSum += HeightFraction * Contribution;
 	State.HeightWeight += Contribution;
+	State.DepthSum += T * Contribution;
+	State.DepthWeight += Contribution;
 	State.Transmittance *= StepTransmittance;
 	State.OpticalDepth += Sigma * Dt;
 	return Density;
@@ -254,6 +294,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	State.OpticalDepth = 0.0;
 	State.HeightSum = 0.0;
 	State.HeightWeight = 0.0;
+	State.DepthSum = 0.0;
+	State.DepthWeight = 0.0;
 	State.DensitySamples = 0u;
 
 	FPACloudLightingContext Light;
@@ -263,6 +305,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Light.Phase = PA_CloudPhase(dot(Ray.Dir, SunDirection));
 	Light.bHasSun = bHasSun != 0;
 	Light.PixelFootprintPerUnitDistance = PixelFootprintPerUnitDistance;
+	Light.bAtmosphereLighting = false;
+	Light.bSkyAmbient = false;
+	Light.SkyAmbientScale = 0.0;
+	Light.PlanetIndex = 0;
+	Light.Scattering = (FPAScattering)0;
 
 	// Same jitter for every planet of this pixel; animated jitter changes every frame (StateFrameIndex).
 	const float Jitter = PA_GetRayJitter(Ray.Pixel, JitterMode, View.StateFrameIndex);
@@ -301,6 +348,22 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float2 TopHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.CloudTop);
 		const bool bCloudShellHit = bDrawClouds && TopHit.x <= TopHit.y && TopHit.y > 0.0;
 
+		// Step 15: this planet's atmosphere lights its clouds (in every view mode, so the cloud debug views keep
+		// the same light-march gating as the final image).
+		const FPAScattering Scattering = PA_LoadScattering(Index);
+		Light.PlanetIndex = Index;
+		Light.Scattering = Scattering;
+		Light.bAtmosphereLighting = bAtmosphereEnabled != 0;
+		// Without a Directional Light there is no sky: the neutral fallback ambient (AmbientIlluminance) stays.
+		Light.bSkyAmbient = bAtmosphereEnabled != 0 && bMultipleScattering != 0 && Light.bHasSun;
+		Light.SkyAmbientScale = A.CloudSkyAmbientScale * CloudSkyAmbientScaleMultiplier;
+
+		// Radiance of this planet's clouds is collected separately, so the atmosphere in front of them can attenuate it.
+		const float3 AccumBeforeClouds = State.Accum;
+		const float TransmittanceBeforeClouds = State.Transmittance;
+		State.DepthSum = 0.0;
+		State.DepthWeight = 0.0;
+
 		// Cloud shell segments: inside the top sphere and outside the bottom sphere.
 		float Seg1Start = max(TopHit.x, 0.0);
 		float Seg1End = TopHit.y;
@@ -327,16 +390,23 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			PA_MarchClouds(A, Layer, Ray, Light, Schedule, Jitter, State);
 		}
 
-		// Atmosphere (Step 13): single scattering along the whole ray inside the atmosphere, behind this planet's clouds.
-		FPAScattering Scattering = (FPAScattering)0;
+		// Atmosphere (Steps 13-15), split at the clouds' contribution-weighted mean depth (no clouds: all in front).
+		//   front: [camera, split]  -> added in front of the clouds, attenuates them (aerial perspective)
+		//   back:  [split, TMax]    -> seen through the clouds and through the front part
 		if (bDrawAtmosphere)
 		{
-			Scattering = PA_LoadScattering(Index);
-			const FPAAtmosphereSegment Atmosphere = PA_IntegrateAtmosphere(
-				Index, A, Scattering, Ray.Dir, TMax, AtmosphereSteps,
-				Light.SunDirection, Light.SunIlluminance, Light.bHasSun);
-			State.Accum += Atmosphere.Luminance * (State.Transmittance * State.AtmosphereTransmittance);
-			State.AtmosphereTransmittance *= Atmosphere.Transmittance;
+			const float SplitT = State.DepthWeight > 1e-6 ? State.DepthSum / State.DepthWeight : PA_INFINITY;
+			FPAAtmosphereSegment Front;
+			FPAAtmosphereSegment Back;
+			PA_IntegrateAtmosphereSplit(
+				Index, A, Scattering, Ray.Dir, TMax, SplitT, AtmosphereSteps,
+				Light.SunDirection, Light.SunIlluminance, Light.bHasSun, Front, Back);
+			const float3 CloudRadiance = State.Accum - AccumBeforeClouds;   // already x transmittance of nearer planets
+			State.Accum = AccumBeforeClouds
+				+ Front.Luminance * (TransmittanceBeforeClouds * State.AtmosphereTransmittance)
+				+ CloudRadiance * Front.Transmittance
+				+ Back.Luminance * (State.Transmittance * State.AtmosphereTransmittance * Front.Transmittance);
+			State.AtmosphereTransmittance *= Front.Transmittance * Back.Transmittance;
 		}
 
 		// Debug placeholder surface (behind this planet's clouds and atmosphere). Opaque: hides everything farther away.

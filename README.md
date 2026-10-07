@@ -85,7 +85,8 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
-| `r.PlanetAtmosphere.CloudAmbientIntensity` | 0.1 | Ambient (sky) light on clouds as a fraction of the sun; fades out at night |
+| `r.PlanetAtmosphere.CloudAmbientIntensity` | 0.1 | Ambient light on clouds as a fraction of the sun; only when the Step 15 sky ambient is off (`Atmosphere 0` or `MultipleScattering 0`) |
+| `r.PlanetAtmosphere.CloudSkyAmbientScale` | 1.0 | Global multiplier of the per-planet **Cloud Sky Ambient Scale** (see below); 0.2 × the default 5 = physical ×1 |
 | `r.PlanetAtmosphere.LightSteps` | 6 | Light-march samples toward the sun (cloud self-shadowing) |
 | `r.PlanetAtmosphere.StepDistribution` | 1 | 0 = uniform steps (Phase 1), 1 = camera-centered: small near the camera, larger far away |
 | `r.PlanetAtmosphere.StepNearDistance` | 1.0 | Camera-centered steps grow with (distance + this × cloud layer thickness) |
@@ -107,6 +108,23 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.LOD.MinDetailRadius` | 50 | Radius at and below which minimum detail is used (log2 interpolation in between) |
 | `r.PlanetAtmosphere.LOD.MinStepFraction` | 0.25 | Fraction of Raymarch Steps at minimum detail (at least 4) |
 | `r.PlanetAtmosphere.LOD.MinLightSteps` | 2 | Light-march steps at minimum detail |
+
+## Clouds through the atmosphere (Step 15)
+
+With `r.PlanetAtmosphere.Atmosphere 1` the clouds of each planet are lit and seen through its atmosphere:
+- **Sunlight** reaches every cloud sample through the atmosphere (transmittance LUT): orange-red at sunset, dark red
+  at the terminator; the planet shadow is the atmosphere's horizon (the cloud light march is skipped where the sun
+  is not visible).
+- **Sky ambient** = sky radiance around the sample from the multiple-scattering LUT (blue by day, colored at
+  sunset, dark at night) × **Cloud Sky Ambient Scale** (Details panel → Clouds, default **5**) ×
+  `r.PlanetAtmosphere.CloudSkyAmbientScale`.
+  > **Cloud Sky Ambient Scale is a temporary artistic compensation until Phase 7.** The clouds do not have multiple
+  > scattering inside them yet; the physically correct value 1 makes them far too dark (from orbit ~1/3 of the
+  > Phase 2 brightness). ~5 keeps the daytime brightness close to Phase 2. Phase 7 brings it towards 1 or replaces it
+  > with a full in-cloud multiple-scattering model.
+- **Aerial perspective**: the atmosphere along the view ray is split at the clouds' contribution-weighted mean depth;
+  the part in front attenuates the clouds and adds haze, the part behind is seen through them
+  (CPU prototype vs a fully interleaved reference: 0.2–0.6 % mean luminance error).
 
 ## Sun
 
@@ -148,6 +166,11 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
+**Phase 2.5 — Step 15: clouds through the atmosphere**
+- Sunlight on the clouds through the atmosphere (transmittance LUT); planet shadow = the atmosphere's horizon
+- Sky ambient on the clouds from the multiple-scattering LUT × Cloud Sky Ambient Scale (temporary, default 5, until Phase 7)
+- Aerial perspective on the clouds: atmosphere split at the clouds' mean depth (one extra atmosphere sample)
+
 **Phase 2.5 — Step 14: multiple scattering**
 - Hillaire 2020 multiple-scattering LUT, 64 (sun zenith) × 32 (altitude) per planet, 64 directions × 20 steps per texel,
   isotropic higher orders summed as 1 / (1 − f_ms), ground bounce with `SurfaceAlbedo`; per-frame atlas
@@ -163,7 +186,7 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 - 16 view-ray samples: quadratic from inside the atmosphere, uniform from outside; energy-conserving; hard planet shadow
 - Sky from the surface, limb glow from orbit, aerial perspective over the placeholder surface and scene geometry;
   the placeholder surface is lit by sunlight through the atmosphere
-- Clouds are composited in front of their planet's atmosphere and are not yet lit through it (Step 15)
+- (Step 15 lights the clouds through the atmosphere and puts the atmosphere in front of them)
 
 **Phase 2 — Step 12: density LOD that keeps the cloud cover of distant planets**
 - Noise octaves fade at 1/4 of the pixel footprint; TSR's per-frame sub-pixel jitter + accumulation average the detail
@@ -186,8 +209,7 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 15 — clouds through the atmosphere
-(aerial perspective, sunlight through the atmosphere, sky ambient); Step 16 — profiling.
+Next: Step 16 — Phase 2.5 profiling / optimizations (e.g. caching the LUTs across frames).
 
 ## Dependencies
 

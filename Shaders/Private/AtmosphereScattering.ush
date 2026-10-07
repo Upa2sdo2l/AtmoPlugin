@@ -316,31 +316,80 @@ struct FPAAtmosphereSegment
 };
 
 /**
- * Single scattering along the view ray inside the medium (sphere BottomAltitude + Thickness, i.e. the effective top),
- * clipped to [0, TMax] (TMax = planet surface or scene geometry). NumSteps samples at step midpoints: quadratic
- * distribution (fine near the camera) when the camera is inside the medium, uniform from outside
- * (CPU prototype: mean luminance error <= 0.9 % at 16 steps).
+ * Adds the view-ray interval [TBase + O0, TBase + O1] to Segment: one sample at the midpoint, energy-conserving
+ * integral, attenuated by the transmittance Segment has accumulated so far. Single scattering (+ multiple
+ * scattering, Step 14). The interval is given as offsets from TBase so its length never comes from subtracting two
+ * large distances (camera far from the planet).
  */
-FPAAtmosphereSegment PA_IntegrateAtmosphere(
-	int Index, FPAAtmosphere A, FPAScattering S,
-	float3 RayDir, float TMax, int NumSteps,
-	float3 SunDirection, float3 SunIlluminance, bool bHasSun)
+void PA_AtmosphereInterval(
+	int Index, FPAAtmosphere A, FPAScattering S, float3 RayDir, float TBase, float O0, float O1,
+	float PhaseRayleigh, float PhaseMie, float3 SunDirection, float3 SunIlluminance, bool bHasSun,
+	inout FPAAtmosphereSegment Segment)
 {
-	FPAAtmosphereSegment Result;
-	Result.Luminance = 0.0;
-	Result.Transmittance = 1.0;
+	const float Dt = O1 - O0;
+	if (Dt <= 0.0)
+	{
+		return;
+	}
+	const float3 P = A.CameraRel + RayDir * (TBase + 0.5 * (O0 + O1));   // planet-relative, world axes
+	const float R = length(P);
+	const float H = R - A.PlanetRadius - S.BottomAltitude;      // ~64 cm granularity at Earth scale: fine for density
+	const float3 Densities = PA_AtmosphereDensities(S, H);
+	const float3 Extinction = PA_AtmosphereExtinction(S, Densities);
+
+	float3 Scattered = 0.0;
+	if (bHasSun)
+	{
+		const float SunMu = dot(P, SunDirection) / max(R, 1.0);
+		const float3 SunTransmittance = PA_AtmosphereSunTransmittance(Index, S, H, SunMu);
+		Scattered = (S.RayleighScattering * (Densities.x * PhaseRayleigh) + S.MieScattering * (Densities.y * PhaseMie))
+			* SunTransmittance;
+		if (bMultipleScattering != 0)
+		{
+			// Step 14: all orders >= 2 (isotropic, not shadowed by the planet: Psi_ms already depends on SunMu).
+			Scattered += (S.RayleighScattering * Densities.x + S.MieScattering * Densities.y)
+				* PA_SampleMultipleScatteringLut(Index, S, H, SunMu);
+		}
+		Scattered *= SunIlluminance;
+	}
+
+	// Energy-conserving integral over the interval: S * (1 - exp(-sigma dt)) / sigma (-> S dt for sigma dt -> 0).
+	float3 StepTransmittance;
+	const float3 StepIntegral = PA_StepIntegral(Extinction, Dt, StepTransmittance);
+	Segment.Luminance += Segment.Transmittance * Scattered * StepIntegral;
+	Segment.Transmittance *= StepTransmittance;
+}
+
+/**
+ * Atmosphere along the view ray inside the medium (sphere BottomAltitude + Thickness, i.e. the effective top), clipped
+ * to [0, TMax] (TMax = planet surface or scene geometry), split at SplitT (Step 15: the clouds' contribution-weighted
+ * mean depth; PA_INFINITY = everything in Front). NumSteps steps at the Step 13 positions: quadratic distribution
+ * (fine near the camera) when the camera is inside the medium, uniform from outside (CPU prototype: mean luminance
+ * error <= 0.9 % at 16 steps); the step containing SplitT is cut in two (one extra sample).
+ * Front: [camera, SplitT]. Back: [SplitT, TMax], relative to SplitT (not attenuated by Front).
+ */
+void PA_IntegrateAtmosphereSplit(
+	int Index, FPAAtmosphere A, FPAScattering S,
+	float3 RayDir, float TMax, float SplitT, int NumSteps,
+	float3 SunDirection, float3 SunIlluminance, bool bHasSun,
+	out FPAAtmosphereSegment Front, out FPAAtmosphereSegment Back)
+{
+	Front.Luminance = 0.0;
+	Front.Transmittance = 1.0;
+	Back.Luminance = 0.0;
+	Back.Transmittance = 1.0;
 
 	const float MediumTopAltitude = S.BottomAltitude + S.Thickness;   // above the planet radius
 	const float2 MediumHit = PA_RaySphereIntersect(A.CameraRel, RayDir, A.PlanetRadius, A.CameraAltitude, MediumTopAltitude);
 	if (MediumHit.x > MediumHit.y || MediumHit.y <= 0.0)
 	{
-		return Result;
+		return;
 	}
 	const float TStart = max(MediumHit.x, 0.0);
 	const float Length = min(MediumHit.y, TMax) - TStart;
 	if (Length <= 0.0 || NumSteps <= 0)
 	{
-		return Result;
+		return;
 	}
 
 	const bool bQuadratic = A.CameraAltitude < MediumTopAltitude;
@@ -348,6 +397,7 @@ FPAAtmosphereSegment PA_IntegrateAtmosphere(
 	const float PhaseRayleigh = PA_RayleighPhase(CosTheta);
 	const float PhaseMie = PA_MiePhase(CosTheta, S.MieG);
 	const float InvSteps = 1.0 / (float)NumSteps;
+	const float SplitOffset = SplitT - TStart;   // PA_INFINITY stays huge
 
 	for (int Step = 0; Step < NumSteps; ++Step)
 	{
@@ -358,38 +408,18 @@ FPAAtmosphereSegment PA_IntegrateAtmosphere(
 			F0 *= F0;
 			F1 *= F1;
 		}
-		const float Dt = Length * (F1 - F0);
-		const float T = TStart + Length * 0.5 * (F0 + F1);
-
-		const float3 P = A.CameraRel + RayDir * T;               // planet-relative, world axes
-		const float R = length(P);
-		const float H = R - A.PlanetRadius - S.BottomAltitude;   // ~64 cm granularity at Earth scale: fine for density
-		const float3 Densities = PA_AtmosphereDensities(S, H);
-		const float3 Extinction = PA_AtmosphereExtinction(S, Densities);
-
-		float3 Scattered = 0.0;
-		if (bHasSun)
+		// Offsets from TStart (see PA_AtmosphereInterval).
+		const float Oa = Length * F0;
+		const float Ob = Length * F1;
+		if (Oa < SplitOffset)
 		{
-			const float SunMu = dot(P, SunDirection) / max(R, 1.0);
-			const float3 SunTransmittance = PA_AtmosphereSunTransmittance(Index, S, H, SunMu);
-			Scattered = (S.RayleighScattering * (Densities.x * PhaseRayleigh) + S.MieScattering * (Densities.y * PhaseMie))
-				* SunTransmittance;
-			if (bMultipleScattering != 0)
-			{
-				// Step 14: all orders >= 2 (isotropic, not shadowed by the planet: Psi_ms already depends on SunMu).
-				Scattered += (S.RayleighScattering * Densities.x + S.MieScattering * Densities.y)
-					* PA_SampleMultipleScatteringLut(Index, S, H, SunMu);
-			}
-			Scattered *= SunIlluminance;
+			PA_AtmosphereInterval(Index, A, S, RayDir, TStart, Oa, min(Ob, SplitOffset), PhaseRayleigh, PhaseMie, SunDirection, SunIlluminance, bHasSun, Front);
 		}
-
-		// Energy-conserving integral over the step: S * (1 - exp(-sigma dt)) / sigma (-> S dt for sigma dt -> 0).
-		float3 StepTransmittance;
-		const float3 StepIntegral = PA_StepIntegral(Extinction, Dt, StepTransmittance);
-		Result.Luminance += Result.Transmittance * Scattered * StepIntegral;
-		Result.Transmittance *= StepTransmittance;
+		if (Ob > SplitOffset)
+		{
+			PA_AtmosphereInterval(Index, A, S, RayDir, TStart, max(Oa, SplitOffset), Ob, PhaseRayleigh, PhaseMie, SunDirection, SunIlluminance, bHasSun, Back);
+		}
 	}
-	return Result;
 }
 
 #endif // PA_MULTIPLE_SCATTERING_LUT_PASS
