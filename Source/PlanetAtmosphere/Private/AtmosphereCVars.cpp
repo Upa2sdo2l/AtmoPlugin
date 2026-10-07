@@ -111,6 +111,40 @@ namespace
 		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 R16F, baked once on the GPU"),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereNoiseFootprintScale(
+		TEXT("r.PlanetAtmosphere.NoiseFootprintScale"),
+		0.25f,
+		TEXT("Noise octaves fade at this fraction of the pixel footprint (density LOD, Step 12).\n")
+		TEXT("< 1: sub-pixel cloud detail is point-sampled and averaged over frames by TSR / temporal accumulation,\n")
+		TEXT("so distant planets keep their cloud cover (unbiased). Costs a little more far away and shimmers more while\n")
+		TEXT("the camera moves (until Phase 3 temporal). 1 = Phase 1 behaviour (clouds of distant planets fade out). Clamped to [0.01, 1]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightLOD(
+		TEXT("r.PlanetAtmosphere.LightLOD"),
+		1,
+		TEXT("Light-march LOD (Step 12): fewer light steps for cloud samples whose pixel is large compared to the cloud layer.\n")
+		TEXT("0 = off (always LightSteps), 1 = on."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereLightLODFullFootprint(
+		TEXT("r.PlanetAtmosphere.LightLOD.FullDetailFootprint"),
+		0.0625f,
+		TEXT("Pixel footprint (in cloud-layer thicknesses) at or below which the full LightSteps are used."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereLightLODMinFootprint(
+		TEXT("r.PlanetAtmosphere.LightLOD.MinDetailFootprint"),
+		1.0f,
+		TEXT("Pixel footprint (in cloud-layer thicknesses) at or above which LightLOD.MinLightSteps are used (log2 interpolation in between)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightLODMinSteps(
+		TEXT("r.PlanetAtmosphere.LightLOD.MinLightSteps"),
+		2,
+		TEXT("Light steps for samples with a large pixel footprint. Clamped to [1, 16] and never above the planet's light steps."),
+		ECVF_RenderThreadSafe);
+
 	// ---- Screen-space LOD (Phase 2 / Step 11) ----
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLOD(
@@ -231,6 +265,21 @@ namespace PlanetAtmosphere::CVars
 		return CVarPlanetAtmosphereNoiseSource.GetValueOnAnyThread(false) == 0
 			? ENoiseSource::Procedural
 			: ENoiseSource::BakedTextures;
+	}
+
+	float GetNoiseFootprintScale()
+	{
+		return FMath::Clamp(CVarPlanetAtmosphereNoiseFootprintScale.GetValueOnAnyThread(false), 0.01f, 1.0f);
+	}
+
+	FLightLODSettings GetLightLODSettings()
+	{
+		FLightLODSettings Settings;
+		Settings.bEnabled = CVarPlanetAtmosphereLightLOD.GetValueOnAnyThread(false) != 0;
+		Settings.FullDetailFootprint = FMath::Max(1e-4f, CVarPlanetAtmosphereLightLODFullFootprint.GetValueOnAnyThread(false));
+		Settings.MinDetailFootprint = FMath::Max(Settings.FullDetailFootprint * 1.01f, CVarPlanetAtmosphereLightLODMinFootprint.GetValueOnAnyThread(false));
+		Settings.MinLightSteps = FMath::Clamp(CVarPlanetAtmosphereLightLODMinSteps.GetValueOnAnyThread(false), 1, 16);
+		return Settings;
 	}
 
 	FScreenLODSettings GetScreenLODSettings()

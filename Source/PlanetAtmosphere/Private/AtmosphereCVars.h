@@ -99,6 +99,20 @@ namespace PlanetAtmosphere::CVars
 		int32 MinLightSteps = 2;            // light steps at minimum detail
 	};
 
+	/** r.PlanetAtmosphere.NoiseFootprintScale — multiplier of the pixel footprint for noise octave fading, clamped to [0.01, 1]. */
+	float GetNoiseFootprintScale();
+
+	struct FLightLODSettings
+	{
+		bool bEnabled = true;
+		float FullDetailFootprint = 0.0625f;   // in cloud-layer thicknesses: full light steps at or below
+		float MinDetailFootprint = 1.0f;       // in cloud-layer thicknesses: minimum light steps at or above
+		int32 MinLightSteps = 2;
+	};
+
+	/** r.PlanetAtmosphere.LightLOD.* — light-march steps by the true pixel footprint (Step 12, variant 2). */
+	FLightLODSettings GetLightLODSettings();
+
 	/** r.PlanetAtmosphere.LOD.* — validated (FullDetail > MinDetail > 0, fraction in [0.05, 1], light steps in [1, 16]). */
 	FScreenLODSettings GetScreenLODSettings();
 }
