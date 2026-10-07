@@ -1,0 +1,35 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Phase 2.5 / Step 13 — transmittance LUT of every visible atmosphere, one 256 x 64 row block per planet
+// (same order as the per-planet arrays). Texel (x, y) of planet i = atlas texel (x, i * 64 + y).
+// Texel centers map to the ends of the unit range (Bruneton 2017 GetUnitRangeFromTextureCoord), matching
+// PA_SampleTransmittanceLut. Value: transmittance from (H, Mu) to the top of the atmosphere, PA_TRANSMITTANCE_LUT_STEPS steps.
+
+#define PA_TRANSMITTANCE_LUT_PASS 1
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/AtmosphereScattering.ush"
+
+RWTexture2D<float4> OutTransmittanceLut;
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint Index = DispatchThreadId.y / PA_TRANSMITTANCE_LUT_HEIGHT;
+	if (DispatchThreadId.x >= PA_TRANSMITTANCE_LUT_WIDTH || Index >= (uint)NumAtmospheres)
+	{
+		return;
+	}
+	const uint LocalY = DispatchThreadId.y - Index * PA_TRANSMITTANCE_LUT_HEIGHT;
+
+	const FPAScattering S = PA_LoadScattering((int)Index);
+	const float2 X = float2(DispatchThreadId.x, LocalY) / float2(PA_TRANSMITTANCE_LUT_WIDTH - 1, PA_TRANSMITTANCE_LUT_HEIGHT - 1);
+
+	float H;
+	float Mu;
+	float DistanceToTop;
+	PA_TransmittanceLutUnitToHMu(S, X, H, Mu, DistanceToTop);
+
+	const float3 Transmittance = PA_ComputeTransmittanceToTop(S, H, Mu, DistanceToTop, PA_TRANSMITTANCE_LUT_STEPS);
+	OutTransmittanceLut[DispatchThreadId.xy] = float4(Transmittance, 1.0);
+}

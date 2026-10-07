@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-// Cloud raymarch (r.PlanetAtmosphere.DebugMode 0 = Final Clouds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps).
+// Cloud + atmosphere raymarch (r.PlanetAtmosphere.DebugMode 0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps,
+// 5 = Atmosphere Only, 6 = Transmittance LUT).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -9,16 +10,21 @@
 //      per-pixel jitter inside each step, optional empty-space skipping (Phase 2 / Step 9);
 //   3. density comes ONLY from PA_SampleCloudDensity() (CloudDensity.ush, AD-1);
 //   4. Beer-Lambert transmittance, energy-conserving integration over each step;
-//   5. lighting (CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient.
+//   5. lighting (CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient;
+//   6. atmosphere single scattering (AtmosphereScattering.ush, Step 13) along the whole ray inside the atmosphere,
+//      composited BEHIND this planet's clouds (aerial perspective on the clouds and atmospheric sunlight on them
+//      come in Step 15), then the placeholder surface behind the atmosphere.
 // Composited front-to-back across planets; the scene behind is attenuated by the final transmittance.
+// Transmittance = scalar part (clouds, surface) x color part (atmospheres of the planets already composited).
 // Debug views reuse exactly the same march (same density calls), they only change what is written out.
 
 #include "/Engine/Private/Common.ush"
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
 #include "/Plugin/PlanetAtmosphere/Private/CloudLighting.ush"
 #include "/Plugin/PlanetAtmosphere/Private/RaymarchSchedule.ush"
+#include "/Plugin/PlanetAtmosphere/Private/AtmosphereScattering.ush"
 
-int DebugMode;               // 0 = final clouds, 2 = density, 3 = cloud height, 4 = ray steps
+int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -50,6 +56,10 @@ int LightLODEnable;
 float LightLODFullFootprint;
 float LightLODMinFootprint;
 int LightLODMinSteps;
+
+// Atmosphere (Phase 2.5 / Step 13). Transmittance LUT atlas + sampler are declared in AtmosphereScattering.ush.
+int bAtmosphereEnabled;      // r.PlanetAtmosphere.Atmosphere
+int AtmosphereSteps;         // r.PlanetAtmosphere.Atmosphere.Steps
 
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
@@ -90,6 +100,7 @@ struct FPACloudMarchState
 {
 	float3 Accum;            // in-scattered radiance (absolute, not pre-exposed)
 	float Transmittance;     // of clouds and the placeholder surface
+	float3 AtmosphereTransmittance;   // of the atmospheres composited so far (nearer planets); colors everything behind
 	float OpticalDepth;      // clouds only (Density view)
 	float HeightSum;         // sum of height fraction * contribution weight (Cloud Height view)
 	float HeightWeight;      // sum of contribution weights
@@ -146,7 +157,7 @@ float PA_IntegrateCloudStep(
 		Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
 	}
 
-	State.Accum += Radiance * Contribution;
+	State.Accum += Radiance * (Contribution * State.AtmosphereTransmittance);
 	State.HeightSum += HeightFraction * Contribution;
 	State.HeightWeight += Contribution;
 	State.Transmittance *= StepTransmittance;
@@ -236,6 +247,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	FPACloudMarchState State;
 	State.Accum = 0.0;
 	State.Transmittance = 1.0;
+	State.AtmosphereTransmittance = 1.0;
 	State.OpticalDepth = 0.0;
 	State.HeightSum = 0.0;
 	State.HeightWeight = 0.0;
@@ -252,14 +264,18 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Same jitter for every planet of this pixel; animated jitter changes every frame (StateFrameIndex).
 	const float Jitter = PA_GetRayJitter(Ray.Pixel, JitterMode, View.StateFrameIndex);
 
+	const bool bCloudDebugView = DebugMode >= 2 && DebugMode <= 4;
+	const bool bDrawClouds = DebugMode != 5;
+	const bool bDrawAtmosphere = bAtmosphereEnabled != 0 && !bCloudDebugView;
+
 	for (int Index = 0; Index < NumAtmospheres && Index < PA_MAX_ATMOSPHERES; ++Index)
 	{
 		const FPAAtmosphere A = PA_LoadAtmosphere(Index);
 		const FPACloudLayer Layer = PA_MakeCloudLayer(A);
 
-		// The planet sphere is inside the cloud-top sphere, so missing the latter means missing everything.
-		const float2 TopHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.CloudTop);
-		if (TopHit.x > TopHit.y || TopHit.y <= 0.0)
+		// Every shell of the planet is inside the atmosphere-top sphere, so missing it means missing everything.
+		const float2 AtmosphereHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.AtmosphereTop);
+		if (AtmosphereHit.x > AtmosphereHit.y || AtmosphereHit.y <= 0.0)
 		{
 			continue;
 		}
@@ -279,6 +295,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			}
 		}
 
+		const float2 TopHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.CloudTop);
+		const bool bCloudShellHit = bDrawClouds && TopHit.x <= TopHit.y && TopHit.y > 0.0;
+
 		// Cloud shell segments: inside the top sphere and outside the bottom sphere.
 		float Seg1Start = max(TopHit.x, 0.0);
 		float Seg1End = TopHit.y;
@@ -294,7 +313,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		}
 		Seg1End = min(Seg1End, TMax);
 		Seg2End = min(Seg2End, TMax);
-		if (Seg1End > Seg1Start || Seg2End > Seg2Start)
+		if (bCloudShellHit && (Seg1End > Seg1Start || Seg2End > Seg2Start))
 		{
 			const FPAMarchSchedule Schedule = PA_MakeMarchSchedule(
 				Seg1Start, Seg1End, Seg2Start, Seg2End,
@@ -305,19 +324,38 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			PA_MarchClouds(A, Layer, Ray, Light, Schedule, Jitter, State);
 		}
 
-		// Debug placeholder surface (behind this planet's clouds). Opaque: hides everything farther away.
+		// Atmosphere (Step 13): single scattering along the whole ray inside the atmosphere, behind this planet's clouds.
+		FPAScattering Scattering = (FPAScattering)0;
+		if (bDrawAtmosphere)
+		{
+			Scattering = PA_LoadScattering(Index);
+			const FPAAtmosphereSegment Atmosphere = PA_IntegrateAtmosphere(
+				Index, A, Scattering, Ray.Dir, TMax, AtmosphereSteps,
+				Light.SunDirection, Light.SunIlluminance, Light.bHasSun);
+			State.Accum += Atmosphere.Luminance * (State.Transmittance * State.AtmosphereTransmittance);
+			State.AtmosphereTransmittance *= Atmosphere.Transmittance;
+		}
+
+		// Debug placeholder surface (behind this planet's clouds and atmosphere). Opaque: hides everything farther away.
 		if (bSurfaceVisible && bDrawPlanetSurface != 0)
 		{
-			// Lambertian placeholder (dark ocean-like albedo), lit by the same sun and ambient as the clouds.
+			// Lambertian placeholder (albedo = component SurfaceAlbedo), lit by the sun and the cloud ambient.
 			const float3 SurfaceP = A.CameraRel + Ray.Dir * SurfaceT;
 			const float3 SurfaceNormal = normalize(SurfaceP);
-			const float3 SurfaceAlbedo = float3(0.04, 0.06, 0.09);
+			const float3 SurfaceAlbedo = AtmosphereSurface[Index].xyz;
 			float3 SurfaceRadiance = Light.AmbientIlluminance * (Light.bHasSun ? PA_DaylightFactor(SurfaceP, Light.SunDirection) : 1.0);
 			if (Light.bHasSun)
 			{
-				SurfaceRadiance += Light.SunIlluminance * saturate(dot(SurfaceNormal, Light.SunDirection));
+				float3 SunAtSurface = Light.SunIlluminance;
+				if (bDrawAtmosphere)
+				{
+					// Sunlight reaching the ground through the atmosphere (reddened near the terminator).
+					// The surface is at or below the atmosphere bottom -> LUT at H = 0.
+					SunAtSurface *= PA_SampleTransmittanceLut(Index, Scattering, 0.0, dot(SurfaceNormal, Light.SunDirection));
+				}
+				SurfaceRadiance += SunAtSurface * saturate(dot(SurfaceNormal, Light.SunDirection));
 			}
-			State.Accum += State.Transmittance * SurfaceAlbedo / PA_PI * SurfaceRadiance;
+			State.Accum += (State.Transmittance * State.AtmosphereTransmittance) * SurfaceAlbedo / PA_PI * SurfaceRadiance;
 			State.Transmittance = 0.0;
 		}
 
@@ -350,8 +388,19 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	else
 	{
-		// Final clouds. Scene color is pre-exposed; bring our absolute radiance into the same space.
-		Result = Ray.SceneColor.rgb * State.Transmittance + State.Accum * View.PreExposure;
+		// Final (0), Atmosphere Only (5), Transmittance LUT (6). Scene color is pre-exposed; bring our absolute
+		// radiance into the same space.
+		Result = Ray.SceneColor.rgb * (State.Transmittance * State.AtmosphereTransmittance) + State.Accum * View.PreExposure;
+
+		// Transmittance LUT: the atlas in the top-left corner at 2x (planet 0 at the top), over the final image.
+		if (DebugMode == 6)
+		{
+			const uint2 LutTexel = (Ray.Pixel - (uint2)ViewRectMinAndSize.xy) / 2u;
+			if (LutTexel.x < PA_TRANSMITTANCE_LUT_WIDTH && LutTexel.y < (uint)(PA_TRANSMITTANCE_LUT_HEIGHT * NumAtmospheres))
+			{
+				Result = TransmittanceLutAtlas.Load(int3(LutTexel, 0)).rgb;
+			}
+		}
 	}
 	OutputTexture[Ray.Pixel] = float4(Result, Ray.SceneColor.a);
 }

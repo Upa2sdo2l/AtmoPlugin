@@ -18,6 +18,8 @@ namespace PlanetAtmosphere::CVars
 		Density = 2,
 		CloudHeight = 3,
 		RaySteps = 4,
+		AtmosphereOnly = 5,
+		TransmittanceLut = 6,
 	};
 
 	/** Values of r.PlanetAtmosphere.StepDistribution. */
@@ -112,6 +114,14 @@ namespace PlanetAtmosphere::CVars
 
 	/** r.PlanetAtmosphere.LightLOD.* — light-march steps by the true pixel footprint (Step 12, variant 2). */
 	FLightLODSettings GetLightLODSettings();
+
+	// ---- Atmosphere (Phase 2.5 / Step 13) ----
+
+	/** r.PlanetAtmosphere.Atmosphere — atmosphere single scattering on / off. */
+	bool IsAtmosphereEnabled();
+
+	/** r.PlanetAtmosphere.Atmosphere.Steps — view-ray samples of the atmosphere, clamped to [4, 64]. */
+	int32 GetAtmosphereSteps();
 
 	/** r.PlanetAtmosphere.LOD.* — validated (FullDetail > MinDetail > 0, fraction in [0.05, 1], light steps in [1, 16]). */
 	FScreenLODSettings GetScreenLODSettings();

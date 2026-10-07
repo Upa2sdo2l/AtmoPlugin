@@ -61,6 +61,7 @@ public:
 	const double CloudShapeScaleUU;
 	const float CloudErosion;
 	const int32 RaymarchSteps;
+	const FPlanetAtmosphereScattering ScatteringUU;
 
 private:
 	/** Shared (non-UObject) registry; null if the world has no subsystem (e.g. preview worlds). */

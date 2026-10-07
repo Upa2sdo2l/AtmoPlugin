@@ -16,11 +16,13 @@ namespace
 		TEXT("r.PlanetAtmosphere.DebugMode"),
 		0,
 		TEXT("PlanetAtmosphere view mode.\n")
-		TEXT(" 0 = Final Clouds (default)\n")
+		TEXT(" 0 = Final (clouds + atmosphere, default)\n")
 		TEXT(" 1 = Atmosphere Bounds (planet sphere, atmosphere shell, cloud shell)\n")
 		TEXT(" 2 = Density (optical depth of the clouds along the view ray)\n")
 		TEXT(" 3 = Cloud Height (where inside the cloud layer the visible clouds are: blue = bottom, red = top)\n")
-		TEXT(" 4 = Ray Steps (density-function calls per pixel incl. light march; white = 64 x (1 + LightSteps))"),
+		TEXT(" 4 = Ray Steps (density-function calls per pixel incl. light march; white = 64 x (1 + LightSteps))\n")
+		TEXT(" 5 = Atmosphere Only (final image without clouds)\n")
+		TEXT(" 6 = Transmittance LUT (final image + the LUT atlas at 2x in the top-left corner, one 256 x 64 block per planet)"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -145,6 +147,22 @@ namespace
 		TEXT("Light steps for samples with a large pixel footprint. Clamped to [1, 16] and never above the planet's light steps."),
 		ECVF_RenderThreadSafe);
 
+	// ---- Atmosphere (Phase 2.5 / Step 13) ----
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereAtmosphere(
+		TEXT("r.PlanetAtmosphere.Atmosphere"),
+		1,
+		TEXT("Atmosphere single scattering (Rayleigh + Mie + ozone; parameters on the PlanetAtmosphereComponent).\n")
+		TEXT("0 = off (clouds only, Phase 2 image), 1 = on (default). The transmittance LUT pass runs in both cases (a few microseconds)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereAtmosphereSteps(
+		TEXT("r.PlanetAtmosphere.Atmosphere.Steps"),
+		16,
+		TEXT("Samples of the atmosphere along each view ray (quadratic distribution from inside the atmosphere, uniform from outside).\n")
+		TEXT("Default 16 (CPU prototype: mean luminance error <= 0.9 %). Clamped to [4, 64]."),
+		ECVF_RenderThreadSafe);
+
 	// ---- Screen-space LOD (Phase 2 / Step 11) ----
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLOD(
@@ -193,6 +211,8 @@ namespace PlanetAtmosphere::CVars
 		case 2:  return EDebugMode::Density;
 		case 3:  return EDebugMode::CloudHeight;
 		case 4:  return EDebugMode::RaySteps;
+		case 5:  return EDebugMode::AtmosphereOnly;
+		case 6:  return EDebugMode::TransmittanceLut;
 		default: return EDebugMode::FinalClouds;
 		}
 	}
@@ -280,6 +300,16 @@ namespace PlanetAtmosphere::CVars
 		Settings.MinDetailFootprint = FMath::Max(Settings.FullDetailFootprint * 1.01f, CVarPlanetAtmosphereLightLODMinFootprint.GetValueOnAnyThread(false));
 		Settings.MinLightSteps = FMath::Clamp(CVarPlanetAtmosphereLightLODMinSteps.GetValueOnAnyThread(false), 1, 16);
 		return Settings;
+	}
+
+	bool IsAtmosphereEnabled()
+	{
+		return CVarPlanetAtmosphereAtmosphere.GetValueOnAnyThread(false) != 0;
+	}
+
+	int32 GetAtmosphereSteps()
+	{
+		return FMath::Clamp(CVarPlanetAtmosphereAtmosphereSteps.GetValueOnAnyThread(false), 4, 64);
 	}
 
 	FScreenLODSettings GetScreenLODSettings()
