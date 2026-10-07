@@ -32,7 +32,9 @@ PlanetAtmosphere/
     ├── CloudDensity.ush                     SINGLE SOURCE OF TRUTH for cloud density (see below)
     ├── CloudLighting.ush                    phase function, light march toward the sun, planet shadow
     ├── RaymarchSchedule.ush                 where the samples go along a ray: uniform / camera-centered steps, jitter
-    ├── CloudRaymarch.usf                    cloud raymarch (Final Clouds + Density / Cloud Height / Ray Steps views)
+    ├── AtmosphereScattering.ush             atmosphere: densities, phase functions, transmittance-LUT mapping, single scattering
+    ├── TransmittanceLut.usf                 per-frame transmittance LUT atlas (256 x 64 per visible planet)
+    ├── CloudRaymarch.usf                    clouds + atmosphere (Final + Density / Cloud Height / Ray Steps / Atmosphere Only / LUT views)
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
 
@@ -47,13 +49,32 @@ PlanetAtmosphere/
 
 Component parameters are in **meters**; everything render-side is in Unreal Units (cm).
 The actor's scale is ignored — radii are absolute.
+Atmosphere scattering coefficients are **per kilometer**, scale heights and layer altitudes in meters above
+`AtmosphereBottomRadius`.
+
+## Atmosphere parameters (Details Panel → Atmosphere Scattering)
+
+Defaults are Earth's (the same values as UE SkyAtmosphere), but there is no built-in "Earth mode": every value can be
+changed in the editor to get an Earth-like, Mars-like or completely fictional atmosphere.
+
+| Property | Default | Meaning |
+|---|---|---|
+| `RayleighScattering` | (0.005802, 0.013558, 0.0331) /km | Molecules: sky color, red sunsets |
+| `RayleighScaleHeight` | 8000 m | Exponential density profile |
+| `MieScattering` | 0.003996 /km | Aerosols / dust / haze: whitish haze, glow around the sun |
+| `MieAbsorption` | 0.000444 /km | Light absorbed by aerosols |
+| `MieScaleHeight` | 1200 m | Exponential density profile |
+| `MieAnisotropy` | 0.8 | Cornette-Shanks g: 0 = isotropic, → 1 = strong forward glow |
+| `OzoneAbsorption` | (0.000650, 0.001881, 0.000085) /km | At the peak of the ozone layer |
+| `OzoneLayerAltitude` / `OzoneLayerWidth` | 25000 / 30000 m | Tent profile: 1 at the peak, 0 at ± width / 2 |
+| `SurfaceAlbedo` | (0.04, 0.06, 0.09) | Placeholder planet surface; ground bounce light in Step 14 |
 
 ## Console variables
 
 | CVar | Default | Meaning |
 |---|---|---|
 | `r.PlanetAtmosphere.Enable` | 1 | Master switch (0 = nothing is dispatched) |
-| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final Clouds, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps |
+| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT |
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
@@ -71,6 +92,8 @@ The actor's scale is ignored — radii are absolute.
 | `r.PlanetAtmosphere.LightLOD.FullDetailFootprint` | 0.0625 | Pixel footprint (× layer thickness) up to which the full LightSteps are used |
 | `r.PlanetAtmosphere.LightLOD.MinDetailFootprint` | 1.0 | Pixel footprint (× layer thickness) from which `LightLOD.MinLightSteps` are used |
 | `r.PlanetAtmosphere.LightLOD.MinLightSteps` | 2 | Light steps for far samples |
+| `r.PlanetAtmosphere.Atmosphere` | 1 | Atmosphere single scattering (sky, limb, aerial perspective over the surface / scene). 0 = clouds only (Phase 2 image) |
+| `r.PlanetAtmosphere.Atmosphere.Steps` | 16 | Atmosphere samples per view ray (quadratic from inside the atmosphere, uniform from outside), 4..64 |
 | `r.PlanetAtmosphere.LOD` | 1 | Screen-space LOD: fewer raymarch / light steps for atmospheres small on screen |
 | `r.PlanetAtmosphere.LOD.FullDetailRadius` | 400 | Radius on screen (px, render resolution) from which full detail is used |
 | `r.PlanetAtmosphere.LOD.MinDetailRadius` | 50 | Radius at and below which minimum detail is used (log2 interpolation in between) |
@@ -87,13 +110,16 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 
 | `DebugMode` | View |
 |---|---|
-| 0 | Final clouds |
+| 0 | Final: clouds + atmosphere |
 | 1 | Atmosphere Bounds: planet sphere (green), atmosphere shell (blue), cloud shell (white) |
 | 2 | Density: optical depth along the view ray (black → red → yellow → white) |
 | 3 | Cloud Height: where in the layer the visible clouds are (blue = bottom, green = middle, red = top) |
 | 4 | Ray Steps: density-function calls per pixel incl. light march and empty-space probes — the cost map (white = 64 × (1 + LightSteps)) |
+| 5 | Atmosphere Only: the final image without clouds |
+| 6 | Transmittance LUT: final image + the LUT atlas at 2× in the top-left corner (one 256 × 64 block per planet, nearest planet on top; x = view zenith angle, y = altitude) |
 
-- GPU: `stat gpu` → **PlanetAtmosphere** (all plugin passes of a view); `ProfileGPU` shows the individual passes.
+- GPU: `stat gpu` → **PlanetAtmosphere** (noise bake + raymarch / debug pass of a view) and
+  **PlanetAtmosphere.TransmittanceLut** (Step 13 LUT pass); total = sum of both. `ProfileGPU` shows the individual passes.
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
 - Per-frame log: `log LogPlanetAtmosphere Verbose`; screen radius and LOD steps per atmosphere: `log LogPlanetAtmosphere VeryVerbose`.
 
@@ -112,6 +138,15 @@ Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` /
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 2.5 — Step 13: atmosphere single scattering**
+- Rayleigh + Mie (Cornette-Shanks) + ozone, all parameters on the component (Earth defaults, no presets)
+- Transmittance LUT 256 × 64 per visible planet (Bruneton parameterization written with altitudes — exact in float32
+  at Earth scale), rebuilt every frame into a transient atlas
+- 16 view-ray samples: quadratic from inside the atmosphere, uniform from outside; energy-conserving; hard planet shadow
+- Sky from the surface, limb glow from orbit, aerial perspective over the placeholder surface and scene geometry;
+  the placeholder surface is lit by sunlight through the atmosphere
+- Clouds are composited in front of their planet's atmosphere and are not yet lit through it (Step 15)
 
 **Phase 2 — Step 12: density LOD that keeps the cloud cover of distant planets**
 - Noise octaves fade at 1/4 of the pixel footprint; TSR's per-frame sub-pixel jitter + accumulation average the detail
@@ -134,8 +169,8 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Phase 2.5 — atmospheric scattering (sky from the surface, limb glow from orbit, aerial perspective).
-Then Phase 2.5 — atmospheric scattering (sky, limb glow, aerial perspective).
+Next: Step 14 — multiple scattering (32 × 32 LUT, ground albedo); Step 15 — clouds through the atmosphere
+(aerial perspective, sunlight through the atmosphere, sky ambient); Step 16 — profiling.
 
 ## Dependencies
 

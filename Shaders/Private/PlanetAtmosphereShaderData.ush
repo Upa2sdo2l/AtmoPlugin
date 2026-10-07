@@ -27,6 +27,12 @@ float4 AtmosphereData3[PA_MAX_ATMOSPHERES]; // x = erosion, y = raymarch steps, 
 float4 AtmosphereAxisX[PA_MAX_ATMOSPHERES]; // planet local X axis in world space (unit), w unused
 float4 AtmosphereAxisY[PA_MAX_ATMOSPHERES];
 float4 AtmosphereAxisZ[PA_MAX_ATMOSPHERES];
+// Atmosphere scattering (Step 13; AtmosphereScattering.ush). Coefficients in 1/cm, heights / altitudes in cm above the atmosphere bottom.
+float4 AtmosphereRayleigh[PA_MAX_ATMOSPHERES];       // xyz = Rayleigh scattering, w = Rayleigh scale height
+float4 AtmosphereMieScattering[PA_MAX_ATMOSPHERES];  // xyz = Mie scattering, w = Mie scale height
+float4 AtmosphereMieAbsorption[PA_MAX_ATMOSPHERES];  // xyz = Mie absorption, w = Mie anisotropy g
+float4 AtmosphereOzone[PA_MAX_ATMOSPHERES];          // xyz = ozone absorption at the peak, w = peak altitude
+float4 AtmosphereSurface[PA_MAX_ATMOSPHERES];        // xyz = surface albedo, w = ozone layer full width
 
 struct FPAAtmosphere
 {

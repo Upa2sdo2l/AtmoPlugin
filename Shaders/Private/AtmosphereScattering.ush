@@ -1,0 +1,272 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Phase 2.5 / Step 13 — atmosphere single scattering (Rayleigh + Mie + ozone absorption).
+//
+//  - Density profiles: Rayleigh and Mie exponential, ozone a tent; altitudes above the ATMOSPHERE BOTTOM.
+//  - Phase functions: Rayleigh, Cornette-Shanks for Mie (as UE SkyAtmosphere).
+//  - Transmittance LUT (Bruneton 2017 parameterization, 256 x 64 per planet, rows of a per-frame atlas):
+//    transmittance from a point toward the top of the atmosphere, built by TransmittanceLut.usf.
+//  - View ray: NumSteps samples, quadratic distribution when the camera is inside the atmosphere, uniform outside;
+//    energy-conserving step integral; sun visibility = LUT x hard planet shadow (ray / bottom sphere).
+//
+// Precision (AD-3 / Step 13 prototype): at Earth scale r^2 - R^2 in float32 loses up to 1.6 km of altitude.
+// Every quantity below is therefore written with ALTITUDES: rho^2 = r^2 - Rb^2 = h (2 Rb + h),
+// Rt^2 - r^2 = (Ht - h)(2 Rb + Ht + h), r(t)^2 - Rb^2 = rho^2 + t (t + 2 r mu); no difference of two large squares.
+//
+// Per-planet parameters: AtmosphereRayleigh / MieScattering / MieAbsorption / Ozone / Surface (PlanetAtmosphereShaderData.ush).
+
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
+
+// Must match PlanetAtmosphere::TransmittanceLut::Width / Height (AtmosphereRenderer.cpp).
+#define PA_TRANSMITTANCE_LUT_WIDTH 256
+#define PA_TRANSMITTANCE_LUT_HEIGHT 64
+
+// Integration steps of one LUT texel (CPU prototype: 40 steps are as accurate as 200 at 256 x 64).
+#define PA_TRANSMITTANCE_LUT_STEPS 40
+
+static const float PA_ATMOSPHERE_PI = 3.14159265;
+
+/** One planet's atmosphere in shader units (cm, 1/cm). Altitudes H are above the atmosphere bottom. */
+struct FPAScattering
+{
+	float BottomRadius;            // Rb = planet radius + atmosphere bottom altitude
+	float BottomAltitude;          // atmosphere bottom above the planet radius (FPAAtmosphere altitudes -> H)
+	float Thickness;               // Ht = top - bottom
+	float3 RayleighScattering;
+	float RayleighInvScaleHeight;
+	float3 MieScattering;
+	float3 MieExtinction;          // scattering + absorption
+	float MieInvScaleHeight;
+	float MieG;
+	float3 OzoneAbsorption;
+	float OzoneAltitude;
+	float OzoneInvHalfWidth;
+	float3 SurfaceAlbedo;
+};
+
+FPAScattering PA_LoadScattering(int Index)
+{
+	FPAScattering S;
+	const float PlanetRadius = AtmosphereData0[Index].w;
+	S.BottomAltitude = AtmosphereData1[Index].y;
+	S.BottomRadius = PlanetRadius + S.BottomAltitude;
+	S.Thickness = max(AtmosphereData1[Index].z - S.BottomAltitude, 1.0);
+	S.RayleighScattering = AtmosphereRayleigh[Index].xyz;
+	S.RayleighInvScaleHeight = 1.0 / max(AtmosphereRayleigh[Index].w, 1.0);
+	S.MieScattering = AtmosphereMieScattering[Index].xyz;
+	S.MieExtinction = AtmosphereMieScattering[Index].xyz + AtmosphereMieAbsorption[Index].xyz;
+	S.MieInvScaleHeight = 1.0 / max(AtmosphereMieScattering[Index].w, 1.0);
+	S.MieG = AtmosphereMieAbsorption[Index].w;
+	S.OzoneAbsorption = AtmosphereOzone[Index].xyz;
+	S.OzoneAltitude = AtmosphereOzone[Index].w;
+	S.OzoneInvHalfWidth = 2.0 / max(AtmosphereSurface[Index].w, 1.0);
+	S.SurfaceAlbedo = AtmosphereSurface[Index].xyz;
+	return S;
+}
+
+// ---- Medium ---------------------------------------------------------------------------------
+
+/** Relative densities at altitude H above the atmosphere bottom: x = Rayleigh, y = Mie, z = ozone. */
+float3 PA_AtmosphereDensities(FPAScattering S, float H)
+{
+	H = max(H, 0.0);
+	return float3(
+		exp(-H * S.RayleighInvScaleHeight),
+		exp(-H * S.MieInvScaleHeight),
+		saturate(1.0 - abs(H - S.OzoneAltitude) * S.OzoneInvHalfWidth));
+}
+
+/** Extinction (1/cm) for the given relative densities. */
+float3 PA_AtmosphereExtinction(FPAScattering S, float3 Densities)
+{
+	return S.RayleighScattering * Densities.x + S.MieExtinction * Densities.y + S.OzoneAbsorption * Densities.z;
+}
+
+/** CosTheta = dot(view ray, direction to the sun). Units: 1/sr. */
+float PA_RayleighPhase(float CosTheta)
+{
+	return 3.0 / (16.0 * PA_ATMOSPHERE_PI) * (1.0 + CosTheta * CosTheta);
+}
+
+/** Cornette-Shanks (as UE SkyAtmosphere). Units: 1/sr. */
+float PA_MiePhase(float CosTheta, float G)
+{
+	const float G2 = G * G;
+	const float K = 3.0 / (8.0 * PA_ATMOSPHERE_PI) * (1.0 - G2) / (2.0 + G2);
+	return K * (1.0 + CosTheta * CosTheta) / pow(max(1.0 + G2 - 2.0 * G * CosTheta, 1e-6), 1.5);
+}
+
+// ---- Transmittance LUT parameterization (Bruneton 2017), in altitudes ------------------------
+
+/** sqrt(r^2 - Rb^2) for r = Rb + H, without the difference of squares. */
+float PA_AtmosphereRho(float BottomRadius, float H)
+{
+	H = max(H, 0.0);
+	return sqrt(H * (2.0 * BottomRadius + H));
+}
+
+/** (H, Mu) -> unit-range LUT coordinates (x = Mu axis, y = altitude axis). H is clamped into the atmosphere. */
+float2 PA_TransmittanceLutHMuToUnit(FPAScattering S, float H, float Mu)
+{
+	H = clamp(H, 0.0, S.Thickness);
+	const float Rb = S.BottomRadius;
+	const float R = Rb + H;
+	const float BigH = PA_AtmosphereRho(Rb, S.Thickness);   // sqrt(Rt^2 - Rb^2)
+	const float Rho = PA_AtmosphereRho(Rb, H);
+
+	// Distance to the top boundary: -r mu + sqrt(r^2 mu^2 + Rt^2 - r^2), cancellation-free for mu > 0.
+	const float RMu = R * Mu;
+	const float TopMinusR2 = (S.Thickness - H) * (2.0 * Rb + S.Thickness + H);   // Rt^2 - r^2
+	const float SqrtDisc = sqrt(max(TopMinusR2 + RMu * RMu, 0.0));
+	const float D = RMu > 0.0 ? TopMinusR2 / (SqrtDisc + RMu) : SqrtDisc - RMu;
+
+	const float DMin = S.Thickness - H;
+	const float DMax = Rho + BigH;
+	return float2((D - DMin) / max(DMax - DMin, 1e-3), Rho / BigH);
+}
+
+/** Inverse of PA_TransmittanceLutHMuToUnit (LUT build): unit coordinates -> altitude H, cos zenith Mu, distance to the top D. */
+void PA_TransmittanceLutUnitToHMu(FPAScattering S, float2 X, out float H, out float Mu, out float D)
+{
+	const float Rb = S.BottomRadius;
+	const float BigH = PA_AtmosphereRho(Rb, S.Thickness);
+	const float Rho = BigH * X.y;
+	H = Rho * Rho / (sqrt(Rho * Rho + Rb * Rb) + Rb);         // r - Rb
+	H = min(H, S.Thickness);
+	const float R = Rb + H;
+	const float DMin = S.Thickness - H;
+	const float DMax = Rho + BigH;
+	D = DMin + X.x * (DMax - DMin);
+	const float BigH2MinusRho2 = (S.Thickness - H) * (2.0 * Rb + S.Thickness + H);   // BigH^2 - Rho^2
+	Mu = D <= 0.0 ? 1.0 : clamp((BigH2MinusRho2 - D * D) / (2.0 * R * D), -1.0, 1.0);
+}
+
+/**
+ * Altitude above the atmosphere bottom at distance T along a ray that starts at altitude H with cos zenith Mu.
+ * r(T)^2 - Rb^2 = rho^2 + T (T + 2 r mu)  ->  h = (r(T)^2 - Rb^2) / (r(T) + Rb).
+ */
+float PA_AltitudeAlongRay(float BottomRadius, float H, float Mu, float T)
+{
+	const float Rho = PA_AtmosphereRho(BottomRadius, H);
+	const float N = max(Rho * Rho + T * (T + 2.0 * (BottomRadius + H) * Mu), 0.0);
+	return N / (sqrt(BottomRadius * BottomRadius + N) + BottomRadius);
+}
+
+/** Integrated transmittance toward the top of the atmosphere from altitude H, cos zenith Mu (LUT build). */
+float3 PA_ComputeTransmittanceToTop(FPAScattering S, float H, float Mu, float DistanceToTop, int NumSteps)
+{
+	const float Dt = DistanceToTop / (float)NumSteps;
+	float3 OpticalDepth = 0.0;
+	for (int Step = 0; Step < NumSteps; ++Step)
+	{
+		const float T = ((float)Step + 0.5) * Dt;
+		const float SampleH = PA_AltitudeAlongRay(S.BottomRadius, H, Mu, T);
+		OpticalDepth += PA_AtmosphereExtinction(S, PA_AtmosphereDensities(S, SampleH)) * Dt;
+	}
+	return exp(-OpticalDepth);
+}
+
+/** True if the sun (cos zenith Mu) is above the horizon of the atmosphere-bottom sphere at altitude H (hard planet shadow). */
+bool PA_SunAboveHorizon(FPAScattering S, float H, float Mu)
+{
+	H = max(H, 0.0);
+	return Mu >= -PA_AtmosphereRho(S.BottomRadius, H) / (S.BottomRadius + H);
+}
+
+// ---- Transmittance LUT atlas (render passes that read it) ------------------------------------
+#ifndef PA_TRANSMITTANCE_LUT_PASS
+
+Texture2D<float4> TransmittanceLutAtlas;   // PA_TRANSMITTANCE_LUT_WIDTH x (PA_TRANSMITTANCE_LUT_HEIGHT x NumAtmospheres)
+SamplerState TransmittanceLutSampler;      // bilinear, clamp
+
+/** Bilinear LUT lookup for planet Index. Texel centers map to the unit range ends, so rows never bleed into each other. */
+float3 PA_SampleTransmittanceLut(int Index, FPAScattering S, float H, float Mu)
+{
+	const float2 Size = float2(PA_TRANSMITTANCE_LUT_WIDTH, PA_TRANSMITTANCE_LUT_HEIGHT);
+	const float2 X = saturate(PA_TransmittanceLutHMuToUnit(S, H, Mu));
+	float2 UV = (0.5 + X * (Size - 1.0)) / Size;
+	UV.y = ((float)Index + UV.y) / (float)max(NumAtmospheres, 1);
+	return TransmittanceLutAtlas.SampleLevel(TransmittanceLutSampler, UV, 0).rgb;
+}
+
+/** Sun transmittance at altitude H for sun cos zenith Mu: LUT x hard planet shadow. */
+float3 PA_AtmosphereSunTransmittance(int Index, FPAScattering S, float H, float Mu)
+{
+	return PA_SunAboveHorizon(S, H, Mu) ? PA_SampleTransmittanceLut(Index, S, H, Mu) : 0.0;
+}
+
+struct FPAAtmosphereSegment
+{
+	float3 Luminance;       // in-scattered, absolute (sun illuminance x 1/sr)
+	float3 Transmittance;
+};
+
+/**
+ * Single scattering along the view ray inside [TStart, TEnd] (already clipped to the atmosphere, the planet surface
+ * and the scene). NumSteps samples at step midpoints: quadratic distribution (fine near the camera) when the camera is
+ * inside the atmosphere, uniform from outside (CPU prototype: mean luminance error <= 0.9 % at 16 steps).
+ */
+FPAAtmosphereSegment PA_IntegrateAtmosphere(
+	int Index, FPAAtmosphere A, FPAScattering S,
+	float3 RayDir, float TStart, float TEnd, int NumSteps,
+	float3 SunDirection, float3 SunIlluminance, bool bHasSun)
+{
+	FPAAtmosphereSegment Result;
+	Result.Luminance = 0.0;
+	Result.Transmittance = 1.0;
+	const float Length = TEnd - TStart;
+	if (Length <= 0.0 || NumSteps <= 0)
+	{
+		return Result;
+	}
+
+	const bool bQuadratic = A.CameraAltitude < A.AtmosphereTop;
+	const float CosTheta = dot(RayDir, SunDirection);
+	const float PhaseRayleigh = PA_RayleighPhase(CosTheta);
+	const float PhaseMie = PA_MiePhase(CosTheta, S.MieG);
+	const float InvSteps = 1.0 / (float)NumSteps;
+
+	for (int Step = 0; Step < NumSteps; ++Step)
+	{
+		float F0 = (float)Step * InvSteps;
+		float F1 = (float)(Step + 1) * InvSteps;
+		if (bQuadratic)
+		{
+			F0 *= F0;
+			F1 *= F1;
+		}
+		const float Dt = Length * (F1 - F0);
+		const float T = TStart + Length * 0.5 * (F0 + F1);
+
+		const float3 P = A.CameraRel + RayDir * T;               // planet-relative, world axes
+		const float R = length(P);
+		const float H = R - A.PlanetRadius - S.BottomAltitude;   // ~64 cm granularity at Earth scale: fine for density
+		const float3 Densities = PA_AtmosphereDensities(S, H);
+		const float3 Extinction = PA_AtmosphereExtinction(S, Densities);
+
+		float3 Scattered = 0.0;
+		if (bHasSun)
+		{
+			const float SunMu = dot(P, SunDirection) / max(R, 1.0);
+			const float3 SunTransmittance = PA_AtmosphereSunTransmittance(Index, S, H, SunMu);
+			Scattered = (S.RayleighScattering * (Densities.x * PhaseRayleigh) + S.MieScattering * (Densities.y * PhaseMie))
+				* SunTransmittance * SunIlluminance;
+		}
+
+		// Energy-conserving integral over the step: S * (1 - exp(-sigma dt)) / sigma (-> S dt for sigma dt -> 0).
+		const float3 OpticalDepth = Extinction * Dt;
+		const float3 StepTransmittance = exp(-OpticalDepth);
+		// (step()/lerp() instead of a vector ternary: valid in both HLSL 2018 and 2021.)
+		const float3 StepIntegral = lerp(
+			Dt * (1.0 - 0.5 * OpticalDepth),
+			(1.0 - StepTransmittance) / max(Extinction, 1e-30),
+			step(1e-4, OpticalDepth));
+		Result.Luminance += Result.Transmittance * Scattered * StepIntegral;
+		Result.Transmittance *= StepTransmittance;
+	}
+	return Result;
+}
+
+#endif // PA_TRANSMITTANCE_LUT_PASS

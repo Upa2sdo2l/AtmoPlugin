@@ -42,6 +42,17 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAxisX, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAxisY, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereAxisZ, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// Atmosphere scattering (Step 13). Coefficients in 1/cm, heights / altitudes in cm above the atmosphere bottom.
+	// xyz = Rayleigh scattering, w = Rayleigh scale height
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereRayleigh, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// xyz = Mie scattering, w = Mie scale height
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereMieScattering, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// xyz = Mie absorption, w = Mie anisotropy g
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereMieAbsorption, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// xyz = ozone absorption at the peak, w = peak altitude
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereOzone, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// xyz = surface albedo, w = ozone layer full width
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereSurface, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 END_SHADER_PARAMETER_STRUCT()
 
 /** r.PlanetAtmosphere.DebugMode 1 — analytical planet / atmosphere / cloud shells. Shaders/Private/AtmosphereBoundsDebug.usf */
@@ -62,7 +73,8 @@ public:
 };
 
 /**
- * r.PlanetAtmosphere.DebugMode 0 / 2 / 3 / 4 — cloud raymarch (final clouds / density / cloud height / ray steps).
+ * r.PlanetAtmosphere.DebugMode 0 / 2 / 3 / 4 / 5 / 6 — cloud + atmosphere raymarch
+ * (final / density / cloud height / ray steps / atmosphere only / transmittance LUT).
  * Shaders/Private/CloudRaymarch.usf. Density comes only from CloudDensity.ush (AD-1).
  */
 class FAtmosphereCloudRaymarchCS : public FGlobalShader
@@ -106,6 +118,35 @@ public:
 		SHADER_PARAMETER(float, LightLODFullFootprint)
 		SHADER_PARAMETER(float, LightLODMinFootprint)
 		SHADER_PARAMETER(int32, LightLODMinSteps)
+		// Atmosphere single scattering (Phase 2.5 / Step 13). The atlas is always bound (built every frame, see renderer).
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, TransmittanceLutAtlas)
+		SHADER_PARAMETER_SAMPLER(SamplerState, TransmittanceLutSampler)
+		SHADER_PARAMETER(int32, bAtmosphereEnabled)
+		SHADER_PARAMETER(int32, AtmosphereSteps)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * Transmittance LUT of every visible atmosphere (Phase 2.5 / Step 13). Shaders/Private/TransmittanceLut.usf.
+ * Writes a per-frame transient atlas: Width x (Height x NumAtmospheres), one row block per planet in the order of
+ * FAtmosphereInstanceParameters (the same filled struct is used by the raymarch pass).
+ */
+class FAtmosphereTransmittanceLutCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereTransmittanceLutCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereTransmittanceLutCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	/** Must match PA_TRANSMITTANCE_LUT_WIDTH / HEIGHT in Shaders/Private/AtmosphereScattering.ush. */
+	static constexpr int32 LutWidth = 256;
+	static constexpr int32 LutHeight = 64;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutTransmittanceLut)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

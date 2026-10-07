@@ -6,4 +6,5 @@
 // "/Plugin/PlanetAtmosphere" is mapped to <Plugin>/Shaders in FPlanetAtmosphereModule::StartupModule().
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereBoundsDebugCS, "/Plugin/PlanetAtmosphere/Private/AtmosphereBoundsDebug.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereCloudRaymarchCS, "/Plugin/PlanetAtmosphere/Private/CloudRaymarch.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FAtmosphereTransmittanceLutCS, "/Plugin/PlanetAtmosphere/Private/TransmittanceLut.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereNoiseBakeCS, "/Plugin/PlanetAtmosphere/Private/NoiseBake.usf", "MainCS", SF_Compute);

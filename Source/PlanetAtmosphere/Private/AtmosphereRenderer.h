@@ -14,8 +14,9 @@ namespace PlanetAtmosphere
 {
 	/**
 	 * Render thread. Adds the PlanetAtmosphere pass for one view according to r.PlanetAtmosphere.DebugMode:
-	 *   0 = Final Clouds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps -> FAtmosphereCloudRaymarchCS
-	 *   1 = Atmosphere Bounds          -> FAtmosphereBoundsDebugCS
+	 *   0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT
+	 *       -> FAtmosphereTransmittanceLutCS (Step 13, per-frame atlas) + FAtmosphereCloudRaymarchCS
+	 *   1 = Atmosphere Bounds -> FAtmosphereBoundsDebugCS
 	 *
 	 * Called from the EPostProcessingPass::BeforeDOF callback (HDR scene color, before DOF/TSR/tonemapping).
 	 * Returns the new scene color. If there is nothing to draw (no instances, missing inputs,

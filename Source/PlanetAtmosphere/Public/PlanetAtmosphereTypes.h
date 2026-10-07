@@ -49,6 +49,26 @@ struct FPlanetAtmosphereRadii
 };
 
 /**
+ * Validated atmosphere scattering parameters (Phase 2.5 / Step 13), render-side units:
+ * coefficients in 1/cm, heights and altitudes in cm. Altitudes are measured from the ATMOSPHERE BOTTOM
+ * (FPlanetAtmosphereRadii::AtmosphereBottom), which is where the density profiles start.
+ * Built once by UPlanetAtmosphereComponent::GetValidatedScatteringUU(), copied by value to the render thread.
+ */
+struct FPlanetAtmosphereScattering
+{
+	FVector3f RayleighScattering = FVector3f::ZeroVector;   // 1/cm at the atmosphere bottom
+	float RayleighScaleHeight = 1.0f;                       // cm, exponential profile
+	FVector3f MieScattering = FVector3f::ZeroVector;        // 1/cm
+	FVector3f MieAbsorption = FVector3f::ZeroVector;        // 1/cm
+	float MieScaleHeight = 1.0f;                            // cm, exponential profile
+	float MieAnisotropy = 0.0f;                             // g of the Cornette-Shanks phase function
+	FVector3f OzoneAbsorption = FVector3f::ZeroVector;      // 1/cm at the tent peak
+	float OzoneLayerAltitude = 0.0f;                        // cm, tent peak
+	float OzoneLayerWidth = 1.0f;                           // cm, full width of the tent (0 at +-width/2)
+	FVector3f SurfaceAlbedo = FVector3f::ZeroVector;        // placeholder surface now, ground bounce in Step 14
+};
+
+/**
  * The sun used to light all atmospheres of one world (Step 7: a single sun per level).
  * Gathered on the game thread from a Directional Light, copied to the render thread by value.
  */
@@ -85,4 +105,7 @@ struct FAtmosphereVisibleInstance
 	double CloudShapeScaleUU = 0.0;
 	float CloudErosion = 0.0f;
 	int32 RaymarchSteps = 0;
+
+	/** Atmosphere scattering (Step 13), render-side units. */
+	FPlanetAtmosphereScattering ScatteringUU;
 };

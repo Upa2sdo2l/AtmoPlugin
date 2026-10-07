@@ -14,9 +14,11 @@
 #include "AtmosphereNoiseTextures.h"
 #include "RHIStaticStates.h"
 
-// `stat gpu` -> "PlanetAtmosphere" (all plugin passes of a view are inside this scope).
-// Distinct identifier: the macros paste it into symbol names, and "PlanetAtmosphere" is also our namespace.
+// `stat gpu` -> "PlanetAtmosphere" (noise bake + raymarch / debug pass of a view) and
+// "PlanetAtmosphere.TransmittanceLut" (Step 13 LUT pass, measured separately). Total cost = sum of both.
+// Distinct identifiers: the macros paste them into symbol names, and "PlanetAtmosphere" is also our namespace.
 DECLARE_GPU_STAT_NAMED(PlanetAtmosphereGPU, TEXT("PlanetAtmosphere"));
+DECLARE_GPU_STAT_NAMED(PlanetAtmosphereTransmittanceLutGPU, TEXT("PlanetAtmosphere.TransmittanceLut"));
 
 // `stat PlanetAtmosphere` (render thread CPU cost of building the passes).
 DECLARE_CYCLE_STAT(TEXT("Setup Passes (RT)"), STAT_PlanetAtmosphere_SetupPasses, STATGROUP_PlanetAtmosphere);
@@ -191,6 +193,48 @@ namespace PlanetAtmosphere
 			return FVector4f(static_cast<float>(Axis.X), static_cast<float>(Axis.Y), static_cast<float>(Axis.Z), 0.0f);
 		}
 
+		FVector4f ToVector4f(const FVector3f& XYZ, float W)
+		{
+			return FVector4f(XYZ.X, XYZ.Y, XYZ.Z, W);
+		}
+
+		/**
+		 * Transmittance LUT atlas of the visible atmospheres (Step 13): transient, rebuilt every frame for every view
+		 * (no caching yet, by design: correctness first, then measure). Row block i = planet i of InstanceParameters.
+		 */
+		FRDGTextureRef AddTransmittanceLutPass(
+			FRDGBuilder& GraphBuilder,
+			FGlobalShaderMap* GlobalShaderMap,
+			const FAtmosphereInstanceParameters& InstanceParameters)
+		{
+			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereTransmittanceLutGPU, "PlanetAtmosphere.TransmittanceLut");
+
+			const int32 NumAtmospheres = FMath::Max(InstanceParameters.NumAtmospheres, 1);
+			const FIntPoint AtlasSize(
+				FAtmosphereTransmittanceLutCS::LutWidth,
+				FAtmosphereTransmittanceLutCS::LutHeight * NumAtmospheres);
+
+			const FRDGTextureDesc AtlasDesc = FRDGTextureDesc::Create2D(
+				AtlasSize,
+				PF_FloatRGBA,
+				FClearValueBinding::Black,
+				ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+			FRDGTextureRef Atlas = GraphBuilder.CreateTexture(AtlasDesc, TEXT("PlanetAtmosphere.TransmittanceLutAtlas"));
+
+			FAtmosphereTransmittanceLutCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereTransmittanceLutCS::FParameters>();
+			Parameters->AtmosphereParams = InstanceParameters;
+			Parameters->OutTransmittanceLut = GraphBuilder.CreateUAV(Atlas);
+
+			TShaderMapRef<FAtmosphereTransmittanceLutCS> ComputeShader(GlobalShaderMap);
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("PlanetAtmosphere.TransmittanceLut %dx%d (%d atmospheres)", AtlasSize.X, AtlasSize.Y, NumAtmospheres),
+				ComputeShader,
+				Parameters,
+				FComputeShaderUtils::GetGroupCount(AtlasSize, FAtmosphereTransmittanceLutCS::ThreadGroupSize));
+			return Atlas;
+		}
+
 		/** Sorts near -> far, truncates to MaxVisible and packs. All large-number differences in double. */
 		void FillInstanceParameters(
 			const FSceneView& View,
@@ -225,6 +269,11 @@ namespace PlanetAtmosphere
 					OutParameters.AtmosphereAxisX[Index] = Zero;
 					OutParameters.AtmosphereAxisY[Index] = Zero;
 					OutParameters.AtmosphereAxisZ[Index] = Zero;
+					OutParameters.AtmosphereRayleigh[Index] = Zero;
+					OutParameters.AtmosphereMieScattering[Index] = Zero;
+					OutParameters.AtmosphereMieAbsorption[Index] = Zero;
+					OutParameters.AtmosphereOzone[Index] = Zero;
+					OutParameters.AtmosphereSurface[Index] = Zero;
 					continue;
 				}
 
@@ -268,6 +317,14 @@ namespace PlanetAtmosphere
 				OutParameters.AtmosphereAxisX[Index] = ToAxis4f(Instance.PlanetAxisX);
 				OutParameters.AtmosphereAxisY[Index] = ToAxis4f(Instance.PlanetAxisY);
 				OutParameters.AtmosphereAxisZ[Index] = ToAxis4f(Instance.PlanetAxisZ);
+
+				// Atmosphere scattering (Step 13): already validated and in cm / 1/cm (UPlanetAtmosphereComponent).
+				const FPlanetAtmosphereScattering& S = Instance.ScatteringUU;
+				OutParameters.AtmosphereRayleigh[Index] = ToVector4f(S.RayleighScattering, S.RayleighScaleHeight);
+				OutParameters.AtmosphereMieScattering[Index] = ToVector4f(S.MieScattering, S.MieScaleHeight);
+				OutParameters.AtmosphereMieAbsorption[Index] = ToVector4f(S.MieAbsorption, S.MieAnisotropy);
+				OutParameters.AtmosphereOzone[Index] = ToVector4f(S.OzoneAbsorption, S.OzoneLayerAltitude);
+				OutParameters.AtmosphereSurface[Index] = ToVector4f(S.SurfaceAlbedo, S.OzoneLayerWidth);
 			}
 		}
 	}
@@ -287,13 +344,13 @@ namespace PlanetAtmosphere
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 		}
 
-		RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
-
 		const CVars::EDebugMode DebugMode = CVars::GetDebugMode();
 		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());
 
 		if (DebugMode == CVars::EDebugMode::AtmosphereBounds)
 		{
+			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
+
 			FAtmosphereBoundsDebugCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereBoundsDebugCS::FParameters>();
 			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
 			FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
@@ -307,44 +364,58 @@ namespace PlanetAtmosphere
 				ComputeShader,
 				Parameters,
 				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereBoundsDebugCS::ThreadGroupSize));
+			return FScreenPassTexture(Setup.OutputTexture, Setup.ViewRect);
 		}
-		else
+
+		// Per-planet data is filled ONCE and shared by the LUT pass and the raymarch pass, so both see the same
+		// near -> far order (planet i = atlas row block i).
+		FAtmosphereCloudRaymarchCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudRaymarchCS::FParameters>();
+		FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
+
+		// Step 13: transmittance LUT (own GPU stat). Built even with r.PlanetAtmosphere.Atmosphere 0, because the
+		// raymarch shader always binds the atlas; the pass is tiny (256 x 64 texels x 40 steps per planet).
+		FRDGTextureRef TransmittanceLutAtlas = AddTransmittanceLutPass(GraphBuilder, GlobalShaderMap, Parameters->AtmosphereParams);
+
+		RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
+
+		// Shared noise textures (baked on first use). Unavailable only after module shutdown -> draw nothing
+		// (the LUT pass then has no consumer and is culled by RDG).
+		FPlanetAtmosphereNoiseTexturesRDG NoiseTextures;
+		if (!GetNoiseTextures().GetOrBake(GraphBuilder, GlobalShaderMap, NoiseTextures))
 		{
-			// Shared noise textures (baked on first use). Unavailable only after module shutdown -> draw nothing.
-			FPlanetAtmosphereNoiseTexturesRDG NoiseTextures;
-			if (!GetNoiseTextures().GetOrBake(GraphBuilder, GlobalShaderMap, NoiseTextures))
-			{
-				return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
-			}
-
-			FAtmosphereCloudRaymarchCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudRaymarchCS::FParameters>();
-			Parameters->View = View.ViewUniformBuffer;
-			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
-			FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
-			Parameters->DebugMode = static_cast<int32>(DebugMode);
-			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
-			FillLightingParameters(Sun, *Parameters);
-			FillMarchParameters(*Parameters);
-			Parameters->BaseNoiseTexture = NoiseTextures.BaseShape;
-			Parameters->ErosionNoiseTexture = NoiseTextures.Erosion;
-			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
-			Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
-			Parameters->NoiseFootprintScale = CVars::GetNoiseFootprintScale();
-			const CVars::FLightLODSettings LightLOD = CVars::GetLightLODSettings();
-			Parameters->LightLODEnable = LightLOD.bEnabled ? 1 : 0;
-			Parameters->LightLODFullFootprint = LightLOD.FullDetailFootprint;
-			Parameters->LightLODMinFootprint = LightLOD.MinDetailFootprint;
-			Parameters->LightLODMinSteps = LightLOD.MinLightSteps;
-
-			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
-			FComputeShaderUtils::AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("PlanetAtmosphere.CloudRaymarch %dx%d (%d atmospheres, mode %d)",
-					Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->AtmosphereParams.NumAtmospheres, Parameters->DebugMode),
-				ComputeShader,
-				Parameters,
-				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCloudRaymarchCS::ThreadGroupSize));
+			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 		}
+
+		Parameters->View = View.ViewUniformBuffer;
+		FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
+		Parameters->DebugMode = static_cast<int32>(DebugMode);
+		Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
+		FillLightingParameters(Sun, *Parameters);
+		FillMarchParameters(*Parameters);
+		Parameters->BaseNoiseTexture = NoiseTextures.BaseShape;
+		Parameters->ErosionNoiseTexture = NoiseTextures.Erosion;
+		Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
+		Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
+		Parameters->NoiseFootprintScale = CVars::GetNoiseFootprintScale();
+		const CVars::FLightLODSettings LightLOD = CVars::GetLightLODSettings();
+		Parameters->LightLODEnable = LightLOD.bEnabled ? 1 : 0;
+		Parameters->LightLODFullFootprint = LightLOD.FullDetailFootprint;
+		Parameters->LightLODMinFootprint = LightLOD.MinDetailFootprint;
+		Parameters->LightLODMinSteps = LightLOD.MinLightSteps;
+		Parameters->TransmittanceLutAtlas = TransmittanceLutAtlas;
+		Parameters->TransmittanceLutSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		Parameters->bAtmosphereEnabled = CVars::IsAtmosphereEnabled() ? 1 : 0;
+		Parameters->AtmosphereSteps = CVars::GetAtmosphereSteps();
+
+		TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("PlanetAtmosphere.CloudRaymarch %dx%d (%d atmospheres, mode %d, atmosphere %d)",
+				Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->AtmosphereParams.NumAtmospheres, Parameters->DebugMode,
+				Parameters->bAtmosphereEnabled),
+			ComputeShader,
+			Parameters,
+			FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCloudRaymarchCS::ThreadGroupSize));
 
 		return FScreenPassTexture(Setup.OutputTexture, Setup.ViewRect);
 	}

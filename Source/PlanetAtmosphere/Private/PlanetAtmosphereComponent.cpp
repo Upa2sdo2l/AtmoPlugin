@@ -61,6 +61,33 @@ FPlanetAtmosphereRadii UPlanetAtmosphereComponent::GetValidatedRadiiMeters() con
 	return R;
 }
 
+FPlanetAtmosphereScattering UPlanetAtmosphereComponent::GetValidatedScatteringUU() const
+{
+	// Coefficients: per km -> per cm (1 km = 100 000 cm). Heights: m -> cm.
+	const float MetersToUU = static_cast<float>(PlanetAtmosphere::MetersToUnrealUnits);
+
+	auto Coefficient = [](const FLinearColor& PerKm)
+	{
+		return FVector3f(FMath::Max(PerKm.R, 0.0f), FMath::Max(PerKm.G, 0.0f), FMath::Max(PerKm.B, 0.0f)) * 1.0e-5f;
+	};
+
+	FPlanetAtmosphereScattering S;
+	S.RayleighScattering = Coefficient(RayleighScattering);
+	S.RayleighScaleHeight = FMath::Max(RayleighScaleHeight, 1.0f) * MetersToUU;
+	S.MieScattering = Coefficient(MieScattering);
+	S.MieAbsorption = Coefficient(MieAbsorption);
+	S.MieScaleHeight = FMath::Max(MieScaleHeight, 1.0f) * MetersToUU;
+	S.MieAnisotropy = FMath::Clamp(MieAnisotropy, 0.0f, 0.999f);
+	S.OzoneAbsorption = Coefficient(OzoneAbsorption);
+	S.OzoneLayerAltitude = FMath::Max(OzoneLayerAltitude, 0.0f) * MetersToUU;
+	S.OzoneLayerWidth = FMath::Max(OzoneLayerWidth, 1.0f) * MetersToUU;
+	S.SurfaceAlbedo = FVector3f(
+		FMath::Clamp(SurfaceAlbedo.R, 0.0f, 1.0f),
+		FMath::Clamp(SurfaceAlbedo.G, 0.0f, 1.0f),
+		FMath::Clamp(SurfaceAlbedo.B, 0.0f, 1.0f));
+	return S;
+}
+
 FBoxSphereBounds UPlanetAtmosphereComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
 	// Bounds = atmosphere top sphere, in Unreal Units (cm), centered on the component.
