@@ -9,6 +9,14 @@
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereCommon.ush"
 #include "/Plugin/PlanetAtmosphere/Private/CloudDensity.ush"
 
+// ---- Temporal reprojection data (Phase 3 / Step 18) -----------------------------------------
+// Written by CloudRaymarch.usf into the alpha channels (luminance.a = depth, transmittance.a = planet), read by
+// AtmosphereTemporal.usf. Reprojection slot PA_REPROJ_NO_PLANET = camera motion only (scene geometry, empty sky).
+#define PA_REPROJ_NO_PLANET PA_MAX_ATMOSPHERES
+#define PA_REPROJ_SLOTS (PA_MAX_ATMOSPHERES + 1)
+#define PA_REPROJ_MIN_CLOUD_OPACITY 0.05   // a planet's clouds define the depth only if they are visibly there
+#define PA_REPROJ_MAX_DEPTH_KM 60000.0     // depths are stored in km (fp16); farther = infinity (direction only)
+
 // ---- View (FAtmosphereViewParameters) -------------------------------------------------------
 // The scene color is not part of the shared view data (Step 17): the raymarch writes its own luminance /
 // transmittance buffers, AtmosphereComposite.usf applies them; only the bounds debug view reads the scene color.

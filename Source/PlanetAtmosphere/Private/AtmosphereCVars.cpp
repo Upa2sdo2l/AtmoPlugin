@@ -23,7 +23,8 @@ namespace
 		TEXT(" 4 = Ray Steps (density-function calls per pixel incl. light march; white = 64 x (1 + LightSteps))\n")
 		TEXT(" 5 = Atmosphere Only (final image without clouds)\n")
 		TEXT(" 6 = Transmittance LUT (final image + the LUT atlas at 2x in the top-left corner, one 256 x 64 block per planet)\n")
-		TEXT(" 7 = Multiple-Scattering LUT (final image + the MS LUT atlas at 4x in the top-left corner, one 64 x 32 block per planet, x25)"),
+		TEXT(" 7 = Multiple-Scattering LUT (final image + the MS LUT atlas at 4x in the top-left corner, one 64 x 32 block per planet, x25)\n")
+		TEXT(" 8 = Temporal Weight (weight of the current frame in the temporal accumulation: green = history, red = current frame only / history rejected)"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -179,6 +180,34 @@ namespace
 		TEXT("0 = rebuild every LUT of every view every frame (pre-Step 16 cost; for comparison, or after recompileshaders)."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereTemporal(
+		TEXT("r.PlanetAtmosphere.Temporal"),
+		1,
+		TEXT("Temporal accumulation of the clouds + atmosphere (Phase 3 / Step 18): reprojected history of previous frames\n")
+		TEXT("(camera and planet motion), clamped to the current neighbourhood. 1 = on (default), 0 = every frame on its own.\n")
+		TEXT("Used in debug modes 0, 5 and 8 for views with a persistent view state (not scene captures / reflections)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereTemporalCurrentFrameWeight(
+		TEXT("r.PlanetAtmosphere.Temporal.CurrentFrameWeight"),
+		0.1f,
+		TEXT("Minimum weight of the current frame (0.01..1). Lower = smoother, more lag when things move. Default 0.1."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereTemporalClampGamma(
+		TEXT("r.PlanetAtmosphere.Temporal.ClampGamma"),
+		1.25f,
+		TEXT("History is clamped to mean +- ClampGamma x std of the current 3x3 neighbourhood (0.25..8). Lower = less ghosting,\n")
+		TEXT("more noise. Default 1.25."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereTemporalDepthRejectRatio(
+		TEXT("r.PlanetAtmosphere.Temporal.DepthRejectRatio"),
+		4.0f,
+		TEXT("History is dropped where its depth differs from the reprojected depth by more than this factor (1.1..100):\n")
+		TEXT("disocclusion and camera jumps without a camera cut. Default 4."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudSkyAmbientScale(
 		TEXT("r.PlanetAtmosphere.CloudSkyAmbientScale"),
 		1.0f,
@@ -239,6 +268,7 @@ namespace PlanetAtmosphere::CVars
 		case 5:  return EDebugMode::AtmosphereOnly;
 		case 6:  return EDebugMode::TransmittanceLut;
 		case 7:  return EDebugMode::MultipleScatteringLut;
+		case 8:  return EDebugMode::TemporalWeight;
 		default: return EDebugMode::FinalClouds;
 		}
 	}
@@ -346,6 +376,16 @@ namespace PlanetAtmosphere::CVars
 	bool IsLutCacheEnabled()
 	{
 		return CVarPlanetAtmosphereAtmosphereLutCache.GetValueOnAnyThread(false) != 0;
+	}
+
+	FTemporalSettings GetTemporalSettings()
+	{
+		FTemporalSettings Settings;
+		Settings.bEnabled = CVarPlanetAtmosphereTemporal.GetValueOnAnyThread(false) != 0;
+		Settings.CurrentFrameWeight = FMath::Clamp(CVarPlanetAtmosphereTemporalCurrentFrameWeight.GetValueOnAnyThread(false), 0.01f, 1.0f);
+		Settings.ClampGamma = FMath::Clamp(CVarPlanetAtmosphereTemporalClampGamma.GetValueOnAnyThread(false), 0.25f, 8.0f);
+		Settings.DepthRejectRatio = FMath::Clamp(CVarPlanetAtmosphereTemporalDepthRejectRatio.GetValueOnAnyThread(false), 1.1f, 100.0f);
+		return Settings;
 	}
 
 	float GetCloudSkyAmbientScaleMultiplier()

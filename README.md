@@ -23,6 +23,7 @@ PlanetAtmosphere/
 │       ├── AtmosphereShaders.*              global shader classes
 │       ├── AtmosphereNoiseTextures.*        shared baked 3D noise textures (FRenderResource, baked once on the GPU)
 │       ├── AtmosphereLutCache.*             atmosphere LUTs cached across frames (FRenderResource, 32-slot pools)
+│       ├── AtmosphereTemporal.*             temporal history per view (FRenderResource): reprojection matrices, history textures
 │       ├── AtmosphereStats.h                CPU stat group (`stat PlanetAtmosphere`)
 │       └── AtmosphereCVars.*                r.PlanetAtmosphere.* console variables
 └── Shaders/Private/
@@ -37,6 +38,7 @@ PlanetAtmosphere/
     ├── TransmittanceLut.usf                 transmittance LUT (256 x 64 per planet), written into its slot of the cache pool
     ├── MultipleScatteringLut.usf            multiple-scattering LUT (64 x 32 per planet, Hillaire 2020), same pool scheme
     ├── CloudRaymarch.usf                    clouds + atmosphere (Final + Density / Cloud Height / Ray Steps / Atmosphere Only / LUT views) -> luminance + transmittance
+    ├── AtmosphereTemporal.usf               temporal accumulation: reprojection (camera + planet motion), clamp, blend
     ├── AtmosphereComposite.usf              applies the raymarch result to the scene: scene x transmittance + luminance
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
@@ -104,6 +106,10 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.LightLOD.MinLightSteps` | 2 | Light steps for far samples |
 | `r.PlanetAtmosphere.Atmosphere` | 1 | Atmosphere single scattering (sky, limb, aerial perspective over the surface / scene). 0 = clouds only (Phase 2 image) |
 | `r.PlanetAtmosphere.Atmosphere.MultipleScattering` | 1 | Multiple scattering (all orders ≥ 2, Hillaire LUT, ground bounce with `SurfaceAlbedo`). 0 = single scattering only (Step 13 image, MS LUT pass skipped) |
+| `r.PlanetAtmosphere.Temporal` | 1 | Temporal accumulation (Step 18): reprojected history of previous frames (camera and planet motion), clamped to the current 3×3 neighbourhood. Debug modes 0 / 5 / 8, perspective views with a persistent view state (not scene captures / reflections / orthographic) |
+| `r.PlanetAtmosphere.Temporal.CurrentFrameWeight` | 0.1 | Minimum weight of the new frame (0.01..1): lower = smoother, more lag in motion |
+| `r.PlanetAtmosphere.Temporal.ClampGamma` | 1.25 | History clamped to mean ± gamma × std of the current neighbourhood: lower = less ghosting, more noise |
+| `r.PlanetAtmosphere.Temporal.DepthRejectRatio` | 4 | History dropped where its depth differs by more than this factor (disocclusion, camera jumps without a camera cut) |
 | `r.PlanetAtmosphere.Atmosphere.LutCache` | 1 | LUTs cached across frames, rebuilt only on change (Step 16). 0 = rebuild every LUT every frame (old cost; for comparison or after `recompileshaders`) |
 | `r.PlanetAtmosphere.Atmosphere.Steps` | 16 | Atmosphere samples per view ray (quadratic from inside the atmosphere, uniform from outside), 4..64 |
 | `r.PlanetAtmosphere.LOD` | 1 | Screen-space LOD: fewer raymarch / light steps for atmospheres small on screen |
@@ -147,9 +153,10 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 | 5 | Atmosphere Only: the final image without clouds |
 | 6 | Transmittance LUT: final image + the LUT atlas at 2× in the top-left corner (one 256 × 64 block per planet, nearest planet on top; x = view zenith angle, y = altitude) |
 | 7 | Multiple-Scattering LUT: final image + the MS LUT atlas at 4× in the top-left corner, ×25 (one 64 × 32 block per planet; x = sun zenith from below the horizon (left) to overhead (right), y = altitude, ground at the top) |
+| 8 | Temporal Weight: weight of the current frame in the temporal accumulation over the darkened image (green = mostly history, red = current frame only: history rejected or just started) |
 
 - GPU: `stat gpu` → **PlanetAtmosphere.Raymarch** (noise bake + raymarch / debug pass of a view; called
-  **PlanetAtmosphere** before Step 17), **PlanetAtmosphere.Composite** (Step 17: applying the result to the scene),
+  **PlanetAtmosphere** before Step 17), **PlanetAtmosphere.Temporal** (Step 18), **PlanetAtmosphere.Composite** (Step 17: applying the result to the scene),
   **PlanetAtmosphere.TransmittanceLut** (Step 13) and **PlanetAtmosphere.MultipleScatteringLut** (Step 14); total = sum. `ProfileGPU` shows the individual passes.
   Since Step 16 the two LUT stats appear only on frames where a LUT is rebuilt (first frame, a parameter edit, a new planet).
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
@@ -181,6 +188,17 @@ Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` /
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 3 — Step 18: temporal history + reprojection**
+- Per view history (luminance + transmittance), reprojected with the previous camera and the previous transform of each
+  planet (moving / rotating actors), at the clouds' contribution-weighted depth (else surface / scene / atmosphere middle)
+- Catmull-Rom history, clamp to the current 3×3 neighbourhood, blend 1/N → 0.1; history dropped on camera cuts, off-screen,
+  planet change or depth mismatch (×4); exposure changes compensated
+- Prototype (160×90, 16 steps): error vs the converged image 3–5× lower, frame-to-frame flicker 10–13× lower
+  (far-planet "salt": 37.6 % → 7.7 %); the raymarch still runs for every pixel (cost +0.2–0.4 ms; savings in Step 19)
+- Memory: 2 × RGBA16F per view at the render extent (~33 MB at 1920×1080, twice that while a frame is written);
+  histories of views not rendered for 120 frames are freed; a history older than 4 frames, of the other image type
+  (final / atmosphere only) or before a camera cut is not reused
 
 **Phase 3 — Step 17: raymarch result separated from the scene**
 - The raymarch writes its own pre-exposed luminance + transmittance buffers (every debug view too); a composite pass
@@ -234,7 +252,7 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 18 — temporal history + reprojection (prototype first), then Step 19 — interleaved 3×3 rendering.
+Next: Step 19 — interleaved 3×3 rendering (prototype first).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) is deferred until Phase 3 is measured.
 
 ## Dependencies

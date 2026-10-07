@@ -55,6 +55,8 @@ public:
 
 public:
 	// Immutable render parameters (Unreal Units for distances).
+	/** UObject::GetUniqueID of the component (planet identity across frames for the temporal reprojection). */
+	const uint32 PlanetId;
 	const FPlanetAtmosphereRadii RadiiUU;
 	const float CloudCoverage;
 	const float CloudDensity;

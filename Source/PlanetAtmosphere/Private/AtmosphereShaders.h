@@ -157,6 +157,57 @@ public:
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, TransmittanceTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutputTexture)
 		SHADER_PARAMETER(FVector4f, ViewRectMinAndSize)
+		// r.PlanetAtmosphere.DebugMode 8 (Step 18): overlay of the current-frame weight decoded from transmittance.a.
+		SHADER_PARAMETER(int32, bShowTemporalWeight)
+		SHADER_PARAMETER(float, CurrentFrameWeight)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/** Reprojection slots of the temporal pass: one per visible atmosphere + camera-only. = PA_REPROJ_SLOTS (PlanetAtmosphereShaderData.ush). */
+#define PLANET_ATMOSPHERE_REPROJ_SLOTS (PLANET_ATMOSPHERE_MAX_VISIBLE + 1)
+
+/**
+ * Temporal accumulation of the raymarch result (Phase 3 / Step 18). Shaders/Private/AtmosphereTemporal.usf.
+ * Reads the current luminance / transmittance (+ reprojection depth / planet in alpha) and the previous history,
+ * writes the new history (also the input of the composite). Set up by AtmosphereTemporal.cpp.
+ */
+class FAtmosphereTemporalCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereTemporalCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereTemporalCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		// Engine view uniform buffer: View.PreExposure (history exposure correction).
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, ViewParams)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, CurrentLuminance)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, CurrentTransmittance)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, HistoryLuminance)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, HistoryTransmittance)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, HistoryExposure)
+		SHADER_PARAMETER_SAMPLER(SamplerState, HistorySampler)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutLuminance)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutTransmittance)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutExposure)
+		// Row-vector reprojection matrices (current camera-relative point -> previous clip), one per slot.
+		SHADER_PARAMETER_ARRAY(FVector4f, ReprojRow0, [PLANET_ATMOSPHERE_REPROJ_SLOTS])
+		SHADER_PARAMETER_ARRAY(FVector4f, ReprojRow1, [PLANET_ATMOSPHERE_REPROJ_SLOTS])
+		SHADER_PARAMETER_ARRAY(FVector4f, ReprojRow2, [PLANET_ATMOSPHERE_REPROJ_SLOTS])
+		SHADER_PARAMETER_ARRAY(FVector4f, ReprojRow3, [PLANET_ATMOSPHERE_REPROJ_SLOTS])
+		// x = slot of the same planet in the previous frame, -1 = new planet.
+		SHADER_PARAMETER_ARRAY(FVector4f, PlanetPrevSlot, [PLANET_ATMOSPHERE_REPROJ_SLOTS])
+		SHADER_PARAMETER(FVector4f, CurrentJitterNDC)
+		SHADER_PARAMETER(FVector4f, CurrentViewForward)
+		SHADER_PARAMETER(FVector4f, HistoryTextureSizeAndInvSize)
+		SHADER_PARAMETER(FVector4f, PrevViewRectMinAndSize)
+		SHADER_PARAMETER(int32, bHistoryValid)
+		SHADER_PARAMETER(float, CurrentFrameWeight)
+		SHADER_PARAMETER(float, ClampGamma)
+		SHADER_PARAMETER(float, DepthRejectRatio)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

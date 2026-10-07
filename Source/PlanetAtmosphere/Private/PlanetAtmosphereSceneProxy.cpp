@@ -8,6 +8,7 @@
 
 FPlanetAtmosphereSceneProxy::FPlanetAtmosphereSceneProxy(const UPlanetAtmosphereComponent* InComponent)
 	: FPrimitiveSceneProxy(InComponent)
+	, PlanetId(InComponent->GetUniqueID())
 	, RadiiUU(InComponent->GetValidatedRadiiUU())
 	// Runtime-safe clamps (UPROPERTY ClampMin/Max only applies to Details-panel edits).
 	, CloudCoverage(FMath::Clamp(InComponent->CloudCoverage, 0.0f, 1.0f))
@@ -65,6 +66,7 @@ FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() co
 	const FMatrix& PrimitiveLocalToWorld = GetLocalToWorld();
 
 	FAtmosphereVisibleInstance Instance;
+	Instance.PlanetId = PlanetId;
 	Instance.PlanetCenterWorld = PrimitiveLocalToWorld.GetOrigin();
 
 	// Rows 0..2 of UE's (row-vector) matrix are the local X/Y/Z axes in world space, scaled.
