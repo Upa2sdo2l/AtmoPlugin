@@ -80,24 +80,37 @@ public:
 
 	// ===== ATMOSPHERE SCATTERING (Phase 2.5 / Step 13) =====
 	// Defaults are Earth's (same values as UE SkyAtmosphere), but nothing is hardcoded: any combination is valid
-	// (Earth-like, Mars-like or fictional). Coefficients are per KILOMETER at the bottom of the atmosphere
-	// (AtmosphereBottomRadius); all heights / altitudes are in meters above AtmosphereBottomRadius.
+	// (Earth-like, Mars-like or fictional). Every coefficient is Color x Scale (as in UE SkyAtmosphere):
+	// the color (0..1) is the visible tint, the scale is the strength per KILOMETER at the bottom of the atmosphere
+	// (AtmosphereBottomRadius). All heights / altitudes are in meters above AtmosphereBottomRadius.
 
-	/** Rayleigh (small molecules) scattering coefficient per km for R, G, B. Sets the sky color: blue sky, red sunsets. */
+	/** Tint of Rayleigh (small molecules) scattering. Earth: blue sky, red sunsets. Coefficient = color x scale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (HideAlphaChannel))
-	FLinearColor RayleighScattering = FLinearColor(0.005802f, 0.013558f, 0.0331f);
+	FLinearColor RayleighScatteringColor = FLinearColor(0.175287f, 0.409607f, 1.0f);
+
+	/** Strength of Rayleigh scattering, per km (multiplies the color). Earth: 0.0331. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "0.0", UIMax = "0.2"))
+	float RayleighScatteringScale = 0.0331f;
 
 	/** Altitude (m) over which the Rayleigh density falls by a factor e (exponential profile). Earth: 8 km. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "1.0"))
 	float RayleighScaleHeight = 8000.0f;
 
-	/** Mie (aerosols, dust, haze) scattering coefficient per km for R, G, B. Whitish haze and the glow around the sun. */
+	/** Tint of Mie (aerosols, dust, haze) scattering: whitish haze and the glow around the sun. Coefficient = color x scale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (HideAlphaChannel))
-	FLinearColor MieScattering = FLinearColor(0.003996f, 0.003996f, 0.003996f);
+	FLinearColor MieScatteringColor = FLinearColor(1.0f, 1.0f, 1.0f);
 
-	/** Mie absorption coefficient per km for R, G, B (aerosols absorb a little light; dust on Mars absorbs a lot). */
+	/** Strength of Mie scattering, per km (multiplies the color). Earth: 0.003996. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "0.0", UIMax = "0.1"))
+	float MieScatteringScale = 0.003996f;
+
+	/** Tint of Mie absorption (aerosols absorb a little light; dust on Mars absorbs a lot of blue). Coefficient = color x scale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (HideAlphaChannel))
-	FLinearColor MieAbsorption = FLinearColor(0.000444f, 0.000444f, 0.000444f);
+	FLinearColor MieAbsorptionColor = FLinearColor(1.0f, 1.0f, 1.0f);
+
+	/** Strength of Mie absorption, per km (multiplies the color). Earth: 0.000444. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "0.0", UIMax = "0.1"))
+	float MieAbsorptionScale = 0.000444f;
 
 	/** Altitude (m) over which the Mie density falls by a factor e (exponential profile). Earth: 1.2 km. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "1.0"))
@@ -107,9 +120,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "0.0", ClampMax = "0.999"))
 	float MieAnisotropy = 0.8f;
 
-	/** Ozone absorption coefficient per km for R, G, B at the peak of the ozone layer (deepens the blue of the zenith at twilight). */
+	/** Tint of ozone absorption (absorbs mostly green / red: deepens the blue of the zenith at twilight). Coefficient = color x scale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (HideAlphaChannel))
-	FLinearColor OzoneAbsorption = FLinearColor(0.000650f, 0.001881f, 0.000085f);
+	FLinearColor OzoneAbsorptionColor = FLinearColor(0.345561f, 1.0f, 0.045189f);
+
+	/** Strength of ozone absorption at the peak of the layer, per km (multiplies the color). Earth: 0.001881. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "0.0", UIMax = "0.1"))
+	float OzoneAbsorptionScale = 0.001881f;
 
 	/** Altitude (m) of the peak of the ozone layer (tent profile). Earth: 25 km. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmosphere Scattering", meta = (ClampMin = "0.0"))

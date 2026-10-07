@@ -56,18 +56,24 @@ Atmosphere scattering coefficients are **per kilometer**, scale heights and laye
 
 Defaults are Earth's (the same values as UE SkyAtmosphere), but there is no built-in "Earth mode": every value can be
 changed in the editor to get an Earth-like, Mars-like or completely fictional atmosphere.
+As in UE SkyAtmosphere, each coefficient is **Color × Scale**: the color (0..1) is the visible tint, the scale is the
+strength per km. Change the scale to make the medium denser / thinner, the color to change its hue.
 
 | Property | Default | Meaning |
 |---|---|---|
-| `RayleighScattering` | (0.005802, 0.013558, 0.0331) /km | Molecules: sky color, red sunsets |
+| `RayleighScatteringColor` × `RayleighScatteringScale` | (0.175, 0.410, 1.0) × 0.0331 /km | Molecules: sky color, red sunsets |
 | `RayleighScaleHeight` | 8000 m | Exponential density profile |
-| `MieScattering` | 0.003996 /km | Aerosols / dust / haze: whitish haze, glow around the sun |
-| `MieAbsorption` | 0.000444 /km | Light absorbed by aerosols |
+| `MieScatteringColor` × `MieScatteringScale` | white × 0.003996 /km | Aerosols / dust / haze: whitish haze, glow around the sun |
+| `MieAbsorptionColor` × `MieAbsorptionScale` | white × 0.000444 /km | Light absorbed by aerosols |
 | `MieScaleHeight` | 1200 m | Exponential density profile |
 | `MieAnisotropy` | 0.8 | Cornette-Shanks g: 0 = isotropic, → 1 = strong forward glow |
-| `OzoneAbsorption` | (0.000650, 0.001881, 0.000085) /km | At the peak of the ozone layer |
+| `OzoneAbsorptionColor` × `OzoneAbsorptionScale` | (0.346, 1.0, 0.045) × 0.001881 /km | At the peak of the ozone layer |
 | `OzoneLayerAltitude` / `OzoneLayerWidth` | 25000 / 30000 m | Tent profile: 1 at the peak, 0 at ± width / 2 |
 | `SurfaceAlbedo` | (0.04, 0.06, 0.09) | Placeholder planet surface; ground bounce light in Step 14 |
+
+The medium is integrated only up to its **effective top** = min(`AtmosphereTopRadius`,
+12 × the larger scale height, top of the ozone layer) — ~96 km for Earth. A geometric shell thicker than that
+changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not dilute the view-ray samples.
 
 ## Console variables
 

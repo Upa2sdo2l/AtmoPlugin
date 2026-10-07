@@ -329,10 +329,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		if (bDrawAtmosphere)
 		{
 			Scattering = PA_LoadScattering(Index);
-			const float AtmosphereStart = max(AtmosphereHit.x, 0.0);
-			const float AtmosphereEnd = min(AtmosphereHit.y, TMax);
 			const FPAAtmosphereSegment Atmosphere = PA_IntegrateAtmosphere(
-				Index, A, Scattering, Ray.Dir, AtmosphereStart, AtmosphereEnd, AtmosphereSteps,
+				Index, A, Scattering, Ray.Dir, TMax, AtmosphereSteps,
 				Light.SunDirection, Light.SunIlluminance, Light.bHasSun);
 			State.Accum += Atmosphere.Luminance * (State.Transmittance * State.AtmosphereTransmittance);
 			State.AtmosphereTransmittance *= Atmosphere.Transmittance;

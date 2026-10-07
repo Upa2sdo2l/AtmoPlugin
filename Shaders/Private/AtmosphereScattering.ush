@@ -26,6 +26,13 @@
 // Integration steps of one LUT texel (CPU prototype: 40 steps are as accurate as 200 at 256 x 64).
 #define PA_TRANSMITTANCE_LUT_STEPS 40
 
+// Effective top of the scattering medium, in scale heights of the thicker exponential profile (or the ozone layer top,
+// if higher): above it the remaining air column is ~exp(-12) = 6e-6 of the total. The LUT and the view ray are
+// integrated only up to min(geometric atmosphere top, effective top), so a geometric shell much thicker than the air
+// (e.g. AtmosphereTopRadius 500 km above the bottom with Earth's 8 km scale height) does not waste the 16 view samples
+// in vacuum. Prototype: 500 km shell, camera 400 km: 28 % -> 0.7 % mean luminance error; 100 km shell unchanged.
+#define PA_ATMOSPHERE_EFFECTIVE_TOP_SCALE_HEIGHTS 12.0
+
 static const float PA_ATMOSPHERE_PI = 3.14159265;
 
 /** One planet's atmosphere in shader units (cm, 1/cm). Altitudes H are above the atmosphere bottom. */
@@ -33,7 +40,7 @@ struct FPAScattering
 {
 	float BottomRadius;            // Rb = planet radius + atmosphere bottom altitude
 	float BottomAltitude;          // atmosphere bottom above the planet radius (FPAAtmosphere altitudes -> H)
-	float Thickness;               // Ht = top - bottom
+	float Thickness;               // Ht = min(geometric top, effective top) - bottom: where the medium is integrated
 	float3 RayleighScattering;
 	float RayleighInvScaleHeight;
 	float3 MieScattering;
@@ -52,7 +59,6 @@ FPAScattering PA_LoadScattering(int Index)
 	const float PlanetRadius = AtmosphereData0[Index].w;
 	S.BottomAltitude = AtmosphereData1[Index].y;
 	S.BottomRadius = PlanetRadius + S.BottomAltitude;
-	S.Thickness = max(AtmosphereData1[Index].z - S.BottomAltitude, 1.0);
 	S.RayleighScattering = AtmosphereRayleigh[Index].xyz;
 	S.RayleighInvScaleHeight = 1.0 / max(AtmosphereRayleigh[Index].w, 1.0);
 	S.MieScattering = AtmosphereMieScattering[Index].xyz;
@@ -63,6 +69,12 @@ FPAScattering PA_LoadScattering(int Index)
 	S.OzoneAltitude = AtmosphereOzone[Index].w;
 	S.OzoneInvHalfWidth = 2.0 / max(AtmosphereSurface[Index].w, 1.0);
 	S.SurfaceAlbedo = AtmosphereSurface[Index].xyz;
+
+	const float GeometricThickness = AtmosphereData1[Index].z - S.BottomAltitude;
+	const float EffectiveThickness = max(
+		PA_ATMOSPHERE_EFFECTIVE_TOP_SCALE_HEIGHTS * max(AtmosphereRayleigh[Index].w, AtmosphereMieScattering[Index].w),
+		AtmosphereOzone[Index].w + 0.5 * AtmosphereSurface[Index].w);
+	S.Thickness = max(min(GeometricThickness, EffectiveThickness), 1.0);
 	return S;
 }
 
@@ -204,25 +216,34 @@ struct FPAAtmosphereSegment
 };
 
 /**
- * Single scattering along the view ray inside [TStart, TEnd] (already clipped to the atmosphere, the planet surface
- * and the scene). NumSteps samples at step midpoints: quadratic distribution (fine near the camera) when the camera is
- * inside the atmosphere, uniform from outside (CPU prototype: mean luminance error <= 0.9 % at 16 steps).
+ * Single scattering along the view ray inside the medium (sphere BottomAltitude + Thickness, i.e. the effective top),
+ * clipped to [0, TMax] (TMax = planet surface or scene geometry). NumSteps samples at step midpoints: quadratic
+ * distribution (fine near the camera) when the camera is inside the medium, uniform from outside
+ * (CPU prototype: mean luminance error <= 0.9 % at 16 steps).
  */
 FPAAtmosphereSegment PA_IntegrateAtmosphere(
 	int Index, FPAAtmosphere A, FPAScattering S,
-	float3 RayDir, float TStart, float TEnd, int NumSteps,
+	float3 RayDir, float TMax, int NumSteps,
 	float3 SunDirection, float3 SunIlluminance, bool bHasSun)
 {
 	FPAAtmosphereSegment Result;
 	Result.Luminance = 0.0;
 	Result.Transmittance = 1.0;
-	const float Length = TEnd - TStart;
+
+	const float MediumTopAltitude = S.BottomAltitude + S.Thickness;   // above the planet radius
+	const float2 MediumHit = PA_RaySphereIntersect(A.CameraRel, RayDir, A.PlanetRadius, A.CameraAltitude, MediumTopAltitude);
+	if (MediumHit.x > MediumHit.y || MediumHit.y <= 0.0)
+	{
+		return Result;
+	}
+	const float TStart = max(MediumHit.x, 0.0);
+	const float Length = min(MediumHit.y, TMax) - TStart;
 	if (Length <= 0.0 || NumSteps <= 0)
 	{
 		return Result;
 	}
 
-	const bool bQuadratic = A.CameraAltitude < A.AtmosphereTop;
+	const bool bQuadratic = A.CameraAltitude < MediumTopAltitude;
 	const float CosTheta = dot(RayDir, SunDirection);
 	const float PhaseRayleigh = PA_RayleighPhase(CosTheta);
 	const float PhaseMie = PA_MiePhase(CosTheta, S.MieG);

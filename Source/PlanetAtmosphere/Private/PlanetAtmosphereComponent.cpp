@@ -63,22 +63,24 @@ FPlanetAtmosphereRadii UPlanetAtmosphereComponent::GetValidatedRadiiMeters() con
 
 FPlanetAtmosphereScattering UPlanetAtmosphereComponent::GetValidatedScatteringUU() const
 {
-	// Coefficients: per km -> per cm (1 km = 100 000 cm). Heights: m -> cm.
+	// Coefficient = Color x Scale (per km) -> per cm (1 km = 100 000 cm). Heights: m -> cm.
 	const float MetersToUU = static_cast<float>(PlanetAtmosphere::MetersToUnrealUnits);
 
-	auto Coefficient = [](const FLinearColor& PerKm)
+	// (Parameter names chosen not to hide any UPrimitiveComponent member: C4458 is an error in UE builds.)
+	auto Coefficient = [](const FLinearColor& InColor, float InScalePerKm)
 	{
-		return FVector3f(FMath::Max(PerKm.R, 0.0f), FMath::Max(PerKm.G, 0.0f), FMath::Max(PerKm.B, 0.0f)) * 1.0e-5f;
+		const float ScalePerCm = FMath::Max(InScalePerKm, 0.0f) * 1.0e-5f;
+		return FVector3f(FMath::Max(InColor.R, 0.0f), FMath::Max(InColor.G, 0.0f), FMath::Max(InColor.B, 0.0f)) * ScalePerCm;
 	};
 
 	FPlanetAtmosphereScattering S;
-	S.RayleighScattering = Coefficient(RayleighScattering);
+	S.RayleighScattering = Coefficient(RayleighScatteringColor, RayleighScatteringScale);
 	S.RayleighScaleHeight = FMath::Max(RayleighScaleHeight, 1.0f) * MetersToUU;
-	S.MieScattering = Coefficient(MieScattering);
-	S.MieAbsorption = Coefficient(MieAbsorption);
+	S.MieScattering = Coefficient(MieScatteringColor, MieScatteringScale);
+	S.MieAbsorption = Coefficient(MieAbsorptionColor, MieAbsorptionScale);
 	S.MieScaleHeight = FMath::Max(MieScaleHeight, 1.0f) * MetersToUU;
 	S.MieAnisotropy = FMath::Clamp(MieAnisotropy, 0.0f, 0.999f);
-	S.OzoneAbsorption = Coefficient(OzoneAbsorption);
+	S.OzoneAbsorption = Coefficient(OzoneAbsorptionColor, OzoneAbsorptionScale);
 	S.OzoneLayerAltitude = FMath::Max(OzoneLayerAltitude, 0.0f) * MetersToUU;
 	S.OzoneLayerWidth = FMath::Max(OzoneLayerWidth, 1.0f) * MetersToUU;
 	S.SurfaceAlbedo = FVector3f(
