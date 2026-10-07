@@ -231,9 +231,10 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 	if (!bSameExtent || !History.Luminance.IsValid())
 	{
 		// 2 x RGBA16F + R16F at the scene color extent (+ the same again while the next frame is written) + 1 x 1 exposure.
+		// The interleave of the settings (the first frame of a new history always traces every pixel).
 		UE_LOG(LogPlanetAtmosphere, Log, TEXT("Temporal history of view %u: %d x %d, %.1f MB (x2 while a frame is written), interleave %dx%d"),
 			ViewKey, Extent.X, Extent.Y, static_cast<double>(Extent.X) * Extent.Y * 18.0 / (1024.0 * 1024.0),
-			Setup.InterleaveFactor, Setup.InterleaveFactor);
+			Settings.InterleaveFactor, Settings.InterleaveFactor);
 	}
 
 	// ---- Textures ----

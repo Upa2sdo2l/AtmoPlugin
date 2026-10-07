@@ -192,6 +192,8 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
+**Phase 3 — Step 20: Phase 3 closed** (measurements below, checklist in the project docs)
+
 **Phase 3 — Step 19: interleaved 3×3 rendering**
 - The raymarch traces one pixel per N × N block per frame (ordered-dither order rotated by a pseudo-random amount every
   cycle, so every pixel meets the TSR sub-pixel jitter phases whatever the engine's jitter sequence length); the temporal pass reconstructs the full image: bilinear of the block
@@ -264,7 +266,11 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 20 — Phase 3 final profiling and tuning, Phase 3 checklist; then re-measure Step 16 part 3.
+Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosphere.Raymarch with Interleave 1 / 2 / 3 / 4:
+sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
+Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
+
+Next: Phase 4 — cloud shadows (3 cascades, temporal update), replacing most of the per-sample light march.
 Step 16 part 3 (cheaper cloud/atmosphere coupling) is deferred until Phase 3 is measured.
 
 ## Dependencies
