@@ -1,0 +1,64 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Phase 2.5 / Step 14 — multiple-scattering LUT (Hillaire 2020) of every visible atmosphere, one 64 x 32 row block per
+// planet (same order as the per-planet arrays). Texel (x, y) of planet i = atlas texel (x, i * 32 + y);
+// x = sun cos zenith in [-1, 1], y = altitude in [0, effective thickness], texel centers at the range ends.
+// One thread group per texel, one thread per direction (PA_MS_LUT_DIRECTIONS = 64), summed in groupshared memory.
+// Reads the transmittance LUT atlas of the same frame (TransmittanceLut.usf).
+
+#define PA_MULTIPLE_SCATTERING_LUT_PASS 1
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/AtmosphereScattering.ush"
+
+RWTexture2D<float4> OutMultipleScatteringLut;
+
+groupshared float3 PA_SharedL[PA_MS_LUT_DIRECTIONS];
+groupshared float3 PA_SharedF[PA_MS_LUT_DIRECTIONS];
+
+[numthreads(1, 1, PA_MS_LUT_DIRECTIONS)]
+void MainCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID)
+{
+	const uint2 Texel = GroupId.xy;
+	// The dispatch matches the atlas exactly; the guard is only a safety net. No early return: every thread must reach
+	// the barrier (FXC / SM5 rejects a barrier after a conditional return), so out-of-range groups compute a clamped
+	// texel and skip the write.
+	const uint NumPlanets = (uint)max(NumAtmospheres, 1);
+	const bool bValid = Texel.x < PA_MS_LUT_WIDTH && Texel.y / PA_MS_LUT_HEIGHT < NumPlanets;
+	const uint Index = min(Texel.y / PA_MS_LUT_HEIGHT, NumPlanets - 1);
+	const uint LocalY = min(Texel.y - Index * PA_MS_LUT_HEIGHT, (uint)(PA_MS_LUT_HEIGHT - 1));
+	const uint TexelX = min(Texel.x, (uint)(PA_MS_LUT_WIDTH - 1));
+
+	const FPAScattering S = PA_LoadScattering((int)Index);
+	const float SunMu = (float)TexelX / (float)(PA_MS_LUT_WIDTH - 1) * 2.0 - 1.0;
+	const float H = (float)LocalY / (float)(PA_MS_LUT_HEIGHT - 1) * S.Thickness;
+
+	// Direction of this thread: equal-area stratified sphere (z bands of equal width x equal azimuth sectors).
+	const uint Thread = GroupThreadId.z;
+	const float CosZ = 1.0 - 2.0 * ((float)(Thread / PA_MS_LUT_DIRECTIONS_SQRT) + 0.5) / (float)PA_MS_LUT_DIRECTIONS_SQRT;
+	const float Azimuth = 2.0 * PA_ATMOSPHERE_PI * ((float)(Thread % PA_MS_LUT_DIRECTIONS_SQRT) + 0.5) / (float)PA_MS_LUT_DIRECTIONS_SQRT;
+	const float SinZ = sqrt(saturate(1.0 - CosZ * CosZ));
+	const float3 Dir = float3(SinZ * cos(Azimuth), SinZ * sin(Azimuth), CosZ);
+
+	float3 L;
+	float3 F;
+	PA_MultipleScatteringDirection((int)Index, S, H, SunMu, Dir, L, F);
+	PA_SharedL[Thread] = L;
+	PA_SharedF[Thread] = F;
+	GroupMemoryBarrierWithGroupSync();
+
+	if (Thread == 0 && bValid)
+	{
+		float3 SumL = 0.0;
+		float3 SumF = 0.0;
+		for (int Direction = 0; Direction < PA_MS_LUT_DIRECTIONS; ++Direction)
+		{
+			SumL += PA_SharedL[Direction];
+			SumF += PA_SharedF[Direction];
+		}
+		// Sphere averages (equal solid angle per direction); infinite series of orders 1 / (1 - f_ms).
+		const float InvDirections = 1.0 / (float)PA_MS_LUT_DIRECTIONS;
+		const float3 MultipleScattering = (SumL * InvDirections) / max(1.0 - SumF * InvDirections, 1e-3);
+		OutMultipleScatteringLut[Texel] = float4(MultipleScattering, 1.0);
+	}
+}

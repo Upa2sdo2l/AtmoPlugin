@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 // Cloud + atmosphere raymarch (r.PlanetAtmosphere.DebugMode 0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps,
-// 5 = Atmosphere Only, 6 = Transmittance LUT).
+// 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -24,7 +24,7 @@
 #include "/Plugin/PlanetAtmosphere/Private/RaymarchSchedule.ush"
 #include "/Plugin/PlanetAtmosphere/Private/AtmosphereScattering.ush"
 
-int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT
+int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -57,7 +57,7 @@ float LightLODFullFootprint;
 float LightLODMinFootprint;
 int LightLODMinSteps;
 
-// Atmosphere (Phase 2.5 / Step 13). Transmittance LUT atlas + sampler are declared in AtmosphereScattering.ush.
+// Atmosphere (Phase 2.5 / Steps 13-14). LUT atlases, sampler and bMultipleScattering are declared in AtmosphereScattering.ush.
 int bAtmosphereEnabled;      // r.PlanetAtmosphere.Atmosphere
 int AtmosphereSteps;         // r.PlanetAtmosphere.Atmosphere.Steps
 
@@ -91,6 +91,9 @@ int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingConte
 // A sample whose contribution to the pixel (transmittance before it * its opacity) is below this
 // does not run the light march (Step 9 early exit; error <= this x the sample radiance).
 static const float PA_MIN_LIGHTING_CONTRIBUTION = 1e-4;
+
+// DebugMode 7: Psi_ms is radiance per unit sun illuminance (daytime ~1e-3..4e-2); scaled to be visible.
+static const float PA_MS_LUT_DEBUG_SCALE = 25.0;
 
 // Empty-space skipping: back to coarse probes after this many consecutive empty fine samples.
 static const int PA_EMPTY_SPACE_RESUME = 2;
@@ -388,8 +391,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	else
 	{
-		// Final (0), Atmosphere Only (5), Transmittance LUT (6). Scene color is pre-exposed; bring our absolute
-		// radiance into the same space.
+		// Final (0), Atmosphere Only (5), Transmittance LUT (6), MS LUT (7). Scene color is pre-exposed; bring our
+		// absolute radiance into the same space.
 		Result = Ray.SceneColor.rgb * (State.Transmittance * State.AtmosphereTransmittance) + State.Accum * View.PreExposure;
 
 		// Transmittance LUT: the atlas in the top-left corner at 2x (planet 0 at the top), over the final image.
@@ -399,6 +402,16 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			if (LutTexel.x < PA_TRANSMITTANCE_LUT_WIDTH && LutTexel.y < (uint)(PA_TRANSMITTANCE_LUT_HEIGHT * NumAtmospheres))
 			{
 				Result = TransmittanceLutAtlas.Load(int3(LutTexel, 0)).rgb;
+			}
+		}
+		// Multiple-scattering LUT: the atlas at 4x (planet 0 at the top; x = sun cos zenith -1..1, y = altitude),
+		// Psi_ms for a unit sun x PA_MS_LUT_DEBUG_SCALE.
+		if (DebugMode == 7 && bMultipleScattering != 0)   // otherwise the slot holds the transmittance atlas
+		{
+			const uint2 LutTexel = (Ray.Pixel - (uint2)ViewRectMinAndSize.xy) / 4u;
+			if (LutTexel.x < PA_MS_LUT_WIDTH && LutTexel.y < (uint)(PA_MS_LUT_HEIGHT * NumAtmospheres))
+			{
+				Result = MultipleScatteringLutAtlas.Load(int3(LutTexel, 0)).rgb * PA_MS_LUT_DEBUG_SCALE;
 			}
 		}
 	}

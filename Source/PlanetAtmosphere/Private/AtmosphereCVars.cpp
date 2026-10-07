@@ -22,7 +22,8 @@ namespace
 		TEXT(" 3 = Cloud Height (where inside the cloud layer the visible clouds are: blue = bottom, red = top)\n")
 		TEXT(" 4 = Ray Steps (density-function calls per pixel incl. light march; white = 64 x (1 + LightSteps))\n")
 		TEXT(" 5 = Atmosphere Only (final image without clouds)\n")
-		TEXT(" 6 = Transmittance LUT (final image + the LUT atlas at 2x in the top-left corner, one 256 x 64 block per planet)"),
+		TEXT(" 6 = Transmittance LUT (final image + the LUT atlas at 2x in the top-left corner, one 256 x 64 block per planet)\n")
+		TEXT(" 7 = Multiple-Scattering LUT (final image + the MS LUT atlas at 4x in the top-left corner, one 64 x 32 block per planet, x25)"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -163,6 +164,13 @@ namespace
 		TEXT("Default 16 (CPU prototype: mean luminance error <= 0.9 %). Clamped to [4, 64]."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereAtmosphereMultipleScattering(
+		TEXT("r.PlanetAtmosphere.Atmosphere.MultipleScattering"),
+		1,
+		TEXT("Multiple scattering of the atmosphere (Step 14, Hillaire 2020 LUT, includes ground bounce with SurfaceAlbedo).\n")
+		TEXT("0 = single scattering only (Step 13 image; the MS LUT pass is skipped), 1 = on (default)."),
+		ECVF_RenderThreadSafe);
+
 	// ---- Screen-space LOD (Phase 2 / Step 11) ----
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLOD(
@@ -213,6 +221,7 @@ namespace PlanetAtmosphere::CVars
 		case 4:  return EDebugMode::RaySteps;
 		case 5:  return EDebugMode::AtmosphereOnly;
 		case 6:  return EDebugMode::TransmittanceLut;
+		case 7:  return EDebugMode::MultipleScatteringLut;
 		default: return EDebugMode::FinalClouds;
 		}
 	}
@@ -310,6 +319,11 @@ namespace PlanetAtmosphere::CVars
 	int32 GetAtmosphereSteps()
 	{
 		return FMath::Clamp(CVarPlanetAtmosphereAtmosphereSteps.GetValueOnAnyThread(false), 4, 64);
+	}
+
+	bool IsMultipleScatteringEnabled()
+	{
+		return CVarPlanetAtmosphereAtmosphereMultipleScattering.GetValueOnAnyThread(false) != 0;
 	}
 
 	FScreenLODSettings GetScreenLODSettings()

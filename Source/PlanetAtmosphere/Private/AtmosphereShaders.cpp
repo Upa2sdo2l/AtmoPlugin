@@ -7,4 +7,5 @@
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereBoundsDebugCS, "/Plugin/PlanetAtmosphere/Private/AtmosphereBoundsDebug.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereCloudRaymarchCS, "/Plugin/PlanetAtmosphere/Private/CloudRaymarch.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereTransmittanceLutCS, "/Plugin/PlanetAtmosphere/Private/TransmittanceLut.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FAtmosphereMultipleScatteringLutCS, "/Plugin/PlanetAtmosphere/Private/MultipleScatteringLut.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereNoiseBakeCS, "/Plugin/PlanetAtmosphere/Private/NoiseBake.usf", "MainCS", SF_Compute);

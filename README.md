@@ -34,6 +34,7 @@ PlanetAtmosphere/
     ├── RaymarchSchedule.ush                 where the samples go along a ray: uniform / camera-centered steps, jitter
     ├── AtmosphereScattering.ush             atmosphere: densities, phase functions, transmittance-LUT mapping, single scattering
     ├── TransmittanceLut.usf                 per-frame transmittance LUT atlas (256 x 64 per visible planet)
+    ├── MultipleScatteringLut.usf            per-frame multiple-scattering LUT atlas (64 x 32 per visible planet, Hillaire 2020)
     ├── CloudRaymarch.usf                    clouds + atmosphere (Final + Density / Cloud Height / Ray Steps / Atmosphere Only / LUT views)
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
@@ -69,7 +70,7 @@ strength per km. Change the scale to make the medium denser / thinner, the color
 | `MieAnisotropy` | 0.8 | Cornette-Shanks g: 0 = isotropic, → 1 = strong forward glow |
 | `OzoneAbsorptionColor` × `OzoneAbsorptionScale` | (0.346, 1.0, 0.045) × 0.001881 /km | At the peak of the ozone layer |
 | `OzoneLayerAltitude` / `OzoneLayerWidth` | 25000 / 30000 m | Tent profile: 1 at the peak, 0 at ± width / 2 |
-| `SurfaceAlbedo` | (0.04, 0.06, 0.09) | Placeholder planet surface; ground bounce light in Step 14 |
+| `SurfaceAlbedo` | (0.04, 0.06, 0.09) | Placeholder planet surface and the ground bounce inside multiple scattering |
 
 The medium is integrated only up to its **effective top** = min(`AtmosphereTopRadius`,
 12 × the larger scale height, top of the ozone layer) — ~96 km for Earth. A geometric shell thicker than that
@@ -80,7 +81,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | CVar | Default | Meaning |
 |---|---|---|
 | `r.PlanetAtmosphere.Enable` | 1 | Master switch (0 = nothing is dispatched) |
-| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT |
+| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT |
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
@@ -99,6 +100,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.LightLOD.MinDetailFootprint` | 1.0 | Pixel footprint (× layer thickness) from which `LightLOD.MinLightSteps` are used |
 | `r.PlanetAtmosphere.LightLOD.MinLightSteps` | 2 | Light steps for far samples |
 | `r.PlanetAtmosphere.Atmosphere` | 1 | Atmosphere single scattering (sky, limb, aerial perspective over the surface / scene). 0 = clouds only (Phase 2 image) |
+| `r.PlanetAtmosphere.Atmosphere.MultipleScattering` | 1 | Multiple scattering (all orders ≥ 2, Hillaire LUT, ground bounce with `SurfaceAlbedo`). 0 = single scattering only (Step 13 image, MS LUT pass skipped) |
 | `r.PlanetAtmosphere.Atmosphere.Steps` | 16 | Atmosphere samples per view ray (quadratic from inside the atmosphere, uniform from outside), 4..64 |
 | `r.PlanetAtmosphere.LOD` | 1 | Screen-space LOD: fewer raymarch / light steps for atmospheres small on screen |
 | `r.PlanetAtmosphere.LOD.FullDetailRadius` | 400 | Radius on screen (px, render resolution) from which full detail is used |
@@ -123,9 +125,10 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 | 4 | Ray Steps: density-function calls per pixel incl. light march and empty-space probes — the cost map (white = 64 × (1 + LightSteps)) |
 | 5 | Atmosphere Only: the final image without clouds |
 | 6 | Transmittance LUT: final image + the LUT atlas at 2× in the top-left corner (one 256 × 64 block per planet, nearest planet on top; x = view zenith angle, y = altitude) |
+| 7 | Multiple-Scattering LUT: final image + the MS LUT atlas at 4× in the top-left corner, ×25 (one 64 × 32 block per planet; x = sun zenith from below the horizon (left) to overhead (right), y = altitude, ground at the top) |
 
-- GPU: `stat gpu` → **PlanetAtmosphere** (noise bake + raymarch / debug pass of a view) and
-  **PlanetAtmosphere.TransmittanceLut** (Step 13 LUT pass); total = sum of both. `ProfileGPU` shows the individual passes.
+- GPU: `stat gpu` → **PlanetAtmosphere** (noise bake + raymarch / debug pass of a view),
+  **PlanetAtmosphere.TransmittanceLut** (Step 13) and **PlanetAtmosphere.MultipleScatteringLut** (Step 14); total = sum. `ProfileGPU` shows the individual passes.
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
 - Per-frame log: `log LogPlanetAtmosphere Verbose`; screen radius and LOD steps per atmosphere: `log LogPlanetAtmosphere VeryVerbose`.
 
@@ -144,6 +147,14 @@ Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` /
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 2.5 — Step 14: multiple scattering**
+- Hillaire 2020 multiple-scattering LUT, 64 (sun zenith) × 32 (altitude) per planet, 64 directions × 20 steps per texel,
+  isotropic higher orders summed as 1 / (1 − f_ms), ground bounce with `SurfaceAlbedo`; per-frame atlas
+- The view ray adds (σs Rayleigh + σs Mie) × Ψms per sample: brighter, less saturated sky, whiter horizon,
+  softer sunset ring, lit twilight sky opposite the sun
+- Known limitation (method): at twilight and on the night side the surface albedo does not brighten the sky
+  (only the directly sunlit ground near each point is modelled); ≲ 1–2 % at default albedo
 
 **Phase 2.5 — Step 13: atmosphere single scattering**
 - Rayleigh + Mie (Cornette-Shanks) + ozone, all parameters on the component (Earth defaults, no presets)
@@ -175,7 +186,7 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 14 — multiple scattering (32 × 32 LUT, ground albedo); Step 15 — clouds through the atmosphere
+Next: Step 15 — clouds through the atmosphere
 (aerial perspective, sunlight through the atmosphere, sky ambient); Step 16 — profiling.
 
 ## Dependencies

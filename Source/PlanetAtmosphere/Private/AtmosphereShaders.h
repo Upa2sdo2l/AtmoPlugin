@@ -73,8 +73,8 @@ public:
 };
 
 /**
- * r.PlanetAtmosphere.DebugMode 0 / 2 / 3 / 4 / 5 / 6 — cloud + atmosphere raymarch
- * (final / density / cloud height / ray steps / atmosphere only / transmittance LUT).
+ * r.PlanetAtmosphere.DebugMode 0 / 2 / 3 / 4 / 5 / 6 / 7 — cloud + atmosphere raymarch
+ * (final / density / cloud height / ray steps / atmosphere only / transmittance LUT / multiple-scattering LUT).
  * Shaders/Private/CloudRaymarch.usf. Density comes only from CloudDensity.ush (AD-1).
  */
 class FAtmosphereCloudRaymarchCS : public FGlobalShader
@@ -123,6 +123,10 @@ public:
 		SHADER_PARAMETER_SAMPLER(SamplerState, TransmittanceLutSampler)
 		SHADER_PARAMETER(int32, bAtmosphereEnabled)
 		SHADER_PARAMETER(int32, AtmosphereSteps)
+		// Multiple scattering (Phase 2.5 / Step 14). Sampled with TransmittanceLutSampler. When the MS LUT is not built
+		// (bMultipleScattering = 0) the transmittance atlas is bound here instead: the shader never samples it then.
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, MultipleScatteringLutAtlas)
+		SHADER_PARAMETER(int32, bMultipleScattering)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -147,6 +151,30 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutTransmittanceLut)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * Multiple-scattering LUT of every visible atmosphere (Phase 2.5 / Step 14, Hillaire 2020).
+ * Shaders/Private/MultipleScatteringLut.usf. Per-frame transient atlas LutWidth x (LutHeight x NumAtmospheres), same
+ * planet order as FAtmosphereInstanceParameters. One thread group per texel (dispatch = atlas size), one thread per
+ * direction, groupshared sum. Reads the transmittance LUT atlas of the same frame.
+ */
+class FAtmosphereMultipleScatteringLutCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereMultipleScatteringLutCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereMultipleScatteringLutCS, FGlobalShader);
+
+	/** Must match PA_MS_LUT_WIDTH / HEIGHT in Shaders/Private/AtmosphereScattering.ush. */
+	static constexpr int32 LutWidth = 64;    // sun cos zenith
+	static constexpr int32 LutHeight = 32;   // altitude
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, TransmittanceLutAtlas)
+		SHADER_PARAMETER_SAMPLER(SamplerState, TransmittanceLutSampler)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutMultipleScatteringLut)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
