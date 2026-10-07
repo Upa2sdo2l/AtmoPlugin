@@ -53,6 +53,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereOzone, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	// xyz = surface albedo, w = ozone layer full width
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereSurface, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// x = slot of this atmosphere in the LUT pools (Step 16, AtmosphereLutCache.h), yzw unused
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereLutInfo, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 END_SHADER_PARAMETER_STRUCT()
 
 /** r.PlanetAtmosphere.DebugMode 1 — analytical planet / atmosphere / cloud shells. Shaders/Private/AtmosphereBoundsDebug.usf */
@@ -118,13 +120,14 @@ public:
 		SHADER_PARAMETER(float, LightLODFullFootprint)
 		SHADER_PARAMETER(float, LightLODMinFootprint)
 		SHADER_PARAMETER(int32, LightLODMinSteps)
-		// Atmosphere single scattering (Phase 2.5 / Step 13). The atlas is always bound (built every frame, see renderer).
+		// Atmosphere single scattering (Phase 2.5 / Step 13). Since Step 16 the persistent pool of the LUT cache
+		// (AtmosphereLutCache.h), always bound; planet i uses row block AtmosphereLutInfo[i].x.
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, TransmittanceLutAtlas)
 		SHADER_PARAMETER_SAMPLER(SamplerState, TransmittanceLutSampler)
 		SHADER_PARAMETER(int32, bAtmosphereEnabled)
 		SHADER_PARAMETER(int32, AtmosphereSteps)
-		// Multiple scattering (Phase 2.5 / Step 14). Sampled with TransmittanceLutSampler. When the MS LUT is not built
-		// (bMultipleScattering = 0) the transmittance atlas is bound here instead: the shader never samples it then.
+		// Multiple scattering (Phase 2.5 / Step 14). Sampled with TransmittanceLutSampler. Pool of the LUT cache; when the
+		// MS LUT is not requested (bMultipleScattering = 0) the transmittance pool is bound here instead: never sampled then.
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, MultipleScatteringLutAtlas)
 		SHADER_PARAMETER(int32, bMultipleScattering)
 		// Clouds through the atmosphere (Phase 2.5 / Step 15): global multiplier of the per-planet CloudSkyAmbientScale.
@@ -133,9 +136,9 @@ public:
 };
 
 /**
- * Transmittance LUT of every visible atmosphere (Phase 2.5 / Step 13). Shaders/Private/TransmittanceLut.usf.
- * Writes a per-frame transient atlas: Width x (Height x NumAtmospheres), one row block per planet in the order of
- * FAtmosphereInstanceParameters (the same filled struct is used by the raymarch pass).
+ * Transmittance LUT (Phase 2.5 / Step 13). Shaders/Private/TransmittanceLut.usf. Since Step 16 dispatched only for the
+ * atmospheres whose LUT must be (re)built (compacted FAtmosphereInstanceParameters, AtmosphereLutCache.cpp):
+ * Width x (Height x NumAtmospheres) threads, entry i written to row block AtmosphereLutInfo[i].x of the pool.
  */
 class FAtmosphereTransmittanceLutCS : public FGlobalShader
 {
@@ -157,10 +160,10 @@ public:
 };
 
 /**
- * Multiple-scattering LUT of every visible atmosphere (Phase 2.5 / Step 14, Hillaire 2020).
- * Shaders/Private/MultipleScatteringLut.usf. Per-frame transient atlas LutWidth x (LutHeight x NumAtmospheres), same
- * planet order as FAtmosphereInstanceParameters. One thread group per texel (dispatch = atlas size), one thread per
- * direction, groupshared sum. Reads the transmittance LUT atlas of the same frame.
+ * Multiple-scattering LUT (Phase 2.5 / Step 14, Hillaire 2020). Shaders/Private/MultipleScatteringLut.usf.
+ * Like the transmittance LUT, dispatched only for the atmospheres to (re)build (Step 16): LutWidth x (LutHeight x
+ * NumAtmospheres) thread groups, one per texel, one thread per direction, groupshared sum; entry i written to row block
+ * AtmosphereLutInfo[i].x of the pool. Reads the transmittance pool (already rebuilt earlier in the same graph).
  */
 class FAtmosphereMultipleScatteringLutCS : public FGlobalShader
 {

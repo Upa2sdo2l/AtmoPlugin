@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-// Phase 2.5 / Step 14 — multiple-scattering LUT (Hillaire 2020) of every visible atmosphere, one 64 x 32 row block per
-// planet (same order as the per-planet arrays). Texel (x, y) of planet i = atlas texel (x, i * 32 + y);
+// Phase 2.5 / Step 14 — multiple-scattering LUT (Hillaire 2020), one 64 x 32 row block per atmosphere. Step 16: the
+// per-planet arrays hold only the atmospheres to (re)build; entry i goes to pool texel (x, AtmosphereLutInfo[i].x * 32 + y);
 // x = sun cos zenith in [-1, 1], y = altitude in [0, effective thickness], texel centers at the range ends.
 // One thread group per texel, one thread per direction (PA_MS_LUT_DIRECTIONS = 64), summed in groupshared memory.
 // Reads the transmittance LUT atlas of the same frame (TransmittanceLut.usf).
@@ -59,6 +59,6 @@ void MainCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID)
 		// Sphere averages (equal solid angle per direction); infinite series of orders 1 / (1 - f_ms).
 		const float InvDirections = 1.0 / (float)PA_MS_LUT_DIRECTIONS;
 		const float3 MultipleScattering = (SumL * InvDirections) / max(1.0 - SumF * InvDirections, 1e-3);
-		OutMultipleScatteringLut[Texel] = float4(MultipleScattering, 1.0);
+		OutMultipleScatteringLut[uint2(TexelX, (uint)PA_GetLutSlot((int)Index) * PA_MS_LUT_HEIGHT + LocalY)] = float4(MultipleScattering, 1.0);
 	}
 }

@@ -12,15 +12,14 @@
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "AtmosphereStats.h"
 #include "AtmosphereNoiseTextures.h"
+#include "AtmosphereLutCache.h"
 #include "RHIStaticStates.h"
 
-// `stat gpu` -> "PlanetAtmosphere" (noise bake + raymarch / debug pass of a view),
-// "PlanetAtmosphere.TransmittanceLut" (Step 13) and "PlanetAtmosphere.MultipleScatteringLut" (Step 14), measured
-// separately. Total cost = sum of the three.
-// Distinct identifiers: the macros paste them into symbol names, and "PlanetAtmosphere" is also our namespace.
+// `stat gpu` -> "PlanetAtmosphere" (noise bake + raymarch / debug pass of a view). The LUT rebuilds have their own stats,
+// "PlanetAtmosphere.TransmittanceLut" / "PlanetAtmosphere.MultipleScatteringLut" (AtmosphereLutCache.cpp), present only
+// on frames where a LUT is rebuilt (Step 16 cache).
+// Distinct identifier: the macros paste it into symbol names, and "PlanetAtmosphere" is also our namespace.
 DECLARE_GPU_STAT_NAMED(PlanetAtmosphereGPU, TEXT("PlanetAtmosphere"));
-DECLARE_GPU_STAT_NAMED(PlanetAtmosphereTransmittanceLutGPU, TEXT("PlanetAtmosphere.TransmittanceLut"));
-DECLARE_GPU_STAT_NAMED(PlanetAtmosphereMultipleScatteringLutGPU, TEXT("PlanetAtmosphere.MultipleScatteringLut"));
 
 // `stat PlanetAtmosphere` (render thread CPU cost of building the passes).
 DECLARE_CYCLE_STAT(TEXT("Setup Passes (RT)"), STAT_PlanetAtmosphere_SetupPasses, STATGROUP_PlanetAtmosphere);
@@ -200,84 +199,6 @@ namespace PlanetAtmosphere
 			return FVector4f(XYZ.X, XYZ.Y, XYZ.Z, W);
 		}
 
-		/**
-		 * Transmittance LUT atlas of the visible atmospheres (Step 13): transient, rebuilt every frame for every view
-		 * (no caching yet, by design: correctness first, then measure). Row block i = planet i of InstanceParameters.
-		 */
-		FRDGTextureRef AddTransmittanceLutPass(
-			FRDGBuilder& GraphBuilder,
-			FGlobalShaderMap* GlobalShaderMap,
-			const FAtmosphereInstanceParameters& InstanceParameters)
-		{
-			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereTransmittanceLutGPU, "PlanetAtmosphere.TransmittanceLut");
-
-			const int32 NumAtmospheres = FMath::Max(InstanceParameters.NumAtmospheres, 1);
-			const FIntPoint AtlasSize(
-				FAtmosphereTransmittanceLutCS::LutWidth,
-				FAtmosphereTransmittanceLutCS::LutHeight * NumAtmospheres);
-
-			const FRDGTextureDesc AtlasDesc = FRDGTextureDesc::Create2D(
-				AtlasSize,
-				PF_FloatRGBA,
-				FClearValueBinding::Black,
-				ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
-			FRDGTextureRef Atlas = GraphBuilder.CreateTexture(AtlasDesc, TEXT("PlanetAtmosphere.TransmittanceLutAtlas"));
-
-			FAtmosphereTransmittanceLutCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereTransmittanceLutCS::FParameters>();
-			Parameters->AtmosphereParams = InstanceParameters;
-			Parameters->OutTransmittanceLut = GraphBuilder.CreateUAV(Atlas);
-
-			TShaderMapRef<FAtmosphereTransmittanceLutCS> ComputeShader(GlobalShaderMap);
-			FComputeShaderUtils::AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("PlanetAtmosphere.TransmittanceLut %dx%d (%d atmospheres)", AtlasSize.X, AtlasSize.Y, NumAtmospheres),
-				ComputeShader,
-				Parameters,
-				FComputeShaderUtils::GetGroupCount(AtlasSize, FAtmosphereTransmittanceLutCS::ThreadGroupSize));
-			return Atlas;
-		}
-
-		/**
-		 * Multiple-scattering LUT atlas (Step 14): transient, rebuilt every frame for every view (like the transmittance
-		 * LUT; no caching yet). Row block i = planet i of InstanceParameters. Reads the transmittance atlas.
-		 */
-		FRDGTextureRef AddMultipleScatteringLutPass(
-			FRDGBuilder& GraphBuilder,
-			FGlobalShaderMap* GlobalShaderMap,
-			const FAtmosphereInstanceParameters& InstanceParameters,
-			FRDGTextureRef TransmittanceLutAtlas)
-		{
-			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereMultipleScatteringLutGPU, "PlanetAtmosphere.MultipleScatteringLut");
-
-			const int32 NumAtmospheres = FMath::Max(InstanceParameters.NumAtmospheres, 1);
-			const FIntPoint AtlasSize(
-				FAtmosphereMultipleScatteringLutCS::LutWidth,
-				FAtmosphereMultipleScatteringLutCS::LutHeight * NumAtmospheres);
-
-			const FRDGTextureDesc AtlasDesc = FRDGTextureDesc::Create2D(
-				AtlasSize,
-				PF_FloatRGBA,
-				FClearValueBinding::Black,
-				ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
-			FRDGTextureRef Atlas = GraphBuilder.CreateTexture(AtlasDesc, TEXT("PlanetAtmosphere.MultipleScatteringLutAtlas"));
-
-			FAtmosphereMultipleScatteringLutCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereMultipleScatteringLutCS::FParameters>();
-			Parameters->AtmosphereParams = InstanceParameters;
-			Parameters->TransmittanceLutAtlas = TransmittanceLutAtlas;
-			Parameters->TransmittanceLutSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-			Parameters->OutMultipleScatteringLut = GraphBuilder.CreateUAV(Atlas);
-
-			// One thread group per texel: [numthreads(1, 1, 64)], 64 = directions.
-			TShaderMapRef<FAtmosphereMultipleScatteringLutCS> ComputeShader(GlobalShaderMap);
-			FComputeShaderUtils::AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("PlanetAtmosphere.MultipleScatteringLut %dx%d (%d atmospheres)", AtlasSize.X, AtlasSize.Y, NumAtmospheres),
-				ComputeShader,
-				Parameters,
-				FIntVector(AtlasSize.X, AtlasSize.Y, 1));
-			return Atlas;
-		}
-
 		/** Sorts near -> far, truncates to MaxVisible and packs. All large-number differences in double. */
 		void FillInstanceParameters(
 			const FSceneView& View,
@@ -317,6 +238,7 @@ namespace PlanetAtmosphere
 					OutParameters.AtmosphereMieAbsorption[Index] = Zero;
 					OutParameters.AtmosphereOzone[Index] = Zero;
 					OutParameters.AtmosphereSurface[Index] = Zero;
+					OutParameters.AtmosphereLutInfo[Index] = Zero;
 					continue;
 				}
 
@@ -368,6 +290,9 @@ namespace PlanetAtmosphere
 				OutParameters.AtmosphereMieAbsorption[Index] = ToVector4f(S.MieAbsorption, S.MieAnisotropy);
 				OutParameters.AtmosphereOzone[Index] = ToVector4f(S.OzoneAbsorption, S.OzoneLayerAltitude);
 				OutParameters.AtmosphereSurface[Index] = ToVector4f(S.SurfaceAlbedo, S.OzoneLayerWidth);
+
+				// LUT pool slot: assigned by the LUT cache (Step 16) for the raymarch pass; 0 for the bounds debug pass.
+				OutParameters.AtmosphereLutInfo[Index] = Zero;
 			}
 		}
 	}
@@ -410,32 +335,35 @@ namespace PlanetAtmosphere
 			return FScreenPassTexture(Setup.OutputTexture, Setup.ViewRect);
 		}
 
-		// Per-planet data is filled ONCE and shared by the LUT pass and the raymarch pass, so both see the same
-		// near -> far order (planet i = atlas row block i).
+		// Shared noise textures (baked on first use). Unavailable only after module shutdown -> draw nothing.
+		// Acquired BEFORE the LUT cache: once Prepare() has queued LUT rebuilds, the raymarch pass below must consume them.
+		FPlanetAtmosphereNoiseTexturesRDG NoiseTextures;
+		{
+			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
+			if (!GetNoiseTextures().GetOrBake(GraphBuilder, GlobalShaderMap, NoiseTextures))
+			{
+				return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+			}
+		}
+
 		FAtmosphereCloudRaymarchCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudRaymarchCS::FParameters>();
 		FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
 
-		// Step 13: transmittance LUT (own GPU stat). Built even with r.PlanetAtmosphere.Atmosphere 0, because the
-		// raymarch shader always binds the atlas; the pass is tiny (256 x 64 texels x 40 steps per planet).
-		FRDGTextureRef TransmittanceLutAtlas = AddTransmittanceLutPass(GraphBuilder, GlobalShaderMap, Parameters->AtmosphereParams);
-
-		// Step 14: multiple-scattering LUT (own GPU stat), only when the atmosphere and multiple scattering are on.
-		// Otherwise the transmittance atlas is bound in its place (the shader does not sample it with bMultipleScattering 0).
+		// Step 16: LUTs cached across frames (AtmosphereLutCache.h). Assigns each planet its pool slot
+		// (AtmosphereLutInfo) and rebuilds only LUTs that are missing (first use, changed parameters, new planet).
+		// The transmittance LUT is always prepared (always bound; Step 13), the multiple-scattering LUT (Step 14) only
+		// when the atmosphere and multiple scattering are on.
 		const bool bAtmosphereEnabled = CVars::IsAtmosphereEnabled();
 		const bool bMultipleScattering = bAtmosphereEnabled && CVars::IsMultipleScatteringEnabled();
-		FRDGTextureRef MultipleScatteringLutAtlas = bMultipleScattering
-			? AddMultipleScatteringLutPass(GraphBuilder, GlobalShaderMap, Parameters->AtmosphereParams, TransmittanceLutAtlas)
-			: TransmittanceLutAtlas;
-
-		RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
-
-		// Shared noise textures (baked on first use). Unavailable only after module shutdown -> draw nothing
-		// (the LUT pass then has no consumer and is culled by RDG).
-		FPlanetAtmosphereNoiseTexturesRDG NoiseTextures;
-		if (!GetNoiseTextures().GetOrBake(GraphBuilder, GlobalShaderMap, NoiseTextures))
+		FPlanetAtmosphereLutsRDG Luts;
+		if (!GetLutCache().Prepare(GraphBuilder, GlobalShaderMap, View.Family->FrameNumber, bMultipleScattering,
+			!CVars::IsLutCacheEnabled(), Parameters->AtmosphereParams, Luts))
 		{
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 		}
+
+		// LUT rebuilds above are measured by their own stats, outside this scope (as before Step 16).
+		RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
 
 		Parameters->View = View.ViewUniformBuffer;
 		FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
@@ -453,11 +381,11 @@ namespace PlanetAtmosphere
 		Parameters->LightLODFullFootprint = LightLOD.FullDetailFootprint;
 		Parameters->LightLODMinFootprint = LightLOD.MinDetailFootprint;
 		Parameters->LightLODMinSteps = LightLOD.MinLightSteps;
-		Parameters->TransmittanceLutAtlas = TransmittanceLutAtlas;
+		Parameters->TransmittanceLutAtlas = Luts.Transmittance;
 		Parameters->TransmittanceLutSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		Parameters->bAtmosphereEnabled = bAtmosphereEnabled ? 1 : 0;
 		Parameters->AtmosphereSteps = CVars::GetAtmosphereSteps();
-		Parameters->MultipleScatteringLutAtlas = MultipleScatteringLutAtlas;
+		Parameters->MultipleScatteringLutAtlas = Luts.MultipleScattering;
 		Parameters->bMultipleScattering = bMultipleScattering ? 1 : 0;
 		Parameters->CloudSkyAmbientScaleMultiplier = CVars::GetCloudSkyAmbientScaleMultiplier();
 
