@@ -43,6 +43,14 @@ float MinTransmittance;      // the ray stops when the transmittance drops below
 // planets no longer vanish or turn into haze). 1 = Phase 1 behaviour.
 float NoiseFootprintScale;
 
+// Light-march LOD (Step 12, variant 2): per cloud sample, light steps go from the planet's LightSteps (pixel footprint
+// <= LightLODFullFootprint x layer thickness) down to LightLODMinSteps (footprint >= LightLODMinFootprint x thickness),
+// interpolated in log2. Self-shadow detail smaller than a pixel is not visible. LightLODEnable = 0 -> always LightSteps.
+int LightLODEnable;
+float LightLODFullFootprint;
+float LightLODMinFootprint;
+int LightLODMinSteps;
+
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
 {
@@ -51,7 +59,24 @@ struct FPACloudLightingContext
 	float3 AmbientIlluminance;
 	float Phase;          // PA_CloudPhase(dot(ray, sun))
 	bool bHasSun;
+	float PixelFootprintPerUnitDistance;   // TRUE pixel size at distance 1 (not scaled by NoiseFootprintScale)
 };
+
+/** Light steps for a cloud sample at distance T (light-march LOD, see LightLODEnable). */
+int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float T)
+{
+	const int FullSteps = max(A.LightSteps, 1);
+	if (LightLODEnable == 0)
+	{
+		return FullSteps;
+	}
+	const int MinSteps = clamp(LightLODMinSteps, 1, FullSteps);
+	const float PixelFootprint = T * Light.PixelFootprintPerUnitDistance;
+	const float FullFootprint = max(LightLODFullFootprint * Layer.Thickness, 1.0);
+	const float MinFootprint = max(LightLODMinFootprint * Layer.Thickness, FullFootprint * 1.01);
+	const float Detail = 1.0 - saturate(log2(max(PixelFootprint, 1.0) / FullFootprint) / log2(MinFootprint / FullFootprint));
+	return clamp((int)round(lerp((float)MinSteps, (float)FullSteps, Detail)), MinSteps, FullSteps);
+}
 
 // A sample whose contribution to the pixel (transmittance before it * its opacity) is below this
 // does not run the light march (Step 9 early exit; error <= this x the sample radiance).
@@ -113,7 +138,7 @@ float PA_IntegrateCloudStep(
 			if (Shadow > 0.0)
 			{
 				const float Footprint = T * Ray.FootprintPerUnitDistance;
-				const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, A.LightSteps, State.DensitySamples);
+				const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, PA_GetLightSteps(A, Layer, Light, T), State.DensitySamples);
 				Radiance += Light.SunIlluminance * (Light.Phase * SunTransmittance * Shadow);
 			}
 		}
@@ -205,6 +230,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 	// Footprint used for noise LOD only (density + light march). See NoiseFootprintScale.
+	const float PixelFootprintPerUnitDistance = Ray.FootprintPerUnitDistance;
 	Ray.FootprintPerUnitDistance *= NoiseFootprintScale;
 
 	FPACloudMarchState State;
@@ -221,6 +247,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Light.AmbientIlluminance = AmbientIlluminance;
 	Light.Phase = PA_CloudPhase(dot(Ray.Dir, SunDirection));
 	Light.bHasSun = bHasSun != 0;
+	Light.PixelFootprintPerUnitDistance = PixelFootprintPerUnitDistance;
 
 	// Same jitter for every planet of this pixel; animated jitter changes every frame (StateFrameIndex).
 	const float Jitter = PA_GetRayJitter(Ray.Pixel, JitterMode, View.StateFrameIndex);

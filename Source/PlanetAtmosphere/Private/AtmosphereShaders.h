@@ -101,6 +101,11 @@ public:
 		SHADER_PARAMETER(int32, NoiseSource)
 		// Density LOD (Phase 2 / Step 12): multiplier of the pixel footprint used for noise octave fading.
 		SHADER_PARAMETER(float, NoiseFootprintScale)
+		// Light-march LOD by the true pixel footprint (Phase 2 / Step 12, variant 2).
+		SHADER_PARAMETER(int32, LightLODEnable)
+		SHADER_PARAMETER(float, LightLODFullFootprint)
+		SHADER_PARAMETER(float, LightLODMinFootprint)
+		SHADER_PARAMETER(int32, LightLODMinSteps)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

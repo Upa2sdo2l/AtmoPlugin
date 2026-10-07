@@ -330,6 +330,11 @@ namespace PlanetAtmosphere
 			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 			Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
 			Parameters->NoiseFootprintScale = CVars::GetNoiseFootprintScale();
+			const CVars::FLightLODSettings LightLOD = CVars::GetLightLODSettings();
+			Parameters->LightLODEnable = LightLOD.bEnabled ? 1 : 0;
+			Parameters->LightLODFullFootprint = LightLOD.FullDetailFootprint;
+			Parameters->LightLODMinFootprint = LightLOD.MinDetailFootprint;
+			Parameters->LightLODMinSteps = LightLOD.MinLightSteps;
 
 			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(
