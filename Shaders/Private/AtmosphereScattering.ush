@@ -10,6 +10,8 @@
 //    transmittance from a point toward the top of the atmosphere, built by TransmittanceLut.usf.
 //  - View ray: NumSteps samples, quadratic distribution when the camera is inside the atmosphere, uniform outside;
 //    energy-conserving step integral; sun visibility = LUT x hard planet shadow (ray / bottom sphere).
+//  - Multiple scattering (Step 14, Hillaire 2020): LUT Psi_ms(altitude, sun cos zenith), 64 x 32 per planet, built by
+//    MultipleScatteringLut.usf; the view ray adds (sigma_s Rayleigh + sigma_s Mie) x Psi_ms x sun illuminance per sample.
 //
 // Precision (AD-3 / Step 13 prototype): at Earth scale r^2 - R^2 in float32 loses up to 1.6 km of altitude.
 // Every quantity below is therefore written with ALTITUDES: rho^2 = r^2 - Rb^2 = h (2 Rb + h),
@@ -32,6 +34,16 @@
 // (e.g. AtmosphereTopRadius 500 km above the bottom with Earth's 8 km scale height) does not waste the 16 view samples
 // in vacuum. Prototype: 500 km shell, camera 400 km: 28 % -> 0.7 % mean luminance error; 100 km shell unchanged.
 #define PA_ATMOSPHERE_EFFECTIVE_TOP_SCALE_HEIGHTS 12.0
+
+// Must match FAtmosphereMultipleScatteringLutCS::LutWidth / LutHeight (AtmosphereShaders.h).
+// 64 texels along the sun cos zenith (CPU prototype: 32 smear sunlit values into the Earth's shadow at twilight:
+// +57 % at the anti-solar horizon at sun -3 deg; 64: -5 %), 32 along the altitude (64 changes nothing).
+#define PA_MS_LUT_WIDTH 64
+#define PA_MS_LUT_HEIGHT 32
+// Directions per texel (8 x 8 equal-area stratified sphere = one thread each) and steps per direction.
+#define PA_MS_LUT_DIRECTIONS_SQRT 8
+#define PA_MS_LUT_DIRECTIONS (PA_MS_LUT_DIRECTIONS_SQRT * PA_MS_LUT_DIRECTIONS_SQRT)
+#define PA_MS_LUT_STEPS 20
 
 static const float PA_ATMOSPHERE_PI = 3.14159265;
 
@@ -94,6 +106,20 @@ float3 PA_AtmosphereDensities(FPAScattering S, float H)
 float3 PA_AtmosphereExtinction(FPAScattering S, float3 Densities)
 {
 	return S.RayleighScattering * Densities.x + S.MieExtinction * Densities.y + S.OzoneAbsorption * Densities.z;
+}
+
+/**
+ * Energy-conserving integral of a constant source over one step: (1 - exp(-sigma dt)) / sigma (-> dt for sigma dt -> 0).
+ * Outputs the step transmittance. (step()/lerp() instead of a vector ternary: valid in both HLSL 2018 and 2021.)
+ */
+float3 PA_StepIntegral(float3 Extinction, float Dt, out float3 StepTransmittance)
+{
+	const float3 OpticalDepth = Extinction * Dt;
+	StepTransmittance = exp(-OpticalDepth);
+	return lerp(
+		Dt * (1.0 - 0.5 * OpticalDepth),
+		(1.0 - StepTransmittance) / max(Extinction, 1e-30),
+		step(1e-4, OpticalDepth));
 }
 
 /** CosTheta = dot(view ray, direction to the sun). Units: 1/sr. */
@@ -209,6 +235,80 @@ float3 PA_AtmosphereSunTransmittance(int Index, FPAScattering S, float H, float 
 	return PA_SunAboveHorizon(S, H, Mu) ? PA_SampleTransmittanceLut(Index, S, H, Mu) : 0.0;
 }
 
+/** MS LUT texel (local, unit range: x = sun cos zenith, y = altitude) <-> (Mu_s, H). Texel centers map to the range ends. */
+float2 PA_MultipleScatteringLutHMuToUV(FPAScattering S, float H, float SunMu)
+{
+	const float2 Size = float2(PA_MS_LUT_WIDTH, PA_MS_LUT_HEIGHT);
+	const float2 X = saturate(float2(SunMu * 0.5 + 0.5, H / S.Thickness));
+	return (0.5 + X * (Size - 1.0)) / Size;
+}
+
+/**
+ * One direction of one MS LUT texel (Hillaire 2020): the point at altitude H (above the atmosphere bottom) with the sun
+ * at cos zenith SunMu looks along Dir (local frame, up = +z, sun in the xz plane) and integrates, over the medium up to
+ * the effective top or the ground (the bottom sphere), with PA_MS_LUT_STEPS quadratic steps:
+ *   OutL = second-order light with an isotropic phase: T * sigma_s * (1 / 4 pi) * sun transmittance,
+ *          + the sunlit ground (Lambert, SurfaceAlbedo) seen at the end of the ray;
+ *   OutF = transfer of an isotropic unit radiance: T * sigma_s.
+ * The texel value is mean(OutL) / (1 - mean(OutF)) over the sphere (infinite series of orders, Hillaire eq. 9).
+ */
+void PA_MultipleScatteringDirection(int Index, FPAScattering S, float H, float SunMu, float3 Dir, out float3 OutL, out float3 OutF)
+{
+	OutL = 0.0;
+	OutF = 0.0;
+	const float Rb = S.BottomRadius;
+	const float3 O = float3(0.0, 0.0, Rb + H);
+	const float3 Sun = float3(sqrt(saturate(1.0 - SunMu * SunMu)), 0.0, SunMu);
+
+	// Altitudes relative to the bottom sphere: medium top = Thickness, ground = 0.
+	const float2 TopHit = PA_RaySphereIntersect(O, Dir, Rb, H, S.Thickness);
+	const float2 GroundHit = PA_RaySphereIntersect(O, Dir, Rb, H, 0.0);
+	const bool bGround = GroundHit.x <= GroundHit.y && GroundHit.y > 0.0;
+	const float TEnd = bGround ? max(GroundHit.x, 0.0) : max(TopHit.y, 0.0);
+
+	float3 Transmittance = 1.0;
+	const float InvSteps = 1.0 / (float)PA_MS_LUT_STEPS;
+	for (int Step = 0; Step < PA_MS_LUT_STEPS; ++Step)
+	{
+		const float F0 = Step * InvSteps * (Step * InvSteps);
+		const float F1 = (Step + 1) * InvSteps * ((Step + 1) * InvSteps);
+		const float Dt = TEnd * (F1 - F0);
+		const float3 P = O + Dir * (TEnd * 0.5 * (F0 + F1));
+		const float R = length(P);
+		const float SampleH = R - Rb;
+		const float3 Densities = PA_AtmosphereDensities(S, SampleH);
+		const float3 Scattering = S.RayleighScattering * Densities.x + S.MieScattering * Densities.y;
+		const float3 SunTransmittance = PA_AtmosphereSunTransmittance(Index, S, SampleH, dot(P, Sun) / max(R, 1.0));
+
+		float3 StepTransmittance;
+		const float3 StepIntegral = PA_StepIntegral(PA_AtmosphereExtinction(S, Densities), Dt, StepTransmittance);
+		OutL += Transmittance * Scattering * (1.0 / (4.0 * PA_ATMOSPHERE_PI)) * SunTransmittance * StepIntegral;
+		OutF += Transmittance * Scattering * StepIntegral;
+		Transmittance *= StepTransmittance;
+	}
+
+	if (bGround)
+	{
+		const float3 GroundNormal = normalize(O + Dir * TEnd);
+		const float GroundMu = dot(GroundNormal, Sun);
+		OutL += Transmittance * (S.SurfaceAlbedo / PA_ATMOSPHERE_PI) * saturate(GroundMu)
+			* PA_SampleTransmittanceLut(Index, S, 0.0, GroundMu);
+	}
+}
+
+#ifndef PA_MULTIPLE_SCATTERING_LUT_PASS
+
+Texture2D<float4> MultipleScatteringLutAtlas;   // PA_MS_LUT_WIDTH x (PA_MS_LUT_HEIGHT x NumAtmospheres), sampled with TransmittanceLutSampler
+int bMultipleScattering;                         // r.PlanetAtmosphere.Atmosphere.MultipleScattering
+
+/** Psi_ms for planet Index (sun illuminance 1). */
+float3 PA_SampleMultipleScatteringLut(int Index, FPAScattering S, float H, float SunMu)
+{
+	float2 UV = PA_MultipleScatteringLutHMuToUV(S, H, SunMu);
+	UV.y = ((float)Index + UV.y) / (float)max(NumAtmospheres, 1);
+	return MultipleScatteringLutAtlas.SampleLevel(TransmittanceLutSampler, UV, 0).rgb;
+}
+
 struct FPAAtmosphereSegment
 {
 	float3 Luminance;       // in-scattered, absolute (sun illuminance x 1/sr)
@@ -273,21 +373,24 @@ FPAAtmosphereSegment PA_IntegrateAtmosphere(
 			const float SunMu = dot(P, SunDirection) / max(R, 1.0);
 			const float3 SunTransmittance = PA_AtmosphereSunTransmittance(Index, S, H, SunMu);
 			Scattered = (S.RayleighScattering * (Densities.x * PhaseRayleigh) + S.MieScattering * (Densities.y * PhaseMie))
-				* SunTransmittance * SunIlluminance;
+				* SunTransmittance;
+			if (bMultipleScattering != 0)
+			{
+				// Step 14: all orders >= 2 (isotropic, not shadowed by the planet: Psi_ms already depends on SunMu).
+				Scattered += (S.RayleighScattering * Densities.x + S.MieScattering * Densities.y)
+					* PA_SampleMultipleScatteringLut(Index, S, H, SunMu);
+			}
+			Scattered *= SunIlluminance;
 		}
 
 		// Energy-conserving integral over the step: S * (1 - exp(-sigma dt)) / sigma (-> S dt for sigma dt -> 0).
-		const float3 OpticalDepth = Extinction * Dt;
-		const float3 StepTransmittance = exp(-OpticalDepth);
-		// (step()/lerp() instead of a vector ternary: valid in both HLSL 2018 and 2021.)
-		const float3 StepIntegral = lerp(
-			Dt * (1.0 - 0.5 * OpticalDepth),
-			(1.0 - StepTransmittance) / max(Extinction, 1e-30),
-			step(1e-4, OpticalDepth));
+		float3 StepTransmittance;
+		const float3 StepIntegral = PA_StepIntegral(Extinction, Dt, StepTransmittance);
 		Result.Luminance += Result.Transmittance * Scattered * StepIntegral;
 		Result.Transmittance *= StepTransmittance;
 	}
 	return Result;
 }
 
+#endif // PA_MULTIPLE_SCATTERING_LUT_PASS
 #endif // PA_TRANSMITTANCE_LUT_PASS

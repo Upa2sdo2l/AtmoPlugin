@@ -20,6 +20,7 @@ namespace PlanetAtmosphere::CVars
 		RaySteps = 4,
 		AtmosphereOnly = 5,
 		TransmittanceLut = 6,
+		MultipleScatteringLut = 7,
 	};
 
 	/** Values of r.PlanetAtmosphere.StepDistribution. */
@@ -122,6 +123,9 @@ namespace PlanetAtmosphere::CVars
 
 	/** r.PlanetAtmosphere.Atmosphere.Steps — view-ray samples of the atmosphere, clamped to [4, 64]. */
 	int32 GetAtmosphereSteps();
+
+	/** r.PlanetAtmosphere.Atmosphere.MultipleScattering — multiple-scattering LUT + term on / off (Step 14). */
+	bool IsMultipleScatteringEnabled();
 
 	/** r.PlanetAtmosphere.LOD.* — validated (FullDetail > MinDetail > 0, fraction in [0.05, 1], light steps in [1, 16]). */
 	FScreenLODSettings GetScreenLODSettings();
