@@ -208,6 +208,28 @@ namespace
 		TEXT("disocclusion and camera jumps without a camera cut. Default 4."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereTemporalInterleave(
+		TEXT("r.PlanetAtmosphere.Temporal.Interleave"),
+		3,
+		TEXT("Interleaved rendering (Phase 3 / Step 19): the raymarch traces one pixel per N x N block per frame, the temporal\n")
+		TEXT("pass reconstructs the rest. 1 = every pixel, 2 = 2x2, 3 = 3x3 (default, ~1/9 of the raymarch cost), 4 = 4x4.\n")
+		TEXT("Only with r.PlanetAtmosphere.Temporal 1 (views without temporal always trace every pixel)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereTemporalStaticClampGamma(
+		TEXT("r.PlanetAtmosphere.Temporal.StaticClampGamma"),
+		8.0f,
+		TEXT("Interleaved (Step 19): clamp gamma for pixels that did not move (0.25..1000). The clamp neighbourhood is made of\n")
+		TEXT("samples N pixels apart; the normal gamma would keep a static image from converging. Default 8."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereTemporalClampMotionPixels(
+		TEXT("r.PlanetAtmosphere.Temporal.ClampMotionPixels"),
+		0.5f,
+		TEXT("Interleaved (Step 19): motion in pixels from which r.PlanetAtmosphere.Temporal.ClampGamma applies fully (0.01..16).\n")
+		TEXT("Default 0.5."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudSkyAmbientScale(
 		TEXT("r.PlanetAtmosphere.CloudSkyAmbientScale"),
 		1.0f,
@@ -385,6 +407,9 @@ namespace PlanetAtmosphere::CVars
 		Settings.CurrentFrameWeight = FMath::Clamp(CVarPlanetAtmosphereTemporalCurrentFrameWeight.GetValueOnAnyThread(false), 0.01f, 1.0f);
 		Settings.ClampGamma = FMath::Clamp(CVarPlanetAtmosphereTemporalClampGamma.GetValueOnAnyThread(false), 0.25f, 8.0f);
 		Settings.DepthRejectRatio = FMath::Clamp(CVarPlanetAtmosphereTemporalDepthRejectRatio.GetValueOnAnyThread(false), 1.1f, 100.0f);
+		Settings.InterleaveFactor = FMath::Clamp(CVarPlanetAtmosphereTemporalInterleave.GetValueOnAnyThread(false), 1, 4);
+		Settings.StaticClampGamma = FMath::Clamp(CVarPlanetAtmosphereTemporalStaticClampGamma.GetValueOnAnyThread(false), 0.25f, 1000.0f);
+		Settings.ClampMotionPixels = FMath::Clamp(CVarPlanetAtmosphereTemporalClampMotionPixels.GetValueOnAnyThread(false), 0.01f, 16.0f);
 		return Settings;
 	}
 

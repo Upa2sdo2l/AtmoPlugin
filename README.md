@@ -109,6 +109,9 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.Temporal` | 1 | Temporal accumulation (Step 18): reprojected history of previous frames (camera and planet motion), clamped to the current 3×3 neighbourhood. Debug modes 0 / 5 / 8, perspective views with a persistent view state (not scene captures / reflections / orthographic) |
 | `r.PlanetAtmosphere.Temporal.CurrentFrameWeight` | 0.1 | Minimum weight of the new frame (0.01..1): lower = smoother, more lag in motion |
 | `r.PlanetAtmosphere.Temporal.ClampGamma` | 1.25 | History clamped to mean ± gamma × std of the current neighbourhood: lower = less ghosting, more noise |
+| `r.PlanetAtmosphere.Temporal.Interleave` | 3 | Interleaved rendering (Step 19): the raymarch traces one pixel per N × N block per frame, the temporal pass reconstructs the rest. 1 = every pixel, 2, 3 (default, ~1/9 of the raymarch cost), 4 |
+| `r.PlanetAtmosphere.Temporal.StaticClampGamma` | 8 | Interleaved: clamp gamma for pixels that did not move (the coarse sample neighbourhood would keep a static image from converging) |
+| `r.PlanetAtmosphere.Temporal.ClampMotionPixels` | 0.5 | Interleaved: motion (pixels) from which `ClampGamma` applies fully |
 | `r.PlanetAtmosphere.Temporal.DepthRejectRatio` | 4 | History dropped where its depth differs by more than this factor (disocclusion, camera jumps without a camera cut) |
 | `r.PlanetAtmosphere.Atmosphere.LutCache` | 1 | LUTs cached across frames, rebuilt only on change (Step 16). 0 = rebuild every LUT every frame (old cost; for comparison or after `recompileshaders`) |
 | `r.PlanetAtmosphere.Atmosphere.Steps` | 16 | Atmosphere samples per view ray (quadratic from inside the atmosphere, uniform from outside), 4..64 |
@@ -153,7 +156,7 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 | 5 | Atmosphere Only: the final image without clouds |
 | 6 | Transmittance LUT: final image + the LUT atlas at 2× in the top-left corner (one 256 × 64 block per planet, nearest planet on top; x = view zenith angle, y = altitude) |
 | 7 | Multiple-Scattering LUT: final image + the MS LUT atlas at 4× in the top-left corner, ×25 (one 64 × 32 block per planet; x = sun zenith from below the horizon (left) to overhead (right), y = altitude, ground at the top) |
-| 8 | Temporal Weight: weight of the current frame in the temporal accumulation over the darkened image (green = mostly history, red = current frame only: history rejected or just started) |
+| 8 | Temporal Weight: 1 / accumulated sample weight over the darkened image (green = long history, red = little history: rejected, just started; with interleaving pixels far from this frame's samples stay greener) |
 
 - GPU: `stat gpu` → **PlanetAtmosphere.Raymarch** (noise bake + raymarch / debug pass of a view; called
   **PlanetAtmosphere** before Step 17), **PlanetAtmosphere.Temporal** (Step 18), **PlanetAtmosphere.Composite** (Step 17: applying the result to the scene),
@@ -188,6 +191,15 @@ Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` /
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 3 — Step 19: interleaved 3×3 rendering**
+- The raymarch traces one pixel per N × N block per frame (ordered-dither order; even N shift the order every cycle so
+  every pixel meets all TSR sub-pixel jitter phases); the temporal pass reconstructs the full image: bilinear of the block
+  samples as the current frame, reprojection data of the nearest sample, new-frame weight × exp(−d²/2·0.5²) by the
+  distance to it, clamp to the 3×3 block samples with a motion-adaptive gamma (8 static → 1.25 from 0.5 px of motion)
+- Prototype: raymarch cost ~1/9; static scenes converge to the Step 18 quality (≈1.5 s instead of 0.3 s); in motion the
+  error is ~2× Step 18 (softer, faint grid), still well below no accumulation at realistic speeds; 2×2 in between
+- History: + planet slot R16F (accumulated weight in transmittance.a); N = `r.PlanetAtmosphere.Temporal.Interleave` (live switch)
 
 **Phase 3 — Step 18: temporal history + reprojection**
 - Per view history (luminance + transmittance), reprojected with the previous camera and the previous transform of each
@@ -252,7 +264,7 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 19 — interleaved 3×3 rendering (prototype first).
+Next: Step 20 — Phase 3 final profiling and tuning, Phase 3 checklist; then re-measure Step 16 part 3.
 Step 16 part 3 (cheaper cloud/atmosphere coupling) is deferred until Phase 3 is measured.
 
 ## Dependencies

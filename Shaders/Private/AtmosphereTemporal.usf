@@ -1,7 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-// Phase 3 / Step 18 — temporal accumulation of the clouds + atmosphere (luminance + transmittance of CloudRaymarch.usf).
-// Per pixel (validated by the CPU prototype, see AD-20):
+// Phase 3 / Steps 18-19 — temporal accumulation / reconstruction of the clouds + atmosphere (luminance + transmittance
+// of CloudRaymarch.usf). Step 19: the raymarch may trace only one pixel per InterleaveFactor^2 block per frame (block
+// origin + InterleaveOffset); the current frame of every pixel is then the bilinear interpolation of the block samples,
+// its reprojection depth / planet come from the nearest sample, and the new-frame weight is scaled by
+// exp(-d^2 / 2 s^2), d = distance to that sample (s = 0.5 px): traced pixels converge like Step 18, the others mostly keep
+// their history. InterleaveFactor 1 = Step 18 exactly (every pixel is a sample at distance 0).
+// Per pixel (validated by the CPU prototypes, see AD-20 / AD-21):
 //   1. the pixel center (unjittered) at the raymarch's reprojection depth -> previous frame, with the previous camera
 //      and the previous transform of the planet that defines the depth (ReprojRow*[slot], built on the CPU in double);
 //      infinite depth -> direction only (camera slot);
@@ -10,28 +15,34 @@
 //      depth differs by more than DepthRejectRatio (disocclusion, jumps without a camera cut);
 //      bHistoryValid = 0 -> whole history dropped (camera cut, stale or other image type, CPU side);
 //   3. history sampled with Catmull-Rom (5 bilinear taps), rescaled by the exposure change, clamped to
-//      mean +- ClampGamma x std of the current 3x3 neighbourhood;
-//   4. out = lerp(history, current, max(1 / N, CurrentFrameWeight)), N = accumulated frames (1 after a reject, max 100).
+//      mean +- gamma x std of the current 3x3 neighbourhood (3x3 block samples); interleaved: gamma goes from
+//      StaticClampGamma (pixel did not move) to ClampGamma at ClampMotionPixels of motion (a tight clamp on the coarse
+//      sample neighbourhood would keep a static image from converging);
+//   4. w = sample weight, out = lerp(history, current, a), a = max(w / (N + w), CurrentFrameWeight x w),
+//      N = accumulated weight (+w per frame, w after a reject, max 100).
 // The previous view rect / extent may differ from the current one (dynamic resolution): the history is addressed through
 // PrevViewRectMinAndSize / HistoryTextureSizeAndInvSize. Perspective views only (AtmosphereTemporal.cpp).
 // Output = the new history, also the input of the composite pass:
 //   luminance.a = view-space depth in km of this pixel's point (-1 = infinity), next frame's depth test;
-//   transmittance.a = planet slot + PA_TEMPORAL_PACK x N (exact small integers in fp16).
+//   transmittance.a = accumulated weight N; slot texture = planet slot.
 
 #include "/Engine/Private/Common.ush"
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
 
-#define PA_TEMPORAL_PACK 17          // > PA_REPROJ_NO_PLANET
-#define PA_TEMPORAL_MAX_FRAMES 100   // >= 1 / min CurrentFrameWeight (0.01); slot + 17 x 100 = 1716 is exact in fp16
+#define PA_TEMPORAL_MAX_WEIGHT 100.0   // >= 1 / min CurrentFrameWeight (0.01)
+#define PA_TEMPORAL_SAMPLE_SIGMA 0.5   // pixels
 
+// Current frame: InterleaveFactor 1 -> full resolution at the scene-texture pixel; > 1 -> one texel per block.
 Texture2D<float4> CurrentLuminance;
 Texture2D<float4> CurrentTransmittance;
 Texture2D<float4> HistoryLuminance;
 Texture2D<float4> HistoryTransmittance;
+Texture2D<float> HistorySlot;
 Texture2D<float4> HistoryExposure;            // 1 x 1, r + g = log2(PreExposure) of the history (fp16 high + low part)
 SamplerState HistorySampler;                  // bilinear, clamp
 RWTexture2D<float4> OutLuminance;
 RWTexture2D<float4> OutTransmittance;
+RWTexture2D<float> OutSlot;
 RWTexture2D<float4> OutExposure;
 
 // Row-vector 4x4 per slot: clip_prev = v.x * Row0 + v.y * Row1 + v.z * Row2 + w * Row3, v = point - current camera (cm,
@@ -49,6 +60,12 @@ int bHistoryValid;
 float CurrentFrameWeight;
 float ClampGamma;
 float DepthRejectRatio;
+// Step 19
+int InterleaveFactor;
+int InterleaveOffsetX;
+int InterleaveOffsetY;
+float StaticClampGamma;
+float ClampMotionPixels;
 
 /** Catmull-Rom history sample with 5 bilinear taps (the 4 corner taps dropped), taps clamped to the history view rect. */
 float3 PA_SampleHistoryCatmullRom(Texture2D<float4> Tex, float2 PixelPos)
@@ -85,8 +102,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 	const int2 RectMinI = (int2)ViewRectMinAndSize.xy;
-	const int2 RectMaxI = RectMinI + (int2)RectSize - 1;
-	const int2 Pixel = RectMinI + (int2)DispatchThreadId.xy;
+	const int2 Local = (int2)DispatchThreadId.xy;
+	const int2 Pixel = RectMinI + Local;
 
 	// log2(PreExposure) split into an fp16 high part + the fp16 remainder: an fp16 alone rounds |log2| in 8..16 by up to
 	// 2^-8, i.e. a constant exposure "change" of up to 0.3 % per frame that the accumulation would amplify (review).
@@ -97,25 +114,66 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		OutExposure[uint2(0, 0)] = float4(High, Log2Exposure - High, 0.0, 0.0);
 	}
 
-	const float4 CurL = CurrentLuminance.Load(int3(Pixel, 0));
-	const float4 CurT = CurrentTransmittance.Load(int3(Pixel, 0));
-	const int Slot = clamp((int)(CurT.a + 0.5), 0, PA_REPROJ_NO_PLANET);
-	const bool bFinite = CurL.a >= 0.0;
+	// ---- Current frame: block samples around this pixel (InterleaveFactor 1: the pixel itself) ----
+	const int Factor = max(InterleaveFactor, 1);
+	const int2 Offset = int2(InterleaveOffsetX, InterleaveOffsetY);
+	const int2 NumBlocks = ((int2)RectSize + Factor - 1) / Factor;
+	const int2 CurrentOrigin = Factor == 1 ? RectMinI : int2(0, 0);   // full resolution: scene-texture pixels
+	const float2 GridPos = clamp((float2(Local - Offset)) / (float)Factor, 0.0, float2(NumBlocks - 1));
+	const int2 B0 = min((int2)floor(GridPos), NumBlocks - 1);
+	const int2 B1 = min(B0 + 1, NumBlocks - 1);
+	// Interpolation between the pixels actually traced (the last, partial block traces a pixel clamped into the view).
+	const int2 S0 = min(B0 * Factor + Offset, (int2)RectSize - 1);
+	const int2 S1 = min(B1 * Factor + Offset, (int2)RectSize - 1);
+	const float2 F = float2(
+		S1.x > S0.x ? saturate((float)(Local.x - S0.x) / (float)(S1.x - S0.x)) : 0.0,
+		S1.y > S0.y ? saturate((float)(Local.y - S0.y) / (float)(S1.y - S0.y)) : 0.0);
+
+	float4 SampleL[4];
+	float4 SampleT[4];
+	float SampleDist2[4];
+	{
+		const int2 Blocks[4] = { int2(B0.x, B0.y), int2(B1.x, B0.y), int2(B0.x, B1.y), int2(B1.x, B1.y) };
+		[unroll]
+		for (int I = 0; I < 4; ++I)
+		{
+			SampleL[I] = CurrentLuminance.Load(int3(CurrentOrigin + Blocks[I], 0));
+			SampleT[I] = CurrentTransmittance.Load(int3(CurrentOrigin + Blocks[I], 0));
+			const int2 SamplePixel = min(Blocks[I] * Factor + Offset, (int2)RectSize - 1);   // local pixel traced for this block
+			const float2 Delta = float2(SamplePixel - Local);
+			SampleDist2[I] = dot(Delta, Delta);
+		}
+	}
+	// Factor 1: the pixel itself (no blend: an Inf / NaN neighbour must not leak in through a zero weight).
+	const float3 CurL = Factor == 1 ? SampleL[0].rgb
+		: lerp(lerp(SampleL[0].rgb, SampleL[1].rgb, F.x), lerp(SampleL[2].rgb, SampleL[3].rgb, F.x), F.y);
+	const float3 CurT = Factor == 1 ? SampleT[0].rgb
+		: lerp(lerp(SampleT[0].rgb, SampleT[1].rgb, F.x), lerp(SampleT[2].rgb, SampleT[3].rgb, F.x), F.y);
+	int Nearest = 0;
+	[unroll]
+	for (int J = 1; J < 4; ++J)
+	{
+		Nearest = SampleDist2[J] < SampleDist2[Nearest] ? J : Nearest;
+	}
+	const float DepthKm = SampleL[Nearest].a;
+	const int Slot = clamp((int)(SampleT[Nearest].a + 0.5), 0, PA_REPROJ_NO_PLANET);
+	const bool bFinite = DepthKm >= 0.0;
+	const float SampleWeight = exp(-SampleDist2[Nearest] / (2.0 * PA_TEMPORAL_SAMPLE_SIGMA * PA_TEMPORAL_SAMPLE_SIGMA));
 
 	// Pixel center ray (the raymarch used the jittered one; the TAA jitter is a pure NDC offset).
-	const float2 UV = (float2(DispatchThreadId.xy) + 0.5) / RectSize;
+	const float2 UV = (float2(Local) + 0.5) / RectSize;
 	const float2 NDC = float2(UV.x * 2.0 - 1.0, 1.0 - UV.y * 2.0);
 	const float3 Dir = PA_RayDirFromNDC(NDC + CurrentJitterNDC.xy);
-	const float ViewZKm = bFinite ? CurL.a * dot(Dir, CurrentViewForward.xyz) : -1.0;
+	const float ViewZKm = bFinite ? DepthKm * dot(Dir, CurrentViewForward.xyz) : -1.0;
 
-	float3 OutL = CurL.rgb;
-	float3 OutT = CurT.rgb;
-	float N = 1.0;
+	float3 OutL = CurL;
+	float3 OutT = CurT;
+	float N = SampleWeight;
 
 	if (bHistoryValid != 0)
 	{
 		const int MatrixSlot = bFinite ? Slot : PA_REPROJ_NO_PLANET;
-		const float4 V = bFinite ? float4(Dir * (CurL.a * 1e5), 1.0) : float4(Dir, 0.0);
+		const float4 V = bFinite ? float4(Dir * (DepthKm * 1e5), 1.0) : float4(Dir, 0.0);
 		const float4 Clip = V.x * ReprojRow0[MatrixSlot] + V.y * ReprojRow1[MatrixSlot] + V.z * ReprojRow2[MatrixSlot] + V.w * ReprojRow3[MatrixSlot];
 		const float2 PrevNDC = Clip.xy / (Clip.w > 0.0 ? Clip.w : 1.0);
 		const float2 PrevUV = float2(PrevNDC.x * 0.5 + 0.5, 0.5 - PrevNDC.y * 0.5);
@@ -126,18 +184,18 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			const float2 PrevPixel = PrevViewRectMinAndSize.xy + PrevUV * PrevViewRectMinAndSize.zw;   // continuous, centers at .5
 			const int2 PrevRectMinI = (int2)PrevViewRectMinAndSize.xy;
 			const int2 PrevNearest = clamp((int2)floor(PrevPixel), PrevRectMinI, PrevRectMinI + (int2)PrevViewRectMinAndSize.zw - 1);
-			const float HistoryZKm = HistoryLuminance.Load(int3(PrevNearest, 0)).a;
-			const int Packed = (int)(HistoryTransmittance.Load(int3(PrevNearest, 0)).a + 0.5);
-			const int HistorySlot = Packed % PA_TEMPORAL_PACK;
-			const float HistoryN = (float)(Packed / PA_TEMPORAL_PACK);
+			const float4 HistoryNearestL = HistoryLuminance.Load(int3(PrevNearest, 0));
+			const float4 HistoryNearestT = HistoryTransmittance.Load(int3(PrevNearest, 0));
+			const float HistoryZKm = HistoryNearestL.a;
+			const float HistoryN = max(HistoryNearestT.a, 0.0);
+			const int HistorySlotIndex = (int)(HistorySlot.Load(int3(PrevNearest, 0)) + 0.5);
 
 			// Same planet as last frame (its slot may have changed: near -> far order, planets appearing). Between a planet
 			// and the camera-only slot the depth test decides, when there is one (both depths finite).
 			const int ExpectedSlot = Slot == PA_REPROJ_NO_PLANET ? PA_REPROJ_NO_PLANET : (int)PlanetPrevSlot[Slot].x;
 			const bool bBothFinite = bFinite && HistoryZKm >= 0.0;
-			const bool bSlotMatches = HistorySlot == ExpectedSlot
-				|| (bBothFinite && (HistorySlot == PA_REPROJ_NO_PLANET || Slot == PA_REPROJ_NO_PLANET));
-			bValid = HistoryN >= 1.0 && bSlotMatches;
+			bValid = HistorySlotIndex == ExpectedSlot
+				|| (bBothFinite && (HistorySlotIndex == PA_REPROJ_NO_PLANET || Slot == PA_REPROJ_NO_PLANET));
 
 			// Depth: the reprojected point should be about where the history pixel's point was.
 			if (bValid)
@@ -157,7 +215,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 			if (bValid)
 			{
-				// Neighbourhood of the current frame (3x3), mean +- gamma x std.
+				// Neighbourhood of the current frame: 3x3 samples (pixels, or blocks when interleaved), mean +- gamma x std.
+				const int2 CenterBlock = min(Local / Factor, NumBlocks - 1);
 				float3 SumL = 0.0, SumL2 = 0.0, SumT = 0.0, SumT2 = 0.0;
 				[unroll]
 				for (int Y = -1; Y <= 1; ++Y)
@@ -165,7 +224,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 					[unroll]
 					for (int X = -1; X <= 1; ++X)
 					{
-						const int3 P = int3(clamp(Pixel + int2(X, Y), RectMinI, RectMaxI), 0);
+						const int3 P = int3(CurrentOrigin + clamp(CenterBlock + int2(X, Y), int2(0, 0), NumBlocks - 1), 0);
 						const float3 L = CurrentLuminance.Load(P).rgb;
 						const float3 T = CurrentTransmittance.Load(P).rgb;
 						SumL += L; SumL2 += L * L; SumT += T; SumT2 += T * T;
@@ -176,21 +235,30 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				const float3 StdL = sqrt(max(SumL2 / 9.0 - MeanL * MeanL, 0.0));
 				const float3 StdT = sqrt(max(SumT2 / 9.0 - MeanT * MeanT, 0.0));
 
+				// Interleaved: wide clamp where the pixel did not move, the normal one from ClampMotionPixels on.
+				float Gamma = ClampGamma;
+				if (Factor > 1)
+				{
+					const float MotionPixels = length((PrevUV - UV) * PrevViewRectMinAndSize.zw);
+					Gamma = lerp(StaticClampGamma, ClampGamma, saturate(MotionPixels / max(ClampMotionPixels, 1e-3)));
+				}
+
 				const float2 HistoryLog2Exposure = HistoryExposure.Load(int3(0, 0, 0)).rg;
 				const float ExposureScale = exp2((Log2Exposure - HistoryLog2Exposure.x) - HistoryLog2Exposure.y);
 				float3 HistL = PA_SampleHistoryCatmullRom(HistoryLuminance, PrevPixel) * ExposureScale;
 				float3 HistT = PA_SampleHistoryCatmullRom(HistoryTransmittance, PrevPixel);
-				HistL = max(clamp(HistL, MeanL - ClampGamma * StdL, MeanL + ClampGamma * StdL), 0.0);
-				HistT = saturate(clamp(HistT, MeanT - ClampGamma * StdT, MeanT + ClampGamma * StdT));
+				HistL = max(clamp(HistL, MeanL - Gamma * StdL, MeanL + Gamma * StdL), 0.0);
+				HistT = saturate(clamp(HistT, MeanT - Gamma * StdT, MeanT + Gamma * StdT));
 
-				const float Alpha = max(1.0 / (HistoryN + 1.0), CurrentFrameWeight);
-				OutL = lerp(HistL, CurL.rgb, Alpha);
-				OutT = lerp(HistT, CurT.rgb, Alpha);
-				N = min(HistoryN + 1.0, (float)PA_TEMPORAL_MAX_FRAMES);
+				const float Alpha = saturate(max(SampleWeight / max(HistoryN + SampleWeight, 1e-6), CurrentFrameWeight * SampleWeight));
+				OutL = lerp(HistL, CurL, Alpha);
+				OutT = lerp(HistT, CurT, Alpha);
+				N = min(HistoryN + SampleWeight, PA_TEMPORAL_MAX_WEIGHT);
 			}
 		}
 	}
 
 	OutLuminance[Pixel] = float4(OutL, ViewZKm);
-	OutTransmittance[Pixel] = float4(OutT, (float)Slot + (float)PA_TEMPORAL_PACK * N);
+	OutTransmittance[Pixel] = float4(OutT, N);
+	OutSlot[Pixel] = (float)Slot;
 }

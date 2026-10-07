@@ -93,6 +93,10 @@ public:
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereViewParameters, ViewParams)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
+		// Interleaved rendering (Step 19): one pixel per N x N block, block * N + offset; outputs one texel per block.
+		SHADER_PARAMETER(int32, InterleaveFactor)
+		SHADER_PARAMETER(int32, InterleaveOffsetX)
+		SHADER_PARAMETER(int32, InterleaveOffsetY)
 		// Outputs (Step 17): pre-exposed luminance and transmittance, applied to the scene by FAtmosphereCompositeCS.
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutLuminance)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutTransmittance)
@@ -189,10 +193,12 @@ public:
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, HistoryLuminance)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, HistoryTransmittance)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, HistoryExposure)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, HistorySlot)
 		SHADER_PARAMETER_SAMPLER(SamplerState, HistorySampler)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutLuminance)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutTransmittance)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutExposure)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, OutSlot)
 		// Row-vector reprojection matrices (current camera-relative point -> previous clip), one per slot.
 		SHADER_PARAMETER_ARRAY(FVector4f, ReprojRow0, [PLANET_ATMOSPHERE_REPROJ_SLOTS])
 		SHADER_PARAMETER_ARRAY(FVector4f, ReprojRow1, [PLANET_ATMOSPHERE_REPROJ_SLOTS])
@@ -208,6 +214,12 @@ public:
 		SHADER_PARAMETER(float, CurrentFrameWeight)
 		SHADER_PARAMETER(float, ClampGamma)
 		SHADER_PARAMETER(float, DepthRejectRatio)
+		// Interleaved reconstruction (Step 19).
+		SHADER_PARAMETER(int32, InterleaveFactor)
+		SHADER_PARAMETER(int32, InterleaveOffsetX)
+		SHADER_PARAMETER(int32, InterleaveOffsetY)
+		SHADER_PARAMETER(float, StaticClampGamma)
+		SHADER_PARAMETER(float, ClampMotionPixels)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

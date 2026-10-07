@@ -31,9 +31,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	float3 Result = SceneColor.rgb * Transmittance.rgb + Luminance;
 	if (bShowTemporalWeight != 0)
 	{
-		// Temporal Weight: weight of the current frame. transmittance.a = slot + 17 x N (AtmosphereTemporal.usf),
-		// N = accumulated frames, 1 = history rejected / new. Red = current frame only, green = mostly history.
-		const float N = floor((Transmittance.a + 0.5) / 17.0);
+		// Temporal Weight: transmittance.a = accumulated sample weight N (AtmosphereTemporal.usf; 1 per traced frame,
+		// less for pixels between the interleaved samples). Shown: 1 / N, at least CurrentFrameWeight = the weight a traced
+		// sample gets. Red = little history (rejected / new), green = long history.
+		const float N = Transmittance.a;
 		const float Weight = N <= 1.0 ? 1.0 : max(1.0 / N, CurrentFrameWeight);
 		Result = Result * 0.25 + float3(Weight, 1.0 - Weight, 0.0);
 	}
