@@ -87,4 +87,18 @@ namespace PlanetAtmosphere::CVars
 
 	/** r.PlanetAtmosphere.NoiseSource — base-shape / erosion noise source. */
 	ENoiseSource GetNoiseSource();
+
+	// ---- Screen-space LOD (Phase 2 / Step 11) ----
+
+	struct FScreenLODSettings
+	{
+		bool bEnabled = true;
+		float FullDetailRadiusPx = 400.0f;  // >= this radius on screen: full RaymarchSteps / LightSteps
+		float MinDetailRadiusPx = 50.0f;    // <= this radius: minimum detail
+		float MinStepFraction = 0.25f;      // RaymarchSteps multiplier at minimum detail
+		int32 MinLightSteps = 2;            // light steps at minimum detail
+	};
+
+	/** r.PlanetAtmosphere.LOD.* — validated (FullDetail > MinDetail > 0, fraction in [0.05, 1], light steps in [1, 16]). */
+	FScreenLODSettings GetScreenLODSettings();
 }

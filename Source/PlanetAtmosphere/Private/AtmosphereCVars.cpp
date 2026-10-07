@@ -110,6 +110,38 @@ namespace
 		TEXT(" 0 = Procedural (Phase 1 noise, reference and fallback)\n")
 		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 R16F, baked once on the GPU"),
 		ECVF_RenderThreadSafe);
+
+	// ---- Screen-space LOD (Phase 2 / Step 11) ----
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLOD(
+		TEXT("r.PlanetAtmosphere.LOD"),
+		1,
+		TEXT("Screen-space LOD: fewer raymarch / light steps for atmospheres that are small on screen. 0 = off, 1 = on."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereLODFullDetailRadius(
+		TEXT("r.PlanetAtmosphere.LOD.FullDetailRadius"),
+		400.0f,
+		TEXT("Radius of the atmosphere on screen (pixels of the render resolution) from which full detail is used."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereLODMinDetailRadius(
+		TEXT("r.PlanetAtmosphere.LOD.MinDetailRadius"),
+		50.0f,
+		TEXT("Radius on screen (pixels) at and below which the minimum detail is used. Detail is interpolated in log2(radius) in between."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereLODMinStepFraction(
+		TEXT("r.PlanetAtmosphere.LOD.MinStepFraction"),
+		0.25f,
+		TEXT("Fraction of the planet's Raymarch Steps used at minimum detail (at least 4 steps). Clamped to [0.05, 1]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLODMinLightSteps(
+		TEXT("r.PlanetAtmosphere.LOD.MinLightSteps"),
+		2,
+		TEXT("Light-march steps at minimum detail (never more than r.PlanetAtmosphere.LightSteps). Clamped to [1, 16]."),
+		ECVF_RenderThreadSafe);
 }
 
 namespace PlanetAtmosphere::CVars
@@ -199,5 +231,16 @@ namespace PlanetAtmosphere::CVars
 		return CVarPlanetAtmosphereNoiseSource.GetValueOnAnyThread(false) == 0
 			? ENoiseSource::Procedural
 			: ENoiseSource::BakedTextures;
+	}
+
+	FScreenLODSettings GetScreenLODSettings()
+	{
+		FScreenLODSettings Settings;
+		Settings.bEnabled = CVarPlanetAtmosphereLOD.GetValueOnAnyThread(false) != 0;
+		Settings.MinDetailRadiusPx = FMath::Max(1.0f, CVarPlanetAtmosphereLODMinDetailRadius.GetValueOnAnyThread(false));
+		Settings.FullDetailRadiusPx = FMath::Max(Settings.MinDetailRadiusPx * 1.01f, CVarPlanetAtmosphereLODFullDetailRadius.GetValueOnAnyThread(false));
+		Settings.MinStepFraction = FMath::Clamp(CVarPlanetAtmosphereLODMinStepFraction.GetValueOnAnyThread(false), 0.05f, 1.0f);
+		Settings.MinLightSteps = FMath::Clamp(CVarPlanetAtmosphereLODMinLightSteps.GetValueOnAnyThread(false), 1, 16);
+		return Settings;
 	}
 }

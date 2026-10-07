@@ -26,7 +26,7 @@ float3 SunDirection;         // unit, world axes, pointing TOWARD the sun
 float3 SunIlluminance;       // 0 when there is no sun
 float3 AmbientIlluminance;   // sky/ambient light on the clouds
 int bHasSun;
-int LightSteps;
+int LightSteps;              // r.PlanetAtmosphere.LightSteps (full detail); per planet: A.LightSteps after LOD
 
 // Sample distribution (Step 9). See RaymarchSchedule.ush.
 int StepDistribution;        // 0 = uniform, 1 = camera-centered
@@ -44,7 +44,6 @@ struct FPACloudLightingContext
 	float3 AmbientIlluminance;
 	float Phase;          // PA_CloudPhase(dot(ray, sun))
 	bool bHasSun;
-	int LightSteps;
 };
 
 // A sample whose contribution to the pixel (transmittance before it * its opacity) is below this
@@ -107,7 +106,7 @@ float PA_IntegrateCloudStep(
 			if (Shadow > 0.0)
 			{
 				const float Footprint = T * Ray.FootprintPerUnitDistance;
-				const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, Light.LightSteps, State.DensitySamples);
+				const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, A.LightSteps, State.DensitySamples);
 				Radiance += Light.SunIlluminance * (Light.Phase * SunTransmittance * Shadow);
 			}
 		}
@@ -213,7 +212,6 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Light.AmbientIlluminance = AmbientIlluminance;
 	Light.Phase = PA_CloudPhase(dot(Ray.Dir, SunDirection));
 	Light.bHasSun = bHasSun != 0;
-	Light.LightSteps = LightSteps;
 
 	// Same jitter for every planet of this pixel; animated jitter changes every frame (StateFrameIndex).
 	const float Jitter = PA_GetRayJitter(Ray.Pixel, JitterMode, View.StateFrameIndex);

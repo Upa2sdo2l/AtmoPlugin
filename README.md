@@ -66,6 +66,11 @@ The actor's scale is ignored — radii are absolute.
 | `r.PlanetAtmosphere.EmptySpaceSkip` | 0 | Coarse probes over N steps in clear air (2..8); off by default — loses thin clouds |
 | `r.PlanetAtmosphere.MinTransmittance` | 0.01 | The view ray stops below this transmittance |
 | `r.PlanetAtmosphere.NoiseSource` | 1 | 0 = procedural Phase 1 noise (reference / fallback), 1 = baked 3D textures |
+| `r.PlanetAtmosphere.LOD` | 1 | Screen-space LOD: fewer raymarch / light steps for atmospheres small on screen |
+| `r.PlanetAtmosphere.LOD.FullDetailRadius` | 400 | Radius on screen (px, render resolution) from which full detail is used |
+| `r.PlanetAtmosphere.LOD.MinDetailRadius` | 50 | Radius at and below which minimum detail is used (log2 interpolation in between) |
+| `r.PlanetAtmosphere.LOD.MinStepFraction` | 0.25 | Fraction of Raymarch Steps at minimum detail (at least 4) |
+| `r.PlanetAtmosphere.LOD.MinLightSteps` | 2 | Light-march steps at minimum detail |
 
 ## Sun
 
@@ -85,7 +90,7 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 
 - GPU: `stat gpu` → **PlanetAtmosphere** (all plugin passes of a view); `ProfileGPU` shows the individual passes.
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
-- Per-frame log: `log LogPlanetAtmosphere Verbose`.
+- Per-frame log: `log LogPlanetAtmosphere Verbose`; screen radius and LOD steps per atmosphere: `log LogPlanetAtmosphere VeryVerbose`.
 
 ## Noise textures
 
@@ -103,6 +108,9 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
+**Phase 2 — Step 11: screen-space LOD, Phase 2 final profiling**
+- Raymarch and light-march steps scale with the atmosphere's radius on screen (full detail from 400 px)
+
 **Phase 2 — Step 10: baked 3D noise textures**
 - Base-shape and erosion noise from shared baked textures (`NoiseSource 1`), procedural Phase 1 noise kept as `NoiseSource 0`
 
@@ -117,7 +125,7 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 11 — screen-space LOD by the atmosphere's size on screen, Phase 2 final profiling.
+Next: Phase 2.5 — atmospheric scattering (sky from the surface, limb glow from orbit, aerial perspective).
 Then Phase 2.5 — atmospheric scattering (sky, limb glow, aerial perspective).
 
 ## Dependencies
