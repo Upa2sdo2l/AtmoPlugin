@@ -61,6 +61,7 @@ public:
 	const double CloudShapeScaleUU;
 	const float CloudErosion;
 	const int32 RaymarchSteps;
+	const float CloudSkyAmbientScale;
 	const FPlanetAtmosphereScattering ScatteringUU;
 
 private:

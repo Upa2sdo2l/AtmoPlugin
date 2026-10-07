@@ -106,6 +106,9 @@ struct FAtmosphereVisibleInstance
 	float CloudErosion = 0.0f;
 	int32 RaymarchSteps = 0;
 
+	/** Sky ambient multiplier on the clouds (Step 15, temporary compensation until Phase 7). */
+	float CloudSkyAmbientScale = 0.0f;
+
 	/** Atmosphere scattering (Step 13), render-side units. */
 	FPlanetAtmosphereScattering ScatteringUU;
 };
