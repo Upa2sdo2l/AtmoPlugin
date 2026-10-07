@@ -319,6 +319,15 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Same jitter for every planet of this pixel; animated jitter changes every frame (StateFrameIndex).
 	const float Jitter = PA_GetRayJitter(Ray.Pixel, JitterMode, View.StateFrameIndex);
 
+	// Step 18: reprojection depth of this pixel for the temporal pass (prototype variant "D3"): the first planet
+	// (near -> far) whose clouds are visibly there -> their contribution-weighted depth, or whose surface is hit -> the
+	// surface; otherwise the scene geometry; otherwise the middle of the first atmosphere crossed; otherwise infinity.
+	float ReprojDepth = -1.0;
+	int ReprojPlanet = PA_REPROJ_NO_PLANET;
+	bool bReprojFound = false;
+	float AtmosphereDepth = -1.0;
+	int AtmospherePlanet = PA_REPROJ_NO_PLANET;
+
 	const bool bCloudDebugView = DebugMode >= 2 && DebugMode <= 4;
 	const bool bDrawClouds = DebugMode != 5;
 	const bool bDrawAtmosphere = bAtmosphereEnabled != 0 && !bCloudDebugView;
@@ -366,6 +375,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		// Radiance of this planet's clouds is collected separately, so the atmosphere in front of them can attenuate it.
 		const float3 AccumBeforeClouds = State.Accum;
 		const float TransmittanceBeforeClouds = State.Transmittance;
+		const float OpticalDepthBeforeClouds = State.OpticalDepth;
 		State.DepthSum = 0.0;
 		State.DepthWeight = 0.0;
 
@@ -393,6 +403,36 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				StepNearDistanceScale * Layer.Thickness,
 				StepRatioMax);
 			PA_MarchClouds(A, Layer, Ray, Light, Schedule, Jitter, State);
+		}
+
+		if (!bReprojFound)
+		{
+			const float PlanetCloudOpacity = 1.0 - exp(-(State.OpticalDepth - OpticalDepthBeforeClouds));
+			if (PlanetCloudOpacity > PA_REPROJ_MIN_CLOUD_OPACITY && State.DepthWeight > 1e-6)
+			{
+				ReprojDepth = State.DepthSum / State.DepthWeight;
+				ReprojPlanet = Index;
+				bReprojFound = true;
+			}
+			else if (bSurfaceVisible)
+			{
+				ReprojDepth = SurfaceT;
+				ReprojPlanet = Index;
+				bReprojFound = true;
+			}
+			else if (AtmospherePlanet == PA_REPROJ_NO_PLANET && bDrawAtmosphere)
+			{
+				// Middle of the part of the ray inside this planet's effective medium (Step 13 effective top).
+				const float2 MediumHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude,
+					Scattering.BottomAltitude + Scattering.Thickness);
+				const float MediumStart = max(MediumHit.x, 0.0);
+				const float MediumEnd = min(MediumHit.y, TMax);
+				if (MediumHit.x <= MediumHit.y && MediumEnd > MediumStart)
+				{
+					AtmosphereDepth = 0.5 * (MediumStart + MediumEnd);
+					AtmospherePlanet = Index;
+				}
+			}
 		}
 
 		// Atmosphere (Steps 13-15), split at the clouds' contribution-weighted mean depth (no clouds: all in front).
@@ -443,9 +483,25 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		}
 	}
 
+	if (!bReprojFound)
+	{
+		if (Ray.SceneDistance < PA_INFINITY)
+		{
+			ReprojDepth = Ray.SceneDistance;
+			ReprojPlanet = PA_REPROJ_NO_PLANET;   // scene geometry: camera motion only
+		}
+		else if (AtmospherePlanet != PA_REPROJ_NO_PLANET)
+		{
+			ReprojDepth = AtmosphereDepth;
+			ReprojPlanet = AtmospherePlanet;
+		}
+	}
+	const float ReprojDepthKm = (ReprojDepth >= 0.0 && ReprojDepth * 1e-5 < PA_REPROJ_MAX_DEPTH_KM) ? ReprojDepth * 1e-5 : -1.0;
+
 	// Step 17: the scene color is not read here. Every mode is written as luminance + transmittance, and
 	// AtmosphereComposite.usf produces  final = SceneColor x Transmittance + Luminance.
-	// Luminance is pre-exposed (x View.PreExposure) like the scene color. Alpha channels: reserved (Phase 3).
+	// Luminance is pre-exposed (x View.PreExposure) like the scene color. Alpha channels (Step 18): luminance.a = reprojection
+	// depth in km along the ray (-1 = infinity), transmittance.a = reprojection planet (PA_REPROJ_NO_PLANET = camera only).
 	const float DebugSceneScale = 0.15;   // darkened scene under the debug views 2-4
 	const float CloudOpacity = 1.0 - exp(-State.OpticalDepth);
 	float3 Luminance;
@@ -505,6 +561,6 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			}
 		}
 	}
-	OutLuminance[Ray.Pixel] = float4(Luminance, 0.0);
-	OutTransmittance[Ray.Pixel] = float4(Transmittance, 0.0);
+	OutLuminance[Ray.Pixel] = float4(Luminance, ReprojDepthKm);
+	OutTransmittance[Ray.Pixel] = float4(Transmittance, (float)ReprojPlanet);
 }

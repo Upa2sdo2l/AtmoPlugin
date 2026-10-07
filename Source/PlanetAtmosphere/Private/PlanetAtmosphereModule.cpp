@@ -7,6 +7,7 @@
 #include "ShaderCore.h"
 #include "AtmosphereNoiseTextures.h"
 #include "AtmosphereLutCache.h"
+#include "AtmosphereTemporal.h"
 
 DEFINE_LOG_CATEGORY(LogPlanetAtmosphere);
 
@@ -30,6 +31,8 @@ void FPlanetAtmosphereModule::ShutdownModule()
 	PlanetAtmosphere::ReleaseNoiseTextures_GameThread();
 	// LUT pools of the Step 16 cache: same lifecycle (see AtmosphereLutCache.h).
 	PlanetAtmosphere::ReleaseLutCache_GameThread();
+	// Temporal histories of all views (Step 18): same lifecycle.
+	PlanetAtmosphere::Temporal::ReleaseHistory_GameThread();
 }
 
 IMPLEMENT_MODULE(FPlanetAtmosphereModule, PlanetAtmosphere)

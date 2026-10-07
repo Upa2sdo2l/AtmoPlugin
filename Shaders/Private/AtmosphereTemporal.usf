@@ -1,0 +1,196 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Phase 3 / Step 18 — temporal accumulation of the clouds + atmosphere (luminance + transmittance of CloudRaymarch.usf).
+// Per pixel (validated by the CPU prototype, see AD-20):
+//   1. the pixel center (unjittered) at the raymarch's reprojection depth -> previous frame, with the previous camera
+//      and the previous transform of the planet that defines the depth (ReprojRow*[slot], built on the CPU in double);
+//      infinite depth -> direction only (camera slot);
+//   2. reject: outside the previous view, behind the previous camera, another planet than last frame (a change between a
+//      planet and the camera-only slot is left to the depth test: thin cloud edges flip between them with the jitter),
+//      depth differs by more than DepthRejectRatio (disocclusion, jumps without a camera cut);
+//      bHistoryValid = 0 -> whole history dropped (camera cut, stale or other image type, CPU side);
+//   3. history sampled with Catmull-Rom (5 bilinear taps), rescaled by the exposure change, clamped to
+//      mean +- ClampGamma x std of the current 3x3 neighbourhood;
+//   4. out = lerp(history, current, max(1 / N, CurrentFrameWeight)), N = accumulated frames (1 after a reject, max 100).
+// The previous view rect / extent may differ from the current one (dynamic resolution): the history is addressed through
+// PrevViewRectMinAndSize / HistoryTextureSizeAndInvSize. Perspective views only (AtmosphereTemporal.cpp).
+// Output = the new history, also the input of the composite pass:
+//   luminance.a = view-space depth in km of this pixel's point (-1 = infinity), next frame's depth test;
+//   transmittance.a = planet slot + PA_TEMPORAL_PACK x N (exact small integers in fp16).
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
+
+#define PA_TEMPORAL_PACK 17          // > PA_REPROJ_NO_PLANET
+#define PA_TEMPORAL_MAX_FRAMES 100   // >= 1 / min CurrentFrameWeight (0.01); slot + 17 x 100 = 1716 is exact in fp16
+
+Texture2D<float4> CurrentLuminance;
+Texture2D<float4> CurrentTransmittance;
+Texture2D<float4> HistoryLuminance;
+Texture2D<float4> HistoryTransmittance;
+Texture2D<float4> HistoryExposure;            // 1 x 1, r + g = log2(PreExposure) of the history (fp16 high + low part)
+SamplerState HistorySampler;                  // bilinear, clamp
+RWTexture2D<float4> OutLuminance;
+RWTexture2D<float4> OutTransmittance;
+RWTexture2D<float4> OutExposure;
+
+// Row-vector 4x4 per slot: clip_prev = v.x * Row0 + v.y * Row1 + v.z * Row2 + w * Row3, v = point - current camera (cm,
+// world axes), w = 1 for a point, 0 for a direction. Slot PA_REPROJ_NO_PLANET = camera motion only.
+float4 ReprojRow0[PA_REPROJ_SLOTS];
+float4 ReprojRow1[PA_REPROJ_SLOTS];
+float4 ReprojRow2[PA_REPROJ_SLOTS];
+float4 ReprojRow3[PA_REPROJ_SLOTS];
+float4 PlanetPrevSlot[PA_REPROJ_SLOTS];       // x = slot of the same planet in the previous frame, -1 = new planet
+float4 CurrentJitterNDC;                      // xy = TAA jitter of the current projection (NDC)
+float4 CurrentViewForward;                    // xyz = view direction (translated-view matrix column 2)
+float4 HistoryTextureSizeAndInvSize;
+float4 PrevViewRectMinAndSize;                // view rect of the history (pixels)
+int bHistoryValid;
+float CurrentFrameWeight;
+float ClampGamma;
+float DepthRejectRatio;
+
+/** Catmull-Rom history sample with 5 bilinear taps (the 4 corner taps dropped), taps clamped to the history view rect. */
+float3 PA_SampleHistoryCatmullRom(Texture2D<float4> Tex, float2 PixelPos)
+{
+	const float2 RectMin = PrevViewRectMinAndSize.xy + 0.5;
+	const float2 RectMax = PrevViewRectMinAndSize.xy + PrevViewRectMinAndSize.zw - 0.5;
+	const float2 TexPos1 = floor(PixelPos - 0.5) + 0.5;
+	const float2 F = PixelPos - TexPos1;
+	const float2 W0 = F * (-0.5 + F * (1.0 - 0.5 * F));
+	const float2 W1 = 1.0 + F * F * (-2.5 + 1.5 * F);
+	const float2 W2 = F * (0.5 + F * (2.0 - 1.5 * F));
+	const float2 W3 = F * F * (-0.5 + 0.5 * F);
+	const float2 W12 = W1 + W2;
+	const float2 Pos0 = clamp(TexPos1 - 1.0, RectMin, RectMax) * HistoryTextureSizeAndInvSize.zw;
+	const float2 Pos3 = clamp(TexPos1 + 2.0, RectMin, RectMax) * HistoryTextureSizeAndInvSize.zw;
+	const float2 Pos12 = clamp(TexPos1 + W2 / W12, RectMin, RectMax) * HistoryTextureSizeAndInvSize.zw;
+
+	float3 Sum = 0.0;
+	Sum += Tex.SampleLevel(HistorySampler, float2(Pos12.x, Pos0.y), 0).rgb * (W12.x * W0.y);
+	Sum += Tex.SampleLevel(HistorySampler, float2(Pos0.x, Pos12.y), 0).rgb * (W0.x * W12.y);
+	Sum += Tex.SampleLevel(HistorySampler, float2(Pos12.x, Pos12.y), 0).rgb * (W12.x * W12.y);
+	Sum += Tex.SampleLevel(HistorySampler, float2(Pos3.x, Pos12.y), 0).rgb * (W3.x * W12.y);
+	Sum += Tex.SampleLevel(HistorySampler, float2(Pos12.x, Pos3.y), 0).rgb * (W12.x * W3.y);
+	const float WeightSum = W12.x * W0.y + W0.x * W12.y + W12.x * W12.y + W3.x * W12.y + W12.x * W3.y;
+	return Sum / max(WeightSum, 1e-4);
+}
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const float2 RectSize = ViewRectMinAndSize.zw;
+	if (DispatchThreadId.x >= (uint)RectSize.x || DispatchThreadId.y >= (uint)RectSize.y)
+	{
+		return;
+	}
+	const int2 RectMinI = (int2)ViewRectMinAndSize.xy;
+	const int2 RectMaxI = RectMinI + (int2)RectSize - 1;
+	const int2 Pixel = RectMinI + (int2)DispatchThreadId.xy;
+
+	// log2(PreExposure) split into an fp16 high part + the fp16 remainder: an fp16 alone rounds |log2| in 8..16 by up to
+	// 2^-8, i.e. a constant exposure "change" of up to 0.3 % per frame that the accumulation would amplify (review).
+	const float Log2Exposure = log2(max(View.PreExposure, 1e-30));
+	if (all(DispatchThreadId.xy == 0u))
+	{
+		const float High = f16tof32(f32tof16(Log2Exposure));
+		OutExposure[uint2(0, 0)] = float4(High, Log2Exposure - High, 0.0, 0.0);
+	}
+
+	const float4 CurL = CurrentLuminance.Load(int3(Pixel, 0));
+	const float4 CurT = CurrentTransmittance.Load(int3(Pixel, 0));
+	const int Slot = clamp((int)(CurT.a + 0.5), 0, PA_REPROJ_NO_PLANET);
+	const bool bFinite = CurL.a >= 0.0;
+
+	// Pixel center ray (the raymarch used the jittered one; the TAA jitter is a pure NDC offset).
+	const float2 UV = (float2(DispatchThreadId.xy) + 0.5) / RectSize;
+	const float2 NDC = float2(UV.x * 2.0 - 1.0, 1.0 - UV.y * 2.0);
+	const float3 Dir = PA_RayDirFromNDC(NDC + CurrentJitterNDC.xy);
+	const float ViewZKm = bFinite ? CurL.a * dot(Dir, CurrentViewForward.xyz) : -1.0;
+
+	float3 OutL = CurL.rgb;
+	float3 OutT = CurT.rgb;
+	float N = 1.0;
+
+	if (bHistoryValid != 0)
+	{
+		const int MatrixSlot = bFinite ? Slot : PA_REPROJ_NO_PLANET;
+		const float4 V = bFinite ? float4(Dir * (CurL.a * 1e5), 1.0) : float4(Dir, 0.0);
+		const float4 Clip = V.x * ReprojRow0[MatrixSlot] + V.y * ReprojRow1[MatrixSlot] + V.z * ReprojRow2[MatrixSlot] + V.w * ReprojRow3[MatrixSlot];
+		const float2 PrevNDC = Clip.xy / (Clip.w > 0.0 ? Clip.w : 1.0);
+		const float2 PrevUV = float2(PrevNDC.x * 0.5 + 0.5, 0.5 - PrevNDC.y * 0.5);
+		bool bValid = Clip.w > 0.0 && all(PrevUV >= 0.0) && all(PrevUV <= 1.0);
+
+		if (bValid)
+		{
+			const float2 PrevPixel = PrevViewRectMinAndSize.xy + PrevUV * PrevViewRectMinAndSize.zw;   // continuous, centers at .5
+			const int2 PrevRectMinI = (int2)PrevViewRectMinAndSize.xy;
+			const int2 PrevNearest = clamp((int2)floor(PrevPixel), PrevRectMinI, PrevRectMinI + (int2)PrevViewRectMinAndSize.zw - 1);
+			const float HistoryZKm = HistoryLuminance.Load(int3(PrevNearest, 0)).a;
+			const int Packed = (int)(HistoryTransmittance.Load(int3(PrevNearest, 0)).a + 0.5);
+			const int HistorySlot = Packed % PA_TEMPORAL_PACK;
+			const float HistoryN = (float)(Packed / PA_TEMPORAL_PACK);
+
+			// Same planet as last frame (its slot may have changed: near -> far order, planets appearing). Between a planet
+			// and the camera-only slot the depth test decides, when there is one (both depths finite).
+			const int ExpectedSlot = Slot == PA_REPROJ_NO_PLANET ? PA_REPROJ_NO_PLANET : (int)PlanetPrevSlot[Slot].x;
+			const bool bBothFinite = bFinite && HistoryZKm >= 0.0;
+			const bool bSlotMatches = HistorySlot == ExpectedSlot
+				|| (bBothFinite && (HistorySlot == PA_REPROJ_NO_PLANET || Slot == PA_REPROJ_NO_PLANET));
+			bValid = HistoryN >= 1.0 && bSlotMatches;
+
+			// Depth: the reprojected point should be about where the history pixel's point was.
+			if (bValid)
+			{
+				const bool bHistoryFinite = HistoryZKm >= 0.0;
+				if (bHistoryFinite != bFinite)
+				{
+					bValid = false;
+				}
+				else if (bFinite)
+				{
+					const float ExpectedZKm = Clip.w * 1e-5;
+					const float Ratio = max(ExpectedZKm, HistoryZKm) / max(min(ExpectedZKm, HistoryZKm), 1e-6);
+					bValid = Ratio < DepthRejectRatio;
+				}
+			}
+
+			if (bValid)
+			{
+				// Neighbourhood of the current frame (3x3), mean +- gamma x std.
+				float3 SumL = 0.0, SumL2 = 0.0, SumT = 0.0, SumT2 = 0.0;
+				[unroll]
+				for (int Y = -1; Y <= 1; ++Y)
+				{
+					[unroll]
+					for (int X = -1; X <= 1; ++X)
+					{
+						const int3 P = int3(clamp(Pixel + int2(X, Y), RectMinI, RectMaxI), 0);
+						const float3 L = CurrentLuminance.Load(P).rgb;
+						const float3 T = CurrentTransmittance.Load(P).rgb;
+						SumL += L; SumL2 += L * L; SumT += T; SumT2 += T * T;
+					}
+				}
+				const float3 MeanL = SumL / 9.0;
+				const float3 MeanT = SumT / 9.0;
+				const float3 StdL = sqrt(max(SumL2 / 9.0 - MeanL * MeanL, 0.0));
+				const float3 StdT = sqrt(max(SumT2 / 9.0 - MeanT * MeanT, 0.0));
+
+				const float2 HistoryLog2Exposure = HistoryExposure.Load(int3(0, 0, 0)).rg;
+				const float ExposureScale = exp2((Log2Exposure - HistoryLog2Exposure.x) - HistoryLog2Exposure.y);
+				float3 HistL = PA_SampleHistoryCatmullRom(HistoryLuminance, PrevPixel) * ExposureScale;
+				float3 HistT = PA_SampleHistoryCatmullRom(HistoryTransmittance, PrevPixel);
+				HistL = max(clamp(HistL, MeanL - ClampGamma * StdL, MeanL + ClampGamma * StdL), 0.0);
+				HistT = saturate(clamp(HistT, MeanT - ClampGamma * StdT, MeanT + ClampGamma * StdT));
+
+				const float Alpha = max(1.0 / (HistoryN + 1.0), CurrentFrameWeight);
+				OutL = lerp(HistL, CurL.rgb, Alpha);
+				OutT = lerp(HistT, CurT.rgb, Alpha);
+				N = min(HistoryN + 1.0, (float)PA_TEMPORAL_MAX_FRAMES);
+			}
+		}
+	}
+
+	OutLuminance[Pixel] = float4(OutL, ViewZKm);
+	OutTransmittance[Pixel] = float4(OutT, (float)Slot + (float)PA_TEMPORAL_PACK * N);
+}

@@ -13,6 +13,7 @@
 #include "AtmosphereStats.h"
 #include "AtmosphereNoiseTextures.h"
 #include "AtmosphereLutCache.h"
+#include "AtmosphereTemporal.h"
 #include "RHIStaticStates.h"
 
 // `stat gpu` (Step 17 split, master prompt section 28):
@@ -306,6 +307,9 @@ namespace PlanetAtmosphere
 	{
 		SCOPE_CYCLE_COUNTER(STAT_PlanetAtmosphere_SetupPasses);
 
+		// Step 18: free the temporal histories of views that stopped rendering (runs even with nothing to draw).
+		Temporal::GetHistory().CollectGarbage(View.Family->FrameNumber);
+
 		FAtmospherePassSetup Setup;
 		if (!PrepareCommon(GraphBuilder, Inputs, Instances, Setup))
 		{
@@ -364,6 +368,10 @@ namespace PlanetAtmosphere
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 		}
 
+		// DebugMode 8 (Temporal Weight) marches like the final image; the composite overlays the temporal weight.
+		const bool bTemporalWeightView = DebugMode == CVars::EDebugMode::TemporalWeight;
+		const CVars::EDebugMode MarchDebugMode = bTemporalWeightView ? CVars::EDebugMode::FinalClouds : DebugMode;
+
 		// Step 17: the raymarch writes its own luminance / transmittance buffers (same extent and pixel coordinates as the
 		// scene color); the composite pass below applies them. RGBA16F: guaranteed typed-UAV format; alpha reserved.
 		const FRDGTextureDesc RaymarchOutputDesc = FRDGTextureDesc::Create2D(
@@ -382,7 +390,7 @@ namespace PlanetAtmosphere
 			FillViewParameters(View, Setup, Parameters->ViewParams);
 			Parameters->OutLuminance = GraphBuilder.CreateUAV(LuminanceTexture);
 			Parameters->OutTransmittance = GraphBuilder.CreateUAV(TransmittanceTexture);
-			Parameters->DebugMode = static_cast<int32>(DebugMode);
+			Parameters->DebugMode = static_cast<int32>(MarchDebugMode);
 			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
 			FillLightingParameters(Sun, *Parameters);
 			FillMarchParameters(*Parameters);
@@ -415,17 +423,47 @@ namespace PlanetAtmosphere
 				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCloudRaymarchCS::ThreadGroupSize));
 		}
 
+		// Step 18: temporal accumulation (final and atmosphere-only images; the other debug views stay per frame).
+		FRDGTextureRef CompositeLuminance = LuminanceTexture;
+		FRDGTextureRef CompositeTransmittance = TransmittanceTexture;
+		bool bTemporalApplied = false;
+		const CVars::FTemporalSettings TemporalSettings = CVars::GetTemporalSettings();
+		if (TemporalSettings.bEnabled
+			&& (MarchDebugMode == CVars::EDebugMode::FinalClouds || MarchDebugMode == CVars::EDebugMode::AtmosphereOnly)
+			&& Temporal::IsAllowedForView(View))
+		{
+			FAtmosphereViewParameters TemporalViewParameters;
+			FillViewParameters(View, Setup, TemporalViewParameters);
+
+			FAtmosphereTemporalInputs TemporalInputs;
+			TemporalInputs.Luminance = LuminanceTexture;
+			TemporalInputs.Transmittance = TransmittanceTexture;
+			TemporalInputs.ViewRect = Setup.ViewRect;
+			TemporalInputs.ImageType = static_cast<int32>(MarchDebugMode);
+			TemporalInputs.Planets = TConstArrayView<FAtmosphereVisibleInstance>(Instances.GetData(), Parameters->AtmosphereParams.NumAtmospheres);
+
+			FAtmosphereTemporalOutputs TemporalOutputs;
+			if (Temporal::GetHistory().AddTemporalPass(GraphBuilder, GlobalShaderMap, View, TemporalViewParameters, TemporalSettings, TemporalInputs, TemporalOutputs))
+			{
+				CompositeLuminance = TemporalOutputs.Luminance;
+				CompositeTransmittance = TemporalOutputs.Transmittance;
+				bTemporalApplied = true;
+			}
+		}
+
 		{
 			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereCompositeGPU, "PlanetAtmosphere.Composite");
 
 			FAtmosphereCompositeCS::FParameters* CompositeParameters = GraphBuilder.AllocParameters<FAtmosphereCompositeCS::FParameters>();
 			CompositeParameters->SceneColorTexture = Setup.SceneColor.Texture;
-			CompositeParameters->LuminanceTexture = LuminanceTexture;
-			CompositeParameters->TransmittanceTexture = TransmittanceTexture;
+			CompositeParameters->LuminanceTexture = CompositeLuminance;
+			CompositeParameters->TransmittanceTexture = CompositeTransmittance;
 			CompositeParameters->OutputTexture = GraphBuilder.CreateUAV(Setup.OutputTexture);
 			CompositeParameters->ViewRectMinAndSize = FVector4f(
 				static_cast<float>(Setup.ViewRect.Min.X), static_cast<float>(Setup.ViewRect.Min.Y),
 				static_cast<float>(Setup.ViewRect.Width()), static_cast<float>(Setup.ViewRect.Height()));
+			CompositeParameters->bShowTemporalWeight = (bTemporalWeightView && bTemporalApplied) ? 1 : 0;
+			CompositeParameters->CurrentFrameWeight = TemporalSettings.CurrentFrameWeight;
 
 			TShaderMapRef<FAtmosphereCompositeCS> CompositeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(

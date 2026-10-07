@@ -92,6 +92,12 @@ struct FAtmosphereSunLight
  */
 struct FAtmosphereVisibleInstance
 {
+	/**
+	 * Identity of the planet across frames (UObject::GetUniqueID of its component; unique only while the component is
+	 * alive). Used by the temporal reprojection (Phase 3) to find this planet's transform in the previous frame.
+	 */
+	uint32 PlanetId = 0;
+
 	FVector3d PlanetCenterWorld = FVector3d::ZeroVector;
 
 	/** Planet local axes in world space (unit length, scale removed). Clouds are evaluated in this frame. */

@@ -21,6 +21,7 @@ namespace PlanetAtmosphere::CVars
 		AtmosphereOnly = 5,
 		TransmittanceLut = 6,
 		MultipleScatteringLut = 7,
+		TemporalWeight = 8,
 	};
 
 	/** Values of r.PlanetAtmosphere.StepDistribution. */
@@ -129,6 +130,16 @@ namespace PlanetAtmosphere::CVars
 
 	/** r.PlanetAtmosphere.Atmosphere.LutCache — LUTs cached across frames (Step 16); 0 = rebuilt every frame. */
 	bool IsLutCacheEnabled();
+
+	/** r.PlanetAtmosphere.Temporal.* (Phase 3 / Step 18), validated. */
+	struct FTemporalSettings
+	{
+		bool bEnabled = true;
+		float CurrentFrameWeight = 0.1f;   // minimum weight of the new frame (history converges over ~1 / weight frames)
+		float ClampGamma = 1.25f;          // history clamped to mean +- gamma x std of the current 3x3 neighbourhood
+		float DepthRejectRatio = 4.0f;     // history rejected when its depth differs by more than this factor
+	};
+	FTemporalSettings GetTemporalSettings();
 
 	/** r.PlanetAtmosphere.CloudSkyAmbientScale — global multiplier of the per-planet CloudSkyAmbientScale (Step 15), >= 0. */
 	float GetCloudSkyAmbientScaleMultiplier();

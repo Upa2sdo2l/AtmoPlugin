@@ -3,7 +3,7 @@
 // Phase 3 / Step 17 — composite of the clouds + atmosphere over the scene:
 //   final = SceneColor x Transmittance + Luminance
 // Luminance (pre-exposed) and Transmittance come from CloudRaymarch.usf (every debug mode of the raymarch is expressed
-// the same way). Same pixel coordinates as the scene textures. Phase 3 puts the temporal reconstruction between the
+// the same way). Same pixel coordinates as the scene textures. Since Step 18 the temporal pass (AtmosphereTemporal.usf) sits between the
 // raymarch and this pass; this pass stays the only place that touches the scene color.
 
 #include "/Engine/Private/Common.ush"
@@ -13,6 +13,8 @@ Texture2D<float4> LuminanceTexture;
 Texture2D<float4> TransmittanceTexture;
 RWTexture2D<float4> OutputTexture;
 float4 ViewRectMinAndSize;   // xy = view rect min (pixels), zw = view rect size
+int bShowTemporalWeight;     // r.PlanetAtmosphere.DebugMode 8 with the temporal pass active (Step 18)
+float CurrentFrameWeight;    // r.PlanetAtmosphere.Temporal.CurrentFrameWeight
 
 [numthreads(8, 8, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -25,6 +27,15 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	const int3 Pixel = int3((uint2)ViewRectMinAndSize.xy + DispatchThreadId.xy, 0);
 	const float4 SceneColor = SceneColorTexture.Load(Pixel);
 	const float3 Luminance = LuminanceTexture.Load(Pixel).rgb;
-	const float3 Transmittance = TransmittanceTexture.Load(Pixel).rgb;
-	OutputTexture[Pixel.xy] = float4(SceneColor.rgb * Transmittance + Luminance, SceneColor.a);
+	const float4 Transmittance = TransmittanceTexture.Load(Pixel);
+	float3 Result = SceneColor.rgb * Transmittance.rgb + Luminance;
+	if (bShowTemporalWeight != 0)
+	{
+		// Temporal Weight: weight of the current frame. transmittance.a = slot + 17 x N (AtmosphereTemporal.usf),
+		// N = accumulated frames, 1 = history rejected / new. Red = current frame only, green = mostly history.
+		const float N = floor((Transmittance.a + 0.5) / 17.0);
+		const float Weight = N <= 1.0 ? 1.0 : max(1.0 / N, CurrentFrameWeight);
+		Result = Result * 0.25 + float3(Weight, 1.0 - Weight, 0.0);
+	}
+	OutputTexture[Pixel.xy] = float4(Result, SceneColor.a);
 }
