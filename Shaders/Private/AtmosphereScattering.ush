@@ -21,9 +21,33 @@
 
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
 
-// Must match PlanetAtmosphere::TransmittanceLut::Width / Height (AtmosphereRenderer.cpp).
+// Must match FAtmosphereTransmittanceLutCS::LutWidth / LutHeight (AtmosphereShaders.h).
 #define PA_TRANSMITTANCE_LUT_WIDTH 256
 #define PA_TRANSMITTANCE_LUT_HEIGHT 64
+
+// Step 16: both LUTs live in persistent pools of PA_LUT_POOL_SLOTS row blocks (one block per distinct atmosphere,
+// rebuilt only when its parameters change). Planet Index uses block AtmosphereLutInfo[Index].x.
+// Must match PlanetAtmosphere::LutCache::NumSlots (AtmosphereLutCache.h).
+#define PA_LUT_POOL_SLOTS 32
+
+/** LUT pool slot (row block) of planet Index. */
+int PA_GetLutSlot(int Index)
+{
+	return (int)AtmosphereLutInfo[Index].x;
+}
+
+// Distance (texels) kept between a lookup and the first / last row center of a block: a bilinear lookup exactly on a
+// row center still fetches the neighbouring row with weight 0, and the neighbouring block may be another planet or a
+// never-written slot (NaN x 0 = NaN). 1/64 texel: far above float rounding at pool height 2048 (2.4e-4), negligible
+// interpolation change.
+#define PA_LUT_ROW_GUARD (1.0 / 64.0)
+
+/** Pool V of planet Index for local V (unit range of one Height-row block, texel centers at 0.5 / Height ...). */
+float PA_LutPoolV(int Index, float LocalV, float Height)
+{
+	const float Row = clamp(LocalV * Height, 0.5 + PA_LUT_ROW_GUARD, Height - 0.5 - PA_LUT_ROW_GUARD);
+	return ((float)PA_GetLutSlot(Index) * Height + Row) / (Height * (float)PA_LUT_POOL_SLOTS);
+}
 
 // Integration steps of one LUT texel (CPU prototype: 40 steps are as accurate as 200 at 256 x 64).
 #define PA_TRANSMITTANCE_LUT_STEPS 40
@@ -216,16 +240,16 @@ bool PA_SunAboveHorizon(FPAScattering S, float H, float Mu)
 // ---- Transmittance LUT atlas (render passes that read it) ------------------------------------
 #ifndef PA_TRANSMITTANCE_LUT_PASS
 
-Texture2D<float4> TransmittanceLutAtlas;   // PA_TRANSMITTANCE_LUT_WIDTH x (PA_TRANSMITTANCE_LUT_HEIGHT x NumAtmospheres)
+Texture2D<float4> TransmittanceLutAtlas;   // pool: PA_TRANSMITTANCE_LUT_WIDTH x (PA_TRANSMITTANCE_LUT_HEIGHT x PA_LUT_POOL_SLOTS)
 SamplerState TransmittanceLutSampler;      // bilinear, clamp
 
-/** Bilinear LUT lookup for planet Index. Texel centers map to the unit range ends, so rows never bleed into each other. */
+/** Bilinear LUT lookup for planet Index. Texel centers map to the unit range ends; PA_LutPoolV keeps it inside the block. */
 float3 PA_SampleTransmittanceLut(int Index, FPAScattering S, float H, float Mu)
 {
 	const float2 Size = float2(PA_TRANSMITTANCE_LUT_WIDTH, PA_TRANSMITTANCE_LUT_HEIGHT);
 	const float2 X = saturate(PA_TransmittanceLutHMuToUnit(S, H, Mu));
 	float2 UV = (0.5 + X * (Size - 1.0)) / Size;
-	UV.y = ((float)Index + UV.y) / (float)max(NumAtmospheres, 1);
+	UV.y = PA_LutPoolV(Index, UV.y, PA_TRANSMITTANCE_LUT_HEIGHT);
 	return TransmittanceLutAtlas.SampleLevel(TransmittanceLutSampler, UV, 0).rgb;
 }
 
@@ -298,14 +322,14 @@ void PA_MultipleScatteringDirection(int Index, FPAScattering S, float H, float S
 
 #ifndef PA_MULTIPLE_SCATTERING_LUT_PASS
 
-Texture2D<float4> MultipleScatteringLutAtlas;   // PA_MS_LUT_WIDTH x (PA_MS_LUT_HEIGHT x NumAtmospheres), sampled with TransmittanceLutSampler
+Texture2D<float4> MultipleScatteringLutAtlas;   // pool: PA_MS_LUT_WIDTH x (PA_MS_LUT_HEIGHT x PA_LUT_POOL_SLOTS), sampled with TransmittanceLutSampler
 int bMultipleScattering;                         // r.PlanetAtmosphere.Atmosphere.MultipleScattering
 
 /** Psi_ms for planet Index (sun illuminance 1). */
 float3 PA_SampleMultipleScatteringLut(int Index, FPAScattering S, float H, float SunMu)
 {
 	float2 UV = PA_MultipleScatteringLutHMuToUV(S, H, SunMu);
-	UV.y = ((float)Index + UV.y) / (float)max(NumAtmospheres, 1);
+	UV.y = PA_LutPoolV(Index, UV.y, PA_MS_LUT_HEIGHT);
 	return MultipleScatteringLutAtlas.SampleLevel(TransmittanceLutSampler, UV, 0).rgb;
 }
 

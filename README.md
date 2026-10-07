@@ -22,6 +22,7 @@ PlanetAtmosphere/
 │       ├── AtmosphereRenderer.*             RDG pass setup (camera-relative data, dispatch)
 │       ├── AtmosphereShaders.*              global shader classes
 │       ├── AtmosphereNoiseTextures.*        shared baked 3D noise textures (FRenderResource, baked once on the GPU)
+│       ├── AtmosphereLutCache.*             atmosphere LUTs cached across frames (FRenderResource, 32-slot pools)
 │       ├── AtmosphereStats.h                CPU stat group (`stat PlanetAtmosphere`)
 │       └── AtmosphereCVars.*                r.PlanetAtmosphere.* console variables
 └── Shaders/Private/
@@ -33,8 +34,8 @@ PlanetAtmosphere/
     ├── CloudLighting.ush                    phase function, light march toward the sun, planet shadow
     ├── RaymarchSchedule.ush                 where the samples go along a ray: uniform / camera-centered steps, jitter
     ├── AtmosphereScattering.ush             atmosphere: densities, phase functions, transmittance-LUT mapping, single scattering
-    ├── TransmittanceLut.usf                 per-frame transmittance LUT atlas (256 x 64 per visible planet)
-    ├── MultipleScatteringLut.usf            per-frame multiple-scattering LUT atlas (64 x 32 per visible planet, Hillaire 2020)
+    ├── TransmittanceLut.usf                 transmittance LUT (256 x 64 per planet), written into its slot of the cache pool
+    ├── MultipleScatteringLut.usf            multiple-scattering LUT (64 x 32 per planet, Hillaire 2020), same pool scheme
     ├── CloudRaymarch.usf                    clouds + atmosphere (Final + Density / Cloud Height / Ray Steps / Atmosphere Only / LUT views)
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
@@ -102,6 +103,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.LightLOD.MinLightSteps` | 2 | Light steps for far samples |
 | `r.PlanetAtmosphere.Atmosphere` | 1 | Atmosphere single scattering (sky, limb, aerial perspective over the surface / scene). 0 = clouds only (Phase 2 image) |
 | `r.PlanetAtmosphere.Atmosphere.MultipleScattering` | 1 | Multiple scattering (all orders ≥ 2, Hillaire LUT, ground bounce with `SurfaceAlbedo`). 0 = single scattering only (Step 13 image, MS LUT pass skipped) |
+| `r.PlanetAtmosphere.Atmosphere.LutCache` | 1 | LUTs cached across frames, rebuilt only on change (Step 16). 0 = rebuild every LUT every frame (old cost; for comparison or after `recompileshaders`) |
 | `r.PlanetAtmosphere.Atmosphere.Steps` | 16 | Atmosphere samples per view ray (quadratic from inside the atmosphere, uniform from outside), 4..64 |
 | `r.PlanetAtmosphere.LOD` | 1 | Screen-space LOD: fewer raymarch / light steps for atmospheres small on screen |
 | `r.PlanetAtmosphere.LOD.FullDetailRadius` | 400 | Radius on screen (px, render resolution) from which full detail is used |
@@ -147,8 +149,9 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 
 - GPU: `stat gpu` → **PlanetAtmosphere** (noise bake + raymarch / debug pass of a view),
   **PlanetAtmosphere.TransmittanceLut** (Step 13) and **PlanetAtmosphere.MultipleScatteringLut** (Step 14); total = sum. `ProfileGPU` shows the individual passes.
+  Since Step 16 the two LUT stats appear only on frames where a LUT is rebuilt (first frame, a parameter edit, a new planet).
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
-- Per-frame log: `log LogPlanetAtmosphere Verbose`; screen radius and LOD steps per atmosphere: `log LogPlanetAtmosphere VeryVerbose`.
+- Per-frame log: `log LogPlanetAtmosphere Verbose` (incl. LUT cache rebuilds); screen radius and LOD steps per atmosphere: `log LogPlanetAtmosphere VeryVerbose`.
 
 ## Noise textures
 
@@ -158,6 +161,17 @@ actual allocation), shared by all worlds and planets, and released at module shu
 with the octaves that survive one texel of footprint, so the mip level replaces the per-octave fade of the
 procedural noise. The weather mask stays procedural (planet-unique). `NoiseSource 0` restores the Phase 1 noise.
 
+## Atmosphere LUT cache (Step 16)
+
+The transmittance and multiple-scattering LUTs depend only on the planet radius, the atmosphere bottom / top and the
+scattering parameters — not on the camera, the sun, the clouds or the LOD. They live in two persistent pools of
+32 slots (transmittance 256 × 2048, multiple scattering 64 × 1024, RGBA16F, ≈ 4.5 MB together; the log prints the actual
+allocation), shared by all worlds, views and planets and released at module shutdown. Each slot remembers the exact
+parameter values of the atmosphere it holds; a LUT is rebuilt only when an atmosphere gets a slot with no valid LUT
+for its values (first use, a parameter edit, a new planet, or more than 32 distinct atmospheres in use — then the least
+recently used slot is reused). A static scene therefore renders without any LUT pass. The cache does not notice a
+shader recompile (`recompileshaders`): toggle `r.PlanetAtmosphere.Atmosphere.LutCache 0` → `1` or edit any parameter.
+
 ## Single source of truth for cloud density
 
 `Shaders/Private/CloudDensity.ush` is the only place where the cloud density formula exists.
@@ -166,6 +180,10 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
+**Phase 2.5 — Step 16: profiling, LUT cache**
+- Measured cost (Step 16 measurements): atmosphere +1.7–2.8 ms over clouds only; LUTs were 0.15–0.2 ms per frame
+- Transmittance and multiple-scattering LUTs cached across frames (see "Atmosphere LUT cache"): rebuilt only on change
+
 **Phase 2.5 — Step 15: clouds through the atmosphere**
 - Sunlight on the clouds through the atmosphere (transmittance LUT); planet shadow = the atmosphere's horizon
 - Sky ambient on the clouds from the multiple-scattering LUT × Cloud Sky Ambient Scale (temporary, default 5, until Phase 7)
@@ -173,7 +191,7 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 **Phase 2.5 — Step 14: multiple scattering**
 - Hillaire 2020 multiple-scattering LUT, 64 (sun zenith) × 32 (altitude) per planet, 64 directions × 20 steps per texel,
-  isotropic higher orders summed as 1 / (1 − f_ms), ground bounce with `SurfaceAlbedo`; per-frame atlas
+  isotropic higher orders summed as 1 / (1 − f_ms), ground bounce with `SurfaceAlbedo` (cached since Step 16)
 - The view ray adds (σs Rayleigh + σs Mie) × Ψms per sample: brighter, less saturated sky, whiter horizon,
   softer sunset ring, lit twilight sky opposite the sun
 - Known limitation (method): at twilight and on the night side the surface albedo does not brighten the sky
@@ -182,7 +200,7 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 **Phase 2.5 — Step 13: atmosphere single scattering**
 - Rayleigh + Mie (Cornette-Shanks) + ozone, all parameters on the component (Earth defaults, no presets)
 - Transmittance LUT 256 × 64 per visible planet (Bruneton parameterization written with altitudes — exact in float32
-  at Earth scale), rebuilt every frame into a transient atlas
+  at Earth scale); cached across frames since Step 16
 - 16 view-ray samples: quadratic from inside the atmosphere, uniform from outside; energy-conserving; hard planet shadow
 - Sky from the surface, limb glow from orbit, aerial perspective over the placeholder surface and scene geometry;
   the placeholder surface is lit by sunlight through the atmosphere
@@ -209,7 +227,7 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 16 — Phase 2.5 profiling / optimizations (e.g. caching the LUTs across frames).
+Next: Step 16, part 3 — cheaper cloud/atmosphere coupling (each candidate checked by a prototype first).
 
 ## Dependencies
 

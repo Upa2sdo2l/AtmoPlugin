@@ -127,6 +127,9 @@ namespace PlanetAtmosphere::CVars
 	/** r.PlanetAtmosphere.Atmosphere.MultipleScattering — multiple-scattering LUT + term on / off (Step 14). */
 	bool IsMultipleScatteringEnabled();
 
+	/** r.PlanetAtmosphere.Atmosphere.LutCache — LUTs cached across frames (Step 16); 0 = rebuilt every frame. */
+	bool IsLutCacheEnabled();
+
 	/** r.PlanetAtmosphere.CloudSkyAmbientScale — global multiplier of the per-planet CloudSkyAmbientScale (Step 15), >= 0. */
 	float GetCloudSkyAmbientScaleMultiplier();
 

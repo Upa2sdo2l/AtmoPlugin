@@ -172,6 +172,13 @@ namespace
 		TEXT("0 = single scattering only (Step 13 image; the MS LUT pass is skipped), 1 = on (default)."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereAtmosphereLutCache(
+		TEXT("r.PlanetAtmosphere.Atmosphere.LutCache"),
+		1,
+		TEXT("Atmosphere LUT cache across frames (Step 16). 1 = rebuild a LUT only when its atmosphere's parameters change (default),\n")
+		TEXT("0 = rebuild every LUT of every view every frame (pre-Step 16 cost; for comparison, or after recompileshaders)."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudSkyAmbientScale(
 		TEXT("r.PlanetAtmosphere.CloudSkyAmbientScale"),
 		1.0f,
@@ -334,6 +341,11 @@ namespace PlanetAtmosphere::CVars
 	bool IsMultipleScatteringEnabled()
 	{
 		return CVarPlanetAtmosphereAtmosphereMultipleScattering.GetValueOnAnyThread(false) != 0;
+	}
+
+	bool IsLutCacheEnabled()
+	{
+		return CVarPlanetAtmosphereAtmosphereLutCache.GetValueOnAnyThread(false) != 0;
 	}
 
 	float GetCloudSkyAmbientScaleMultiplier()

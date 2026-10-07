@@ -33,6 +33,7 @@ float4 AtmosphereMieScattering[PA_MAX_ATMOSPHERES];  // xyz = Mie scattering, w 
 float4 AtmosphereMieAbsorption[PA_MAX_ATMOSPHERES];  // xyz = Mie absorption, w = Mie anisotropy g
 float4 AtmosphereOzone[PA_MAX_ATMOSPHERES];          // xyz = ozone absorption at the peak, w = peak altitude
 float4 AtmosphereSurface[PA_MAX_ATMOSPHERES];        // xyz = surface albedo, w = ozone layer full width
+float4 AtmosphereLutInfo[PA_MAX_ATMOSPHERES];        // x = slot of this atmosphere in the LUT pools (Step 16 cache), yzw unused
 
 struct FPAAtmosphere
 {

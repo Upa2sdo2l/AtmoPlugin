@@ -471,7 +471,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			const uint2 LutTexel = (Ray.Pixel - (uint2)ViewRectMinAndSize.xy) / 2u;
 			if (LutTexel.x < PA_TRANSMITTANCE_LUT_WIDTH && LutTexel.y < (uint)(PA_TRANSMITTANCE_LUT_HEIGHT * NumAtmospheres))
 			{
-				Result = TransmittanceLutAtlas.Load(int3(LutTexel, 0)).rgb;
+				const uint Block = LutTexel.y / PA_TRANSMITTANCE_LUT_HEIGHT;   // planet in view order -> its pool slot
+				const uint Row = (uint)PA_GetLutSlot((int)Block) * PA_TRANSMITTANCE_LUT_HEIGHT + LutTexel.y % PA_TRANSMITTANCE_LUT_HEIGHT;
+				Result = TransmittanceLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb;
 			}
 		}
 		// Multiple-scattering LUT: the atlas at 4x (planet 0 at the top; x = sun cos zenith -1..1, y = altitude),
@@ -481,7 +483,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			const uint2 LutTexel = (Ray.Pixel - (uint2)ViewRectMinAndSize.xy) / 4u;
 			if (LutTexel.x < PA_MS_LUT_WIDTH && LutTexel.y < (uint)(PA_MS_LUT_HEIGHT * NumAtmospheres))
 			{
-				Result = MultipleScatteringLutAtlas.Load(int3(LutTexel, 0)).rgb * PA_MS_LUT_DEBUG_SCALE;
+				const uint Block = LutTexel.y / PA_MS_LUT_HEIGHT;
+				const uint Row = (uint)PA_GetLutSlot((int)Block) * PA_MS_LUT_HEIGHT + LutTexel.y % PA_MS_LUT_HEIGHT;
+				Result = MultipleScatteringLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb * PA_MS_LUT_DEBUG_SCALE;
 			}
 		}
 	}

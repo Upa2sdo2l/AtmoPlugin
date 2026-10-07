@@ -6,6 +6,7 @@
 #include "Misc/Paths.h"
 #include "ShaderCore.h"
 #include "AtmosphereNoiseTextures.h"
+#include "AtmosphereLutCache.h"
 
 DEFINE_LOG_CATEGORY(LogPlanetAtmosphere);
 
@@ -27,6 +28,8 @@ void FPlanetAtmosphereModule::ShutdownModule()
 {
 	// Shared GPU noise textures: released on the rendering thread before RHIExit() (see AtmosphereNoiseTextures.h).
 	PlanetAtmosphere::ReleaseNoiseTextures_GameThread();
+	// LUT pools of the Step 16 cache: same lifecycle (see AtmosphereLutCache.h).
+	PlanetAtmosphere::ReleaseLutCache_GameThread();
 }
 
 IMPLEMENT_MODULE(FPlanetAtmosphereModule, PlanetAtmosphere)
