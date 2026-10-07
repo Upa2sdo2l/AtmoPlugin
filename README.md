@@ -36,7 +36,8 @@ PlanetAtmosphere/
     ├── AtmosphereScattering.ush             atmosphere: densities, phase functions, transmittance-LUT mapping, single scattering
     ├── TransmittanceLut.usf                 transmittance LUT (256 x 64 per planet), written into its slot of the cache pool
     ├── MultipleScatteringLut.usf            multiple-scattering LUT (64 x 32 per planet, Hillaire 2020), same pool scheme
-    ├── CloudRaymarch.usf                    clouds + atmosphere (Final + Density / Cloud Height / Ray Steps / Atmosphere Only / LUT views)
+    ├── CloudRaymarch.usf                    clouds + atmosphere (Final + Density / Cloud Height / Ray Steps / Atmosphere Only / LUT views) -> luminance + transmittance
+    ├── AtmosphereComposite.usf              applies the raymarch result to the scene: scene x transmittance + luminance
     └── AtmosphereBoundsDebug.usf            Atmosphere Bounds debug view
 ```
 
@@ -147,7 +148,8 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 | 6 | Transmittance LUT: final image + the LUT atlas at 2× in the top-left corner (one 256 × 64 block per planet, nearest planet on top; x = view zenith angle, y = altitude) |
 | 7 | Multiple-Scattering LUT: final image + the MS LUT atlas at 4× in the top-left corner, ×25 (one 64 × 32 block per planet; x = sun zenith from below the horizon (left) to overhead (right), y = altitude, ground at the top) |
 
-- GPU: `stat gpu` → **PlanetAtmosphere** (noise bake + raymarch / debug pass of a view),
+- GPU: `stat gpu` → **PlanetAtmosphere.Raymarch** (noise bake + raymarch / debug pass of a view; called
+  **PlanetAtmosphere** before Step 17), **PlanetAtmosphere.Composite** (Step 17: applying the result to the scene),
   **PlanetAtmosphere.TransmittanceLut** (Step 13) and **PlanetAtmosphere.MultipleScatteringLut** (Step 14); total = sum. `ProfileGPU` shows the individual passes.
   Since Step 16 the two LUT stats appear only on frames where a LUT is rebuilt (first frame, a parameter edit, a new planet).
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
@@ -179,6 +181,11 @@ Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` /
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 3 — Step 17: raymarch result separated from the scene**
+- The raymarch writes its own pre-exposed luminance + transmittance buffers (every debug view too); a composite pass
+  produces scene × transmittance + luminance. Same image as before (up to fp16 rounding); groundwork for the temporal
+  history (Step 18) and interleaved rendering (Step 19)
 
 **Phase 2.5 — Step 16: profiling, LUT cache**
 - Measured cost (Step 16 measurements): atmosphere +1.7–2.8 ms over clouds only; LUTs were 0.15–0.2 ms per frame
@@ -227,7 +234,8 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 16, part 3 — cheaper cloud/atmosphere coupling (each candidate checked by a prototype first).
+Next: Step 18 — temporal history + reprojection (prototype first), then Step 19 — interleaved 3×3 rendering.
+Step 16 part 3 (cheaper cloud/atmosphere coupling) is deferred until Phase 3 is measured.
 
 ## Dependencies
 

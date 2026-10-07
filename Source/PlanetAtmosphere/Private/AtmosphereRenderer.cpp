@@ -15,11 +15,14 @@
 #include "AtmosphereLutCache.h"
 #include "RHIStaticStates.h"
 
-// `stat gpu` -> "PlanetAtmosphere" (noise bake + raymarch / debug pass of a view). The LUT rebuilds have their own stats,
-// "PlanetAtmosphere.TransmittanceLut" / "PlanetAtmosphere.MultipleScatteringLut" (AtmosphereLutCache.cpp), present only
-// on frames where a LUT is rebuilt (Step 16 cache).
-// Distinct identifier: the macros paste it into symbol names, and "PlanetAtmosphere" is also our namespace.
-DECLARE_GPU_STAT_NAMED(PlanetAtmosphereGPU, TEXT("PlanetAtmosphere"));
+// `stat gpu` (Step 17 split, master prompt section 28):
+//   "PlanetAtmosphere.Raymarch"  — noise bake + raymarch / bounds debug pass of a view (= the former "PlanetAtmosphere" stat);
+//   "PlanetAtmosphere.Composite" — applying the raymarch result to the scene color;
+//   "PlanetAtmosphere.TransmittanceLut" / "PlanetAtmosphere.MultipleScatteringLut" (AtmosphereLutCache.cpp) — only on
+//   frames where a LUT is rebuilt (Step 16 cache).
+// Distinct identifiers: the macros paste them into symbol names, and "PlanetAtmosphere" is also our namespace.
+DECLARE_GPU_STAT_NAMED(PlanetAtmosphereRaymarchGPU, TEXT("PlanetAtmosphere.Raymarch"));
+DECLARE_GPU_STAT_NAMED(PlanetAtmosphereCompositeGPU, TEXT("PlanetAtmosphere.Composite"));
 
 // `stat PlanetAtmosphere` (render thread CPU cost of building the passes).
 DECLARE_CYCLE_STAT(TEXT("Setup Passes (RT)"), STAT_PlanetAtmosphere_SetupPasses, STATGROUP_PlanetAtmosphere);
@@ -81,14 +84,11 @@ namespace PlanetAtmosphere
 		}
 
 		void FillViewParameters(
-			FRDGBuilder& GraphBuilder,
 			const FSceneView& View,
 			const FAtmospherePassSetup& Setup,
 			FAtmosphereViewParameters& OutParameters)
 		{
-			OutParameters.SceneColorTexture = Setup.SceneColor.Texture;
 			OutParameters.SceneDepthTexture = Setup.SceneDepthTexture;
-			OutParameters.OutputTexture = GraphBuilder.CreateUAV(Setup.OutputTexture);
 			OutParameters.ClipToTranslatedWorld = FMatrix44f(View.ViewMatrices.GetInvTranslatedViewProjectionMatrix());
 			OutParameters.CameraTranslatedWorld = FVector3f(View.ViewMatrices.GetViewOrigin() + View.ViewMatrices.GetPreViewTranslation());
 			OutParameters.ViewRectMinAndSize = FVector4f(
@@ -317,10 +317,12 @@ namespace PlanetAtmosphere
 
 		if (DebugMode == CVars::EDebugMode::AtmosphereBounds)
 		{
-			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
+			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereRaymarchGPU, "PlanetAtmosphere.Raymarch");
 
 			FAtmosphereBoundsDebugCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereBoundsDebugCS::FParameters>();
-			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
+			FillViewParameters(View, Setup, Parameters->ViewParams);
+			Parameters->SceneColorTexture = Setup.SceneColor.Texture;
+			Parameters->OutputTexture = GraphBuilder.CreateUAV(Setup.OutputTexture);
 			FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
 			Parameters->DebugIntensity = CVars::GetDebugIntensity();
 
@@ -339,7 +341,7 @@ namespace PlanetAtmosphere
 		// Acquired BEFORE the LUT cache: once Prepare() has queued LUT rebuilds, the raymarch pass below must consume them.
 		FPlanetAtmosphereNoiseTexturesRDG NoiseTextures;
 		{
-			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
+			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereRaymarchGPU, "PlanetAtmosphere.Raymarch");
 			if (!GetNoiseTextures().GetOrBake(GraphBuilder, GlobalShaderMap, NoiseTextures))
 			{
 				return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
@@ -362,42 +364,77 @@ namespace PlanetAtmosphere
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 		}
 
-		// LUT rebuilds above are measured by their own stats, outside this scope (as before Step 16).
-		RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereGPU, "PlanetAtmosphere");
+		// Step 17: the raymarch writes its own luminance / transmittance buffers (same extent and pixel coordinates as the
+		// scene color); the composite pass below applies them. RGBA16F: guaranteed typed-UAV format; alpha reserved.
+		const FRDGTextureDesc RaymarchOutputDesc = FRDGTextureDesc::Create2D(
+			Setup.SceneColor.Texture->Desc.Extent,
+			PF_FloatRGBA,
+			FClearValueBinding::Black,
+			ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+		FRDGTextureRef LuminanceTexture = GraphBuilder.CreateTexture(RaymarchOutputDesc, TEXT("PlanetAtmosphere.Luminance"));
+		FRDGTextureRef TransmittanceTexture = GraphBuilder.CreateTexture(RaymarchOutputDesc, TEXT("PlanetAtmosphere.Transmittance"));
 
-		Parameters->View = View.ViewUniformBuffer;
-		FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
-		Parameters->DebugMode = static_cast<int32>(DebugMode);
-		Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
-		FillLightingParameters(Sun, *Parameters);
-		FillMarchParameters(*Parameters);
-		Parameters->BaseNoiseTexture = NoiseTextures.BaseShape;
-		Parameters->ErosionNoiseTexture = NoiseTextures.Erosion;
-		Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
-		Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
-		Parameters->NoiseFootprintScale = CVars::GetNoiseFootprintScale();
-		const CVars::FLightLODSettings LightLOD = CVars::GetLightLODSettings();
-		Parameters->LightLODEnable = LightLOD.bEnabled ? 1 : 0;
-		Parameters->LightLODFullFootprint = LightLOD.FullDetailFootprint;
-		Parameters->LightLODMinFootprint = LightLOD.MinDetailFootprint;
-		Parameters->LightLODMinSteps = LightLOD.MinLightSteps;
-		Parameters->TransmittanceLutAtlas = Luts.Transmittance;
-		Parameters->TransmittanceLutSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-		Parameters->bAtmosphereEnabled = bAtmosphereEnabled ? 1 : 0;
-		Parameters->AtmosphereSteps = CVars::GetAtmosphereSteps();
-		Parameters->MultipleScatteringLutAtlas = Luts.MultipleScattering;
-		Parameters->bMultipleScattering = bMultipleScattering ? 1 : 0;
-		Parameters->CloudSkyAmbientScaleMultiplier = CVars::GetCloudSkyAmbientScaleMultiplier();
+		// LUT rebuilds above are measured by their own stats, outside these scopes (as before Step 16).
+		{
+			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereRaymarchGPU, "PlanetAtmosphere.Raymarch");
 
-		TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
-		FComputeShaderUtils::AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("PlanetAtmosphere.CloudRaymarch %dx%d (%d atmospheres, mode %d, atmosphere %d, ms %d)",
-				Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->AtmosphereParams.NumAtmospheres, Parameters->DebugMode,
-				Parameters->bAtmosphereEnabled, Parameters->bMultipleScattering),
-			ComputeShader,
-			Parameters,
-			FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCloudRaymarchCS::ThreadGroupSize));
+			Parameters->View = View.ViewUniformBuffer;
+			FillViewParameters(View, Setup, Parameters->ViewParams);
+			Parameters->OutLuminance = GraphBuilder.CreateUAV(LuminanceTexture);
+			Parameters->OutTransmittance = GraphBuilder.CreateUAV(TransmittanceTexture);
+			Parameters->DebugMode = static_cast<int32>(DebugMode);
+			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
+			FillLightingParameters(Sun, *Parameters);
+			FillMarchParameters(*Parameters);
+			Parameters->BaseNoiseTexture = NoiseTextures.BaseShape;
+			Parameters->ErosionNoiseTexture = NoiseTextures.Erosion;
+			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
+			Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
+			Parameters->NoiseFootprintScale = CVars::GetNoiseFootprintScale();
+			const CVars::FLightLODSettings LightLOD = CVars::GetLightLODSettings();
+			Parameters->LightLODEnable = LightLOD.bEnabled ? 1 : 0;
+			Parameters->LightLODFullFootprint = LightLOD.FullDetailFootprint;
+			Parameters->LightLODMinFootprint = LightLOD.MinDetailFootprint;
+			Parameters->LightLODMinSteps = LightLOD.MinLightSteps;
+			Parameters->TransmittanceLutAtlas = Luts.Transmittance;
+			Parameters->TransmittanceLutSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			Parameters->bAtmosphereEnabled = bAtmosphereEnabled ? 1 : 0;
+			Parameters->AtmosphereSteps = CVars::GetAtmosphereSteps();
+			Parameters->MultipleScatteringLutAtlas = Luts.MultipleScattering;
+			Parameters->bMultipleScattering = bMultipleScattering ? 1 : 0;
+			Parameters->CloudSkyAmbientScaleMultiplier = CVars::GetCloudSkyAmbientScaleMultiplier();
+
+			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("PlanetAtmosphere.CloudRaymarch %dx%d (%d atmospheres, mode %d, atmosphere %d, ms %d)",
+					Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->AtmosphereParams.NumAtmospheres, Parameters->DebugMode,
+					Parameters->bAtmosphereEnabled, Parameters->bMultipleScattering),
+				ComputeShader,
+				Parameters,
+				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCloudRaymarchCS::ThreadGroupSize));
+		}
+
+		{
+			RDG_EVENT_SCOPE_STAT(GraphBuilder, PlanetAtmosphereCompositeGPU, "PlanetAtmosphere.Composite");
+
+			FAtmosphereCompositeCS::FParameters* CompositeParameters = GraphBuilder.AllocParameters<FAtmosphereCompositeCS::FParameters>();
+			CompositeParameters->SceneColorTexture = Setup.SceneColor.Texture;
+			CompositeParameters->LuminanceTexture = LuminanceTexture;
+			CompositeParameters->TransmittanceTexture = TransmittanceTexture;
+			CompositeParameters->OutputTexture = GraphBuilder.CreateUAV(Setup.OutputTexture);
+			CompositeParameters->ViewRectMinAndSize = FVector4f(
+				static_cast<float>(Setup.ViewRect.Min.X), static_cast<float>(Setup.ViewRect.Min.Y),
+				static_cast<float>(Setup.ViewRect.Width()), static_cast<float>(Setup.ViewRect.Height()));
+
+			TShaderMapRef<FAtmosphereCompositeCS> CompositeShader(GlobalShaderMap);
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("PlanetAtmosphere.Composite %dx%d", Setup.ViewRect.Width(), Setup.ViewRect.Height()),
+				CompositeShader,
+				CompositeParameters,
+				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCompositeCS::ThreadGroupSize));
+		}
 
 		return FScreenPassTexture(Setup.OutputTexture, Setup.ViewRect);
 	}

@@ -10,9 +10,9 @@
 #include "/Plugin/PlanetAtmosphere/Private/CloudDensity.ush"
 
 // ---- View (FAtmosphereViewParameters) -------------------------------------------------------
-Texture2D SceneColorTexture;
+// The scene color is not part of the shared view data (Step 17): the raymarch writes its own luminance /
+// transmittance buffers, AtmosphereComposite.usf applies them; only the bounds debug view reads the scene color.
 Texture2D SceneDepthTexture;
-RWTexture2D<float4> OutputTexture;
 float4x4 ClipToTranslatedWorld;      // inverse translated view-projection (includes TAA jitter)
 float3 CameraTranslatedWorld;        // camera position in translated world space (close to origin)
 float4 ViewRectMinAndSize;           // xy = view rect min (pixels), zw = view rect size
@@ -103,7 +103,6 @@ FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
 struct FPAPixelRay
 {
 	uint2 Pixel;                      // absolute pixel in the scene textures
-	float4 SceneColor;
 	float3 Dir;                       // normalized, world axes
 	float SceneDistance;              // distance to opaque scene geometry along Dir (PA_INFINITY for sky)
 	float FootprintPerUnitDistance;   // pixel size at distance 1 (multiply by t to get the footprint)
@@ -132,7 +131,6 @@ bool PA_SetupPixelRay(uint2 LocalPixel, out FPAPixelRay Ray)
 	}
 
 	Ray.Pixel = (uint2)ViewRectMinAndSize.xy + LocalPixel;
-	Ray.SceneColor = SceneColorTexture.Load(int3(Ray.Pixel, 0));
 	const float DeviceZ = SceneDepthTexture.Load(int3(Ray.Pixel, 0)).r;
 
 	const float2 UV = (float2(LocalPixel) + 0.5) / RectSize;
