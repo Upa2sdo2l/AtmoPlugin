@@ -55,6 +55,33 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereLutInfo, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 END_SHADER_PARAMETER_STRUCT()
 
+/** Cloud shadow cascades (Phase 4). Must match PA_SHADOW_CASCADES (Shaders/Private/CloudShadowCommon.ush). */
+#define PLANET_ATMOSPHERE_SHADOW_CASCADES 3
+
+/** Tiles of cascade texels written by one FAtmosphereCloudShadowGenerateCS dispatch. = PA_SHADOW_MAX_TILES_PER_PASS. */
+#define PLANET_ATMOSPHERE_SHADOW_MAX_TILES_PER_PASS 64
+
+/**
+ * Cloud shadow cascades of the primary planet of a view (Phase 4 / Step 22, AtmosphereCloudShadows.h). HLSL declarations
+ * and helpers: Shaders/Private/CloudShadowCommon.ush. The atlas texture itself is bound separately (SRV in the raymarch,
+ * UAV in the generation pass). Every vector is in the PLANET-LOCAL frame of the primary planet, distances in cm.
+ * Integers that can exceed int16 are stored in floats (exact below 2^24).
+ */
+BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereCloudShadowParameters, )
+	// Index of the primary planet in the atmosphere arrays (FAtmosphereInstanceParameters); -1 = no cascades this frame.
+	SHADER_PARAMETER(int32, CloudShadowPlanet)
+	// Texels per cascade side (multiple of the 32-texel tile); cascade c = rows [c * Res, (c + 1) * Res) of the atlas.
+	SHADER_PARAMETER(int32, CloudShadowResolution)
+	// xyz = light-plane axis U (unit), w = texel size (cm)
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowAxisU, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+	// xyz = light-plane axis V (unit), w = 1 / texel size
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowAxisV, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+	// xyz = direction toward the sun this cascade was built for (unit), w = 1 if the cascade is configured
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowSun, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+	// xy = global texel index of the window's first texel, zw = sub-camera point in window texels (debug view)
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowWindow, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+END_SHADER_PARAMETER_STRUCT()
+
 /** r.PlanetAtmosphere.DebugMode 1 — analytical planet / atmosphere / cloud shells. Shaders/Private/AtmosphereBoundsDebug.usf */
 class FAtmosphereBoundsDebugCS : public FGlobalShader
 {
@@ -139,6 +166,64 @@ public:
 		SHADER_PARAMETER(int32, bMultipleScattering)
 		// Clouds through the atmosphere (Phase 2.5 / Step 15): global multiplier of the per-planet CloudSkyAmbientScale.
 		SHADER_PARAMETER(float, CloudSkyAmbientScaleMultiplier)
+		// Cloud shadow cascades (Phase 4). Step 22: only the debug views 9-11 read them. Without cascades this frame
+		// (CloudShadowPlanet = -1) the transmittance LUT pool is bound as the atlas: never sampled then.
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereCloudShadowParameters, CloudShadowParams)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, CloudShadowAtlas)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * Cloud shadow cascades (Phase 4 / Step 22): writes tiles of 32 x 32 texels of the cascade atlas.
+ * Shaders/Private/CloudShadowGenerate.usf, entry GenerateCS. Per texel a march of GenerationSteps samples through the
+ * cloud shell along the sun direction -> Beer Shadow Map (front, back, max optical depth, valid). Mode per tile:
+ * generate or invalidate (clear). Dispatch: (32 / 8, 32 / 8, NumTiles) groups. Density only from CloudDensity.ush (AD-1).
+ */
+class FAtmosphereCloudShadowGenerateCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereCloudShadowGenerateCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereCloudShadowGenerateCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereCloudShadowParameters, CloudShadowParams)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutShadowAtlas)
+		// xy = global tile index (32 x 32 texels), z = cascade, w = 1 generate / 0 invalidate
+		SHADER_PARAMETER_ARRAY(FVector4f, ShadowTiles, [PLANET_ATMOSPHERE_SHADOW_MAX_TILES_PER_PASS])
+		SHADER_PARAMETER(int32, NumShadowTiles)
+		SHADER_PARAMETER(int32, ShadowGenerationSteps)
+		// Same noise inputs as the raymarch (PlanetAtmosphereNoise.ush).
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, BaseNoiseTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, ErosionNoiseTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, NoiseSampler)
+		SHADER_PARAMETER(int32, NoiseSource)
+		// r.PlanetAtmosphere.NoiseFootprintScale: noise octaves fade at this fraction of the texel size (prototype: 1/4).
+		SHADER_PARAMETER(float, NoiseFootprintScale)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * Invalidates whole cascades of the atlas (alpha 0): new atlas, or a cascade whose configuration changed.
+ * Shaders/Private/CloudShadowGenerate.usf, entry ClearCS. Dispatch: Res x (3 Res) threads.
+ */
+class FAtmosphereCloudShadowClearCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereCloudShadowClearCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereCloudShadowClearCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutShadowAtlas)
+		SHADER_PARAMETER(int32, ShadowAtlasResolution)
+		// bit c = clear cascade c
+		SHADER_PARAMETER(int32, ClearCascadeMask)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

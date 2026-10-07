@@ -8,6 +8,7 @@
 #include "AtmosphereNoiseTextures.h"
 #include "AtmosphereLutCache.h"
 #include "AtmosphereTemporal.h"
+#include "AtmosphereCloudShadows.h"
 
 DEFINE_LOG_CATEGORY(LogPlanetAtmosphere);
 
@@ -33,6 +34,8 @@ void FPlanetAtmosphereModule::ShutdownModule()
 	PlanetAtmosphere::ReleaseLutCache_GameThread();
 	// Temporal histories of all views (Step 18): same lifecycle.
 	PlanetAtmosphere::Temporal::ReleaseHistory_GameThread();
+	// Cloud shadow cascades of all views (Phase 4): same lifecycle.
+	PlanetAtmosphere::CloudShadows::Release_GameThread();
 }
 
 IMPLEMENT_MODULE(FPlanetAtmosphereModule, PlanetAtmosphere)

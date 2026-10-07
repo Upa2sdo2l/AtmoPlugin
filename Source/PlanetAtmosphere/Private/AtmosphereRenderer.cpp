@@ -14,13 +14,15 @@
 #include "AtmosphereNoiseTextures.h"
 #include "AtmosphereLutCache.h"
 #include "AtmosphereTemporal.h"
+#include "AtmosphereCloudShadows.h"
 #include "RHIStaticStates.h"
 
 // `stat gpu` (Step 17 split, master prompt section 28):
 //   "PlanetAtmosphere.Raymarch"  — noise bake + raymarch / bounds debug pass of a view (= the former "PlanetAtmosphere" stat);
 //   "PlanetAtmosphere.Composite" — applying the raymarch result to the scene color;
 //   "PlanetAtmosphere.TransmittanceLut" / "PlanetAtmosphere.MultipleScatteringLut" (AtmosphereLutCache.cpp) — only on
-//   frames where a LUT is rebuilt (Step 16 cache).
+//   frames where a LUT is rebuilt (Step 16 cache);
+//   "PlanetAtmosphere.Temporal" (AtmosphereTemporal.cpp), "PlanetAtmosphere.CloudShadows" (AtmosphereCloudShadows.cpp, Phase 4).
 // Distinct identifiers: the macros paste them into symbol names, and "PlanetAtmosphere" is also our namespace.
 DECLARE_GPU_STAT_NAMED(PlanetAtmosphereRaymarchGPU, TEXT("PlanetAtmosphere.Raymarch"));
 DECLARE_GPU_STAT_NAMED(PlanetAtmosphereCompositeGPU, TEXT("PlanetAtmosphere.Composite"));
@@ -200,12 +202,16 @@ namespace PlanetAtmosphere
 			return FVector4f(XYZ.X, XYZ.Y, XYZ.Z, W);
 		}
 
-		/** Sorts near -> far, truncates to MaxVisible and packs. All large-number differences in double. */
+		/**
+		 * Sorts near -> far, truncates to MaxVisible and packs. All large-number differences in double.
+		 * OutScreenRadiiPx (optional): radius on screen of every packed atmosphere (Step 11 LOD input), same order.
+		 */
 		void FillInstanceParameters(
 			const FSceneView& View,
 			const FIntRect& ViewRect,
 			TArray<FAtmosphereVisibleInstance>& Instances,
-			FAtmosphereInstanceParameters& OutParameters)
+			FAtmosphereInstanceParameters& OutParameters,
+			TArray<double>* OutScreenRadiiPx = nullptr)
 		{
 			const FVector ViewOrigin = View.ViewMatrices.GetViewOrigin();
 			const CVars::FScreenLODSettings LOD = CVars::GetScreenLODSettings();
@@ -253,6 +259,10 @@ namespace PlanetAtmosphere
 
 				// Screen-space LOD (Step 11).
 				const double RadiusPx = ComputeScreenRadiusPx(View, ViewRect, CameraRelativeToPlanet, R.AtmosphereTop);
+				if (OutScreenRadiiPx)
+				{
+					OutScreenRadiiPx->Add(RadiusPx);
+				}
 				int32 RaymarchSteps = Instance.RaymarchSteps;
 				int32 LightSteps = FullLightSteps;
 				ApplyScreenLOD(LOD, RadiusPx, Instance.RaymarchSteps, FullLightSteps, RaymarchSteps, LightSteps);
@@ -307,8 +317,10 @@ namespace PlanetAtmosphere
 	{
 		SCOPE_CYCLE_COUNTER(STAT_PlanetAtmosphere_SetupPasses);
 
-		// Step 18: free the temporal histories of views that stopped rendering (runs even with nothing to draw).
+		// Step 18 / 22: free the temporal histories and cloud shadow cascades of views that stopped rendering (runs even with
+		// nothing to draw).
 		Temporal::GetHistory().CollectGarbage(View.Family->FrameNumber);
+		CloudShadows::Get().CollectGarbage(View.Family->FrameNumber);
 
 		FAtmospherePassSetup Setup;
 		if (!PrepareCommon(GraphBuilder, Inputs, Instances, Setup))
@@ -353,7 +365,8 @@ namespace PlanetAtmosphere
 		}
 
 		FAtmosphereCloudRaymarchCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudRaymarchCS::FParameters>();
-		FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
+		TArray<double> ScreenRadiiPx;
+		FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams, &ScreenRadiiPx);
 
 		// Step 16: LUTs cached across frames (AtmosphereLutCache.h). Assigns each planet its pool slot
 		// (AtmosphereLutInfo) and rebuilds only LUTs that are missing (first use, changed parameters, new planet).
@@ -366,6 +379,21 @@ namespace PlanetAtmosphere
 			!CVars::IsLutCacheEnabled(), Parameters->AtmosphereParams, Luts))
 		{
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+		}
+
+		// Phase 4 / Step 22: cloud shadow cascades of the primary planet (largest on screen, with hysteresis), updated
+		// progressively (AtmosphereCloudShadows.h).
+		// Before the raymarch, which always binds the atlas (so these passes are never culled); without cascades the
+		// transmittance pool is bound in its slot (CloudShadowPlanet = -1: never sampled).
+		{
+			FAtmosphereCloudShadowInputs ShadowInputs;
+			ShadowInputs.Planets = TConstArrayView<FAtmosphereVisibleInstance>(Instances.GetData(), Parameters->AtmosphereParams.NumAtmospheres);
+			ShadowInputs.ScreenRadiiPx = ScreenRadiiPx;
+			ShadowInputs.Sun = Sun;
+			ShadowInputs.Noise = NoiseTextures;
+			const FRDGTextureRef CloudShadowAtlas = CloudShadows::Get().Update(
+				GraphBuilder, GlobalShaderMap, View, Parameters->AtmosphereParams, ShadowInputs, Parameters->CloudShadowParams);
+			Parameters->CloudShadowAtlas = CloudShadowAtlas ? CloudShadowAtlas : Luts.Transmittance;
 		}
 
 		// DebugMode 8 (Temporal Weight) marches like the final image; the composite overlays the temporal weight.

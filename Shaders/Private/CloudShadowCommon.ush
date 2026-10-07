@@ -1,0 +1,67 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Cloud shadow cascades (Phase 4). Declarations and helpers shared by CloudShadowGenerate.usf (writes the atlas) and
+// CloudRaymarch.usf (debug views 9-11; Step 23: lookup for the sun path beyond the short local march).
+// C++ counterpart: FAtmosphereCloudShadowParameters (AtmosphereShaders.h), state in AtmosphereCloudShadows.cpp.
+//
+// Geometry (planet-local frame of the primary planet, cm): each cascade is an orthographic grid in the plane
+// perpendicular to the sun direction S, axes U and V. Global texel (i, j) covers u in [i, i+1) * Texel, v likewise;
+// its ray comes from the sun side along -S: P(w) = u U + v V + w S. The cloud-shell segment of that ray is analytic:
+//   enters the cloud-top sphere at w = +HTop, HTop = sqrt(RTop^2 - rho^2), rho = |(u, v)|,
+//   leaves it at the cloud-bottom sphere (w = +HBottom, rho < RBottom) or at the top sphere again (w = -HTop).
+// Stored per texel (Beer Shadow Map, RGBA16F): front and back of the cloud matter along that segment as fractions of
+// the segment (0 = top entry), the optical depth of the whole segment, and alpha = 1 when the texel is valid.
+//
+// Only the sun-side segment is stored: a point on the night side (w < 0 below the cloud bottom sphere's shadow) has the
+// same (u, v) as a day-side column; it is in the planet's shadow anyway, so lookups must be gated by the sun visibility
+// (planet shadow / transmittance LUT) first.
+//
+// Storage: a window of Res x Res texels around the sub-camera point, addressed toroidally (texel i at i mod Res), so
+// a moving window only needs the newly covered tiles. Cascade c occupies rows [c * Res, (c + 1) * Res) of the atlas.
+
+#define PA_SHADOW_CASCADES 3                 // = PLANET_ATMOSPHERE_SHADOW_CASCADES
+#define PA_SHADOW_TILE 32                    // texels per tile side (update granularity)
+#define PA_SHADOW_MAX_TILES_PER_PASS 64      // = PLANET_ATMOSPHERE_SHADOW_MAX_TILES_PER_PASS
+#define PA_SHADOW_MAX_OPTICAL_DEPTH 12.0     // generation stops above this (transmittance 6e-6)
+
+// Content of a texel that is not (yet) generated: alpha 0 -> callers use the per-sample light march instead.
+#define PA_SHADOW_INVALID float4(1.0, 1.0, 0.0, 0.0)
+
+int CloudShadowPlanet;                               // index in the atmosphere arrays; -1 = no cascades this frame
+int CloudShadowResolution;                           // texels per cascade side
+float4 CloudShadowAxisU[PA_SHADOW_CASCADES];         // xyz = axis U (planet local, unit), w = texel size (cm)
+float4 CloudShadowAxisV[PA_SHADOW_CASCADES];         // xyz = axis V, w = 1 / texel size
+float4 CloudShadowSun[PA_SHADOW_CASCADES];           // xyz = direction toward the sun (planet local), w = 1 if configured
+float4 CloudShadowWindow[PA_SHADOW_CASCADES];        // xy = global texel of the window's first texel, zw = sub-camera point (window texels)
+
+/** Atlas texel of a global cascade texel (toroidal addressing). */
+int2 PA_ShadowStorageTexel(int Cascade, int2 GlobalTexel)
+{
+	const int Res = CloudShadowResolution;
+	const int2 Wrapped = ((GlobalTexel % Res) + Res) % Res;   // % keeps the sign of the dividend
+	return int2(Wrapped.x, Wrapped.y + Cascade * Res);
+}
+
+/**
+ * Cloud-shell segment of the cascade ray through light-plane distance Rho from the planet axis along the sun:
+ * WEntry = sun-axis coordinate where it enters the cloud-top sphere, Length = length of the segment.
+ * Returns false if the ray misses the cloud layer. Radii as PlanetRadius + altitude (AD-3); the differences of squares
+ * are formed as (R - rho)(R + rho).
+ */
+bool PA_ShadowRaySegment(float Rho, float PlanetRadius, float CloudBottom, float CloudTop, out float WEntry, out float Length)
+{
+	const float RTop = PlanetRadius + CloudTop;
+	const float RBottom = PlanetRadius + CloudBottom;
+	WEntry = 0.0;
+	Length = 0.0;
+	if (Rho >= RTop)
+	{
+		return false;
+	}
+	WEntry = sqrt((RTop - Rho) * (RTop + Rho));
+	const float WExit = Rho < RBottom ? sqrt((RBottom - Rho) * (RBottom + Rho)) : -WEntry;
+	Length = WEntry - WExit;
+	return Length > 0.0;
+}

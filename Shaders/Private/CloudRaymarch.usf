@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 // Cloud + atmosphere raymarch (r.PlanetAtmosphere.DebugMode 0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps,
-// 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT).
+// 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -26,6 +26,7 @@
 #include "/Plugin/PlanetAtmosphere/Private/CloudLighting.ush"
 #include "/Plugin/PlanetAtmosphere/Private/RaymarchSchedule.ush"
 #include "/Plugin/PlanetAtmosphere/Private/AtmosphereScattering.ush"
+#include "/Plugin/PlanetAtmosphere/Private/CloudShadowCommon.ush"
 
 // Interleaved rendering (Phase 3 / Step 19): with InterleaveFactor N > 1 one thread per N x N block traces the pixel
 // block * N + InterleaveOffset (clamped into the view) and writes to texel = block of the reduced outputs;
@@ -38,7 +39,8 @@ int InterleaveOffsetY;
 RWTexture2D<float4> OutLuminance;      // rgb = pre-exposed luminance added in front of the scene
 RWTexture2D<float4> OutTransmittance;  // rgb = transmittance applied to the scene color
 
-int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT
+int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT,
+                             // 9-11 = shadow cascade 0-2
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -75,6 +77,9 @@ int LightLODMinSteps;
 int bAtmosphereEnabled;      // r.PlanetAtmosphere.Atmosphere
 int AtmosphereSteps;         // r.PlanetAtmosphere.Atmosphere.Steps
 float CloudSkyAmbientScaleMultiplier;   // r.PlanetAtmosphere.CloudSkyAmbientScale (global x per-planet CloudSkyAmbientScale)
+
+// Cloud shadow cascades (Phase 4, CloudShadowCommon.ush). Step 22: read only by the debug views 9-11.
+Texture2D<float4> CloudShadowAtlas;
 
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
@@ -561,6 +566,50 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				const uint Row = (uint)PA_GetLutSlot((int)LutBlock) * PA_TRANSMITTANCE_LUT_HEIGHT + LutTexel.y % PA_TRANSMITTANCE_LUT_HEIGHT;
 				Transmittance = 0.0;
 				Luminance = TransmittanceLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb;
+			}
+		}
+		// Shadow cascade 0 / 1 / 2 (Phase 4 / Step 22): the cascade window in the top-left corner, north = +V, centred on
+		// the sub-camera point (red ring). White = column fully lit, dark blue = column fully shadowed (exp(-optical depth
+		// of the whole cloud-shell segment)), magenta checker = tile not generated yet (the light march is used there).
+		// Downscaled by an integer factor when the cascade does not fit. A red square = no cascades this frame.
+		if (DebugMode >= 9 && DebugMode <= 11)
+		{
+			const int Cascade = DebugMode - 9;
+			const int2 LocalPixel = int2(Ray.Pixel) - int2(ViewRectMinAndSize.xy);
+			const int Res = CloudShadowResolution;
+			if (CloudShadowPlanet < 0 || CloudShadowSun[Cascade].w < 0.5)
+			{
+				if (all(LocalPixel < 24))
+				{
+					Transmittance = 0.0;
+					Luminance = float3(1.0, 0.0, 0.0);
+				}
+			}
+			else
+			{
+				const int Fit = max((int)(0.9 * min(ViewRectMinAndSize.z, ViewRectMinAndSize.w)), 1);
+				const int Scale = max((Res + Fit - 1) / Fit, 1);
+				const int2 WindowTexel = int2(LocalPixel.x, Res / Scale - 1 - LocalPixel.y) * Scale;   // +V up
+				if (all(LocalPixel < Res / Scale) && all(WindowTexel >= 0) && all(WindowTexel < Res))
+				{
+					const int2 GlobalTexel = int2(CloudShadowWindow[Cascade].xy) + WindowTexel;
+					const float4 Texel = CloudShadowAtlas.Load(int3(PA_ShadowStorageTexel(Cascade, GlobalTexel), 0));
+					Transmittance = 0.0;
+					if (Texel.a < 0.5)
+					{
+						Luminance = ((WindowTexel.x / 8 + WindowTexel.y / 8) & 1) != 0 ? float3(1.0, 0.0, 1.0) : float3(0.25, 0.0, 0.25);
+					}
+					else
+					{
+						Luminance = lerp(float3(0.02, 0.04, 0.15), float3(1.0, 1.0, 1.0), exp(-Texel.b));
+					}
+					const float2 ToCamera = float2(WindowTexel) - CloudShadowWindow[Cascade].zw;
+					const float Ring = abs(length(ToCamera) - 6.0 * (float)Scale);
+					if (Ring < (float)Scale)
+					{
+						Luminance = float3(1.0, 0.0, 0.0);
+					}
+				}
 			}
 		}
 		// Multiple-scattering LUT: the atlas at 4x (planet 0 at the top; x = sun cos zenith -1..1, y = altitude),
