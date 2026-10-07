@@ -138,6 +138,9 @@ namespace PlanetAtmosphere::CVars
 		float CurrentFrameWeight = 0.1f;   // minimum weight of the new frame (history converges over ~1 / weight frames)
 		float ClampGamma = 1.25f;          // history clamped to mean +- gamma x std of the current 3x3 neighbourhood
 		float DepthRejectRatio = 4.0f;     // history rejected when its depth differs by more than this factor
+		int32 InterleaveFactor = 3;        // Step 19: one traced pixel per N x N block per frame (1..4)
+		float StaticClampGamma = 8.0f;     // Step 19, interleaved: clamp gamma for pixels that did not move
+		float ClampMotionPixels = 0.5f;    // Step 19, interleaved: motion (pixels) from which ClampGamma applies fully
 	};
 	FTemporalSettings GetTemporalSettings();
 

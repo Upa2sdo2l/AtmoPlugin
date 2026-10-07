@@ -21,6 +21,37 @@ namespace
 	/** A history older than this many frames is not reused (temporal / the view mode was off meanwhile). */
 	constexpr uint32 TemporalMaxFrameGap = 4;
 
+	/**
+	 * Interleave order (Step 19): ordered-dither matrices, value = position of the cell in the cycle (row-major cells,
+	 * cell index = dy * N + dx). Same tables as the prototype (t19.py).
+	 */
+	constexpr int32 TemporalDither2[4] = { 0, 2, 3, 1 };
+	constexpr int32 TemporalDither3[9] = { 0, 7, 3, 6, 5, 2, 4, 1, 8 };
+	constexpr int32 TemporalDither4[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+
+	FIntPoint TemporalInterleaveOffset(int32 Factor, uint32 Counter)
+	{
+		const int32 NumCells = Factor * Factor;
+		// The order is rotated by a pseudo-random amount every cycle. A fixed order revisits a pixel every N^2 frames, so
+		// if the engine's TAA / TSR jitter sequence length is a multiple of N^2 the pixel always gets the same sub-pixel
+		// jitter phase(s) and the "salt" is never averaged (UE test: 3x3 sparkled on a far planet, 2x2 did not; TSR scales
+		// its sample count with the upscale factor, e.g. 9 or 18). With the hashed rotation every pixel meets most phases of
+		// any sequence length (simulated for lengths 8..32 and N = 2..4).
+		const uint32 Cycle = Counter / static_cast<uint32>(NumCells);
+		uint32 Shift = Cycle * 0x9E3779B1u;
+		Shift ^= Shift >> 16;
+		const uint32 Rank = (Counter % static_cast<uint32>(NumCells) + Shift) % static_cast<uint32>(NumCells);
+		const int32* Table = Factor == 2 ? TemporalDither2 : (Factor == 3 ? TemporalDither3 : TemporalDither4);
+		for (int32 Cell = 0; Cell < NumCells; ++Cell)
+		{
+			if (Table[Cell] == static_cast<int32>(Rank))
+			{
+				return FIntPoint(Cell % Factor, Cell / Factor);
+			}
+		}
+		return FIntPoint(0, 0);
+	}
+
 	/** Row-vector 4x4 in double (UE convention: clip = [x y z 1] x M). Own multiply: no engine matrix operators needed. */
 	struct FTemporalMat4d
 	{
@@ -98,18 +129,64 @@ namespace
 	TGlobalResource<FPlanetAtmosphereTemporalHistory> GPlanetAtmosphereTemporalHistory;
 }
 
+FAtmosphereTemporalViewSetup FPlanetAtmosphereTemporalHistory::PrepareView(const FSceneView& View, int32 RequestedInterleaveFactor, int32 ImageType)
+{
+	FScopeLock Lock(&Mutex);
+
+	FAtmosphereTemporalViewSetup Setup;
+	if (!IsInitialized() || View.State == nullptr)
+	{
+		return Setup;
+	}
+
+	const uint32 FrameNumber = View.Family->FrameNumber;
+	TUniquePtr<FViewHistory>& Entry = Views.FindOrAdd(View.State->GetViewKey());
+	if (!Entry.IsValid())
+	{
+		Entry = MakeUnique<FViewHistory>();
+	}
+	FViewHistory& History = *Entry;
+
+	// The same view state twice in one frame: its history is already being written -> no temporal for this render.
+	if (History.bPrepared && History.LastPreparedFrame == FrameNumber)
+	{
+		return Setup;
+	}
+	History.bPrepared = true;
+	History.LastPreparedFrame = FrameNumber;
+
+	Setup.bEnabled = true;
+	Setup.InterleaveFactor = FMath::Clamp(RequestedInterleaveFactor, 1, 4);
+
+	// The history will be dropped (same conditions as in AddTemporalPass): trace every pixel this frame.
+	const bool bHistoryUsable = History.bHasFrame && FrameNumber > History.LastUsedFrame
+		&& FrameNumber - History.LastUsedFrame <= TemporalMaxFrameGap && History.ImageType == ImageType && !View.bCameraCut;
+	if (!bHistoryUsable)
+	{
+		Setup.InterleaveFactor = 1;
+	}
+	if (Setup.InterleaveFactor > 1)
+	{
+		Setup.InterleaveOffset = TemporalInterleaveOffset(Setup.InterleaveFactor, History.InterleaveCounter);
+		++History.InterleaveCounter;
+	}
+	return Setup;
+}
+
 bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* GlobalShaderMap,
 	const FSceneView& View,
 	const FAtmosphereViewParameters& ViewParameters,
 	const PlanetAtmosphere::CVars::FTemporalSettings& Settings,
+	const FAtmosphereTemporalViewSetup& Setup,
 	const FAtmosphereTemporalInputs& Inputs,
 	FAtmosphereTemporalOutputs& OutOutputs)
 {
 	FScopeLock Lock(&Mutex);
 
-	if (!IsInitialized() || View.State == nullptr || !Inputs.Luminance || !Inputs.Transmittance)
+	if (!IsInitialized() || !Setup.bEnabled || View.State == nullptr || !Inputs.Luminance || !Inputs.Transmittance
+		|| Inputs.OutputExtent.X <= 0 || Inputs.OutputExtent.Y <= 0)
 	{
 		return false;
 	}
@@ -123,12 +200,6 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 		Entry = MakeUnique<FViewHistory>();
 	}
 	FViewHistory& History = *Entry;
-
-	// The same view state twice in one frame: its history is already being written -> no temporal for this render.
-	if (History.bHasFrame && History.LastUsedFrame == FrameNumber)
-	{
-		return false;
-	}
 
 	// ---- Current camera (unjittered projection: the history is aligned to pixel centers). Perspective only
 	// (IsAllowedForView): HackAddTemporalAAProjectionJitter adds the TAA jitter (NDC) to ProjectionMatrix.M[2][0/1]. ----
@@ -149,19 +220,20 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 	// A different extent / view rect (dynamic resolution, screen percentage) is fine: the history is addressed through
 	// its own rect. Dropped: camera cut, another image type (final vs atmosphere only), or a gap of more than
 	// TemporalMaxFrameGap frames (temporal or the view mode was switched off meanwhile: the content is stale).
-	const FIntPoint Extent = Inputs.Luminance->Desc.Extent;
+	const FIntPoint Extent = Inputs.OutputExtent;
 	const bool bSameExtent = History.Extent.X == Extent.X && History.Extent.Y == Extent.Y;
 	const bool bRecentFrame = History.bHasFrame && FrameNumber > History.LastUsedFrame && FrameNumber - History.LastUsedFrame <= TemporalMaxFrameGap;
 	const bool bHistoryValid = bRecentFrame
-		&& History.Luminance.IsValid() && History.Transmittance.IsValid() && History.Exposure.IsValid()
+		&& History.Luminance.IsValid() && History.Transmittance.IsValid() && History.Exposure.IsValid() && History.Slot.IsValid()
 		&& History.ImageType == Inputs.ImageType && History.Extent.X > 0 && History.Extent.Y > 0
 		&& History.ViewRect.Width() > 0 && History.ViewRect.Height() > 0 && !View.bCameraCut;
 
 	if (!bSameExtent || !History.Luminance.IsValid())
 	{
-		// 2 x RGBA16F at the scene color extent (+ the same again while the next frame is written) + 1 x 1 exposure.
-		UE_LOG(LogPlanetAtmosphere, Log, TEXT("Temporal history of view %u: %d x %d, %.1f MB (x2 while a frame is written)"),
-			ViewKey, Extent.X, Extent.Y, static_cast<double>(Extent.X) * Extent.Y * 16.0 / (1024.0 * 1024.0));
+		// 2 x RGBA16F + R16F at the scene color extent (+ the same again while the next frame is written) + 1 x 1 exposure.
+		UE_LOG(LogPlanetAtmosphere, Log, TEXT("Temporal history of view %u: %d x %d, %.1f MB (x2 while a frame is written), interleave %dx%d"),
+			ViewKey, Extent.X, Extent.Y, static_cast<double>(Extent.X) * Extent.Y * 18.0 / (1024.0 * 1024.0),
+			Setup.InterleaveFactor, Setup.InterleaveFactor);
 	}
 
 	// ---- Textures ----
@@ -172,6 +244,9 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 	FRDGTextureRef NewLuminance = GraphBuilder.CreateTexture(HistoryDesc, TEXT("PlanetAtmosphere.TemporalLuminance"));
 	FRDGTextureRef NewTransmittance = GraphBuilder.CreateTexture(HistoryDesc, TEXT("PlanetAtmosphere.TemporalTransmittance"));
 	FRDGTextureRef NewExposure = GraphBuilder.CreateTexture(ExposureDesc, TEXT("PlanetAtmosphere.TemporalExposure"));
+	const FRDGTextureDesc SlotDesc = FRDGTextureDesc::Create2D(
+		Extent, PF_R16F, FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+	FRDGTextureRef NewSlot = GraphBuilder.CreateTexture(SlotDesc, TEXT("PlanetAtmosphere.TemporalSlot"));
 
 	FAtmosphereTemporalCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereTemporalCS::FParameters>();
 	Parameters->View = View.ViewUniformBuffer;
@@ -182,10 +257,12 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 	Parameters->HistoryLuminance = bHistoryValid ? GraphBuilder.RegisterExternalTexture(History.Luminance) : Inputs.Luminance;
 	Parameters->HistoryTransmittance = bHistoryValid ? GraphBuilder.RegisterExternalTexture(History.Transmittance) : Inputs.Transmittance;
 	Parameters->HistoryExposure = bHistoryValid ? GraphBuilder.RegisterExternalTexture(History.Exposure) : Inputs.Luminance;
+	Parameters->HistorySlot = bHistoryValid ? GraphBuilder.RegisterExternalTexture(History.Slot) : Inputs.Transmittance;
 	Parameters->HistorySampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	Parameters->OutLuminance = GraphBuilder.CreateUAV(NewLuminance);
 	Parameters->OutTransmittance = GraphBuilder.CreateUAV(NewTransmittance);
 	Parameters->OutExposure = GraphBuilder.CreateUAV(NewExposure);
+	Parameters->OutSlot = GraphBuilder.CreateUAV(NewSlot);
 	Parameters->CurrentJitterNDC = JitterNDC;
 	Parameters->CurrentViewForward = ViewForward;
 	const FIntPoint HistoryExtent = bHistoryValid ? History.Extent : Extent;
@@ -200,6 +277,11 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 	Parameters->CurrentFrameWeight = Settings.CurrentFrameWeight;
 	Parameters->ClampGamma = Settings.ClampGamma;
 	Parameters->DepthRejectRatio = Settings.DepthRejectRatio;
+	Parameters->InterleaveFactor = Setup.InterleaveFactor;
+	Parameters->InterleaveOffsetX = Setup.InterleaveOffset.X;
+	Parameters->InterleaveOffsetY = Setup.InterleaveOffset.Y;
+	Parameters->StaticClampGamma = Settings.StaticClampGamma;
+	Parameters->ClampMotionPixels = Settings.ClampMotionPixels;
 
 	// ---- Reprojection matrices (double): current camera-relative point -> previous clip ----
 	// Planet motion: p_prev = C_prev + (p - C_cur) x A_cur^T x A_prev (A = rows of the planet axes, row vectors), so with
@@ -269,7 +351,8 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 		TShaderMapRef<FAtmosphereTemporalCS> ComputeShader(GlobalShaderMap);
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
-			RDG_EVENT_NAME("PlanetAtmosphere.Temporal %dx%d (history %d)", Inputs.ViewRect.Width(), Inputs.ViewRect.Height(), bHistoryValid ? 1 : 0),
+			RDG_EVENT_NAME("PlanetAtmosphere.Temporal %dx%d (history %d, interleave %d, offset %d %d)", Inputs.ViewRect.Width(), Inputs.ViewRect.Height(),
+				bHistoryValid ? 1 : 0, Setup.InterleaveFactor, Setup.InterleaveOffset.X, Setup.InterleaveOffset.Y),
 			ComputeShader,
 			Parameters,
 			FComputeShaderUtils::GetGroupCount(Inputs.ViewRect.Size(), FAtmosphereTemporalCS::ThreadGroupSize));
@@ -279,6 +362,7 @@ bool FPlanetAtmosphereTemporalHistory::AddTemporalPass(
 	GraphBuilder.QueueTextureExtraction(NewLuminance, &History.Luminance);
 	GraphBuilder.QueueTextureExtraction(NewTransmittance, &History.Transmittance);
 	GraphBuilder.QueueTextureExtraction(NewExposure, &History.Exposure);
+	GraphBuilder.QueueTextureExtraction(NewSlot, &History.Slot);
 	History.Extent = Extent;
 	History.ViewRect = Inputs.ViewRect;
 	FMemory::Memcpy(History.TranslatedViewProjectionNoAA, CurrentTranslatedViewProjectionNoAA.M, sizeof(History.TranslatedViewProjectionNoAA));
@@ -299,7 +383,7 @@ void FPlanetAtmosphereTemporalHistory::CollectGarbage(uint32 FrameNumber)
 	// Only strictly older frames: an entry used in this frame may have a pending extraction.
 	for (auto It = Views.CreateIterator(); It; ++It)
 	{
-		const uint32 LastUsed = It.Value()->LastUsedFrame;
+		const uint32 LastUsed = FMath::Max(It.Value()->LastUsedFrame, It.Value()->LastPreparedFrame);
 		if (FrameNumber > LastUsed && FrameNumber - LastUsed > TemporalHistoryMaxAgeFrames)
 		{
 			UE_LOG(LogPlanetAtmosphere, Log, TEXT("Temporal history of view %u released (unused for %u frames)"), It.Key(), FrameNumber - LastUsed);

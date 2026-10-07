@@ -372,10 +372,27 @@ namespace PlanetAtmosphere
 		const bool bTemporalWeightView = DebugMode == CVars::EDebugMode::TemporalWeight;
 		const CVars::EDebugMode MarchDebugMode = bTemporalWeightView ? CVars::EDebugMode::FinalClouds : DebugMode;
 
-		// Step 17: the raymarch writes its own luminance / transmittance buffers (same extent and pixel coordinates as the
-		// scene color); the composite pass below applies them. RGBA16F: guaranteed typed-UAV format; alpha reserved.
+		// Step 18 / 19: temporal accumulation for the final and atmosphere-only images (the other debug views stay per
+		// frame). Decided before the raymarch: with interleaving (Step 19) the raymarch traces one pixel per N x N block at
+		// the offset of this frame, and the temporal pass reconstructs the full image.
+		const CVars::FTemporalSettings TemporalSettings = CVars::GetTemporalSettings();
+		FAtmosphereTemporalViewSetup TemporalSetup;
+		if (TemporalSettings.bEnabled
+			&& (MarchDebugMode == CVars::EDebugMode::FinalClouds || MarchDebugMode == CVars::EDebugMode::AtmosphereOnly)
+			&& Temporal::IsAllowedForView(View))
+		{
+			TemporalSetup = Temporal::GetHistory().PrepareView(View, TemporalSettings.InterleaveFactor, static_cast<int32>(MarchDebugMode));
+		}
+		const int32 InterleaveFactor = TemporalSetup.bEnabled ? TemporalSetup.InterleaveFactor : 1;
+		const FIntPoint MarchThreads(
+			FMath::DivideAndRoundUp(Setup.ViewRect.Width(), InterleaveFactor),
+			FMath::DivideAndRoundUp(Setup.ViewRect.Height(), InterleaveFactor));
+
+		// Step 17: the raymarch writes its own luminance / transmittance buffers (N = 1: same extent and pixel coordinates
+		// as the scene color; N > 1: one texel per block); the composite pass below applies them (through the temporal
+		// pass when it runs). RGBA16F: guaranteed typed-UAV format; alpha = reprojection data (Step 18).
 		const FRDGTextureDesc RaymarchOutputDesc = FRDGTextureDesc::Create2D(
-			Setup.SceneColor.Texture->Desc.Extent,
+			InterleaveFactor == 1 ? Setup.SceneColor.Texture->Desc.Extent : MarchThreads,
 			PF_FloatRGBA,
 			FClearValueBinding::Black,
 			ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
@@ -390,6 +407,9 @@ namespace PlanetAtmosphere
 			FillViewParameters(View, Setup, Parameters->ViewParams);
 			Parameters->OutLuminance = GraphBuilder.CreateUAV(LuminanceTexture);
 			Parameters->OutTransmittance = GraphBuilder.CreateUAV(TransmittanceTexture);
+			Parameters->InterleaveFactor = InterleaveFactor;
+			Parameters->InterleaveOffsetX = TemporalSetup.InterleaveOffset.X;
+			Parameters->InterleaveOffsetY = TemporalSetup.InterleaveOffset.Y;
 			Parameters->DebugMode = static_cast<int32>(MarchDebugMode);
 			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
 			FillLightingParameters(Sun, *Parameters);
@@ -415,22 +435,18 @@ namespace PlanetAtmosphere
 			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
-				RDG_EVENT_NAME("PlanetAtmosphere.CloudRaymarch %dx%d (%d atmospheres, mode %d, atmosphere %d, ms %d)",
-					Setup.ViewRect.Width(), Setup.ViewRect.Height(), Parameters->AtmosphereParams.NumAtmospheres, Parameters->DebugMode,
-					Parameters->bAtmosphereEnabled, Parameters->bMultipleScattering),
+				RDG_EVENT_NAME("PlanetAtmosphere.CloudRaymarch %dx%d (%d atmospheres, mode %d, atmosphere %d, ms %d, interleave %d)",
+					MarchThreads.X, MarchThreads.Y, Parameters->AtmosphereParams.NumAtmospheres, Parameters->DebugMode,
+					Parameters->bAtmosphereEnabled, Parameters->bMultipleScattering, InterleaveFactor),
 				ComputeShader,
 				Parameters,
-				FComputeShaderUtils::GetGroupCount(Setup.ViewRect.Size(), FAtmosphereCloudRaymarchCS::ThreadGroupSize));
+				FComputeShaderUtils::GetGroupCount(MarchThreads, FAtmosphereCloudRaymarchCS::ThreadGroupSize));
 		}
 
-		// Step 18: temporal accumulation (final and atmosphere-only images; the other debug views stay per frame).
 		FRDGTextureRef CompositeLuminance = LuminanceTexture;
 		FRDGTextureRef CompositeTransmittance = TransmittanceTexture;
 		bool bTemporalApplied = false;
-		const CVars::FTemporalSettings TemporalSettings = CVars::GetTemporalSettings();
-		if (TemporalSettings.bEnabled
-			&& (MarchDebugMode == CVars::EDebugMode::FinalClouds || MarchDebugMode == CVars::EDebugMode::AtmosphereOnly)
-			&& Temporal::IsAllowedForView(View))
+		if (TemporalSetup.bEnabled)
 		{
 			FAtmosphereViewParameters TemporalViewParameters;
 			FillViewParameters(View, Setup, TemporalViewParameters);
@@ -439,15 +455,22 @@ namespace PlanetAtmosphere
 			TemporalInputs.Luminance = LuminanceTexture;
 			TemporalInputs.Transmittance = TransmittanceTexture;
 			TemporalInputs.ViewRect = Setup.ViewRect;
+			TemporalInputs.OutputExtent = Setup.SceneColor.Texture->Desc.Extent;
 			TemporalInputs.ImageType = static_cast<int32>(MarchDebugMode);
 			TemporalInputs.Planets = TConstArrayView<FAtmosphereVisibleInstance>(Instances.GetData(), Parameters->AtmosphereParams.NumAtmospheres);
 
 			FAtmosphereTemporalOutputs TemporalOutputs;
-			if (Temporal::GetHistory().AddTemporalPass(GraphBuilder, GlobalShaderMap, View, TemporalViewParameters, TemporalSettings, TemporalInputs, TemporalOutputs))
+			if (Temporal::GetHistory().AddTemporalPass(GraphBuilder, GlobalShaderMap, View, TemporalViewParameters, TemporalSettings,
+				TemporalSetup, TemporalInputs, TemporalOutputs))
 			{
 				CompositeLuminance = TemporalOutputs.Luminance;
 				CompositeTransmittance = TemporalOutputs.Transmittance;
 				bTemporalApplied = true;
+			}
+			else if (InterleaveFactor > 1)
+			{
+				// Only if the history was released meanwhile (shutdown): the reduced raymarch output cannot be composited.
+				return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 			}
 		}
 
