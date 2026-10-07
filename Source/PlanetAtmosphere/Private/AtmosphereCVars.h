@@ -99,6 +99,9 @@ namespace PlanetAtmosphere::CVars
 		int32 MinLightSteps = 2;            // light steps at minimum detail
 	};
 
+	/** r.PlanetAtmosphere.NoiseFootprintScale — multiplier of the pixel footprint for noise octave fading, clamped to [0.01, 1]. */
+	float GetNoiseFootprintScale();
+
 	/** r.PlanetAtmosphere.LOD.* — validated (FullDetail > MinDetail > 0, fraction in [0.05, 1], light steps in [1, 16]). */
 	FScreenLODSettings GetScreenLODSettings();
 }

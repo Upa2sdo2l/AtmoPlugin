@@ -36,6 +36,13 @@ int JitterMode;              // 0 = off, 1 = static, 2 = animated (View.StateFra
 int EmptySpaceSkipSpan;      // 0 = off; otherwise steps covered by one coarse probe in empty space
 float MinTransmittance;      // the ray stops when the transmittance drops below this
 
+// Density LOD (Step 12): noise octaves fade at NoiseFootprintScale x the pixel footprint. With < 1, detail smaller
+// than a pixel is kept and point-sampled; the per-frame sub-pixel jitter of the TSR projection
+// (FViewMatrices::HackAddTemporalAAProjectionJitter) moves the sample inside the pixel, so temporal accumulation
+// averages it — an unbiased pixel average instead of "average noise -> nonlinear thresholds" (clouds of distant
+// planets no longer vanish or turn into haze). 1 = Phase 1 behaviour.
+float NoiseFootprintScale;
+
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
 {
@@ -197,6 +204,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	{
 		return;
 	}
+	// Footprint used for noise LOD only (density + light march). See NoiseFootprintScale.
+	Ray.FootprintPerUnitDistance *= NoiseFootprintScale;
 
 	FPACloudMarchState State;
 	State.Accum = 0.0;

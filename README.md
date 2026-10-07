@@ -66,6 +66,7 @@ The actor's scale is ignored — radii are absolute.
 | `r.PlanetAtmosphere.EmptySpaceSkip` | 0 | Coarse probes over N steps in clear air (2..8); off by default — loses thin clouds |
 | `r.PlanetAtmosphere.MinTransmittance` | 0.01 | The view ray stops below this transmittance |
 | `r.PlanetAtmosphere.NoiseSource` | 1 | 0 = procedural Phase 1 noise (reference / fallback), 1 = baked 3D textures |
+| `r.PlanetAtmosphere.NoiseFootprintScale` | 0.125 | Density LOD: noise octaves fade at this fraction of the pixel footprint; sub-pixel detail is averaged by TSR over frames, so distant planets keep their clouds. 1 = Phase 1 (distant clouds fade out) |
 | `r.PlanetAtmosphere.LOD` | 1 | Screen-space LOD: fewer raymarch / light steps for atmospheres small on screen |
 | `r.PlanetAtmosphere.LOD.FullDetailRadius` | 400 | Radius on screen (px, render resolution) from which full detail is used |
 | `r.PlanetAtmosphere.LOD.MinDetailRadius` | 50 | Radius at and below which minimum detail is used (log2 interpolation in between) |
@@ -107,6 +108,9 @@ Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` /
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 2 — Step 12: density LOD that keeps the cloud cover of distant planets**
+- Noise octaves fade at 1/8 of the pixel footprint; TSR's per-frame sub-pixel jitter + accumulation average the detail
 
 **Phase 2 — Step 11: screen-space LOD, Phase 2 final profiling**
 - Raymarch and light-march steps scale with the atmosphere's radius on screen (full detail from 400 px)

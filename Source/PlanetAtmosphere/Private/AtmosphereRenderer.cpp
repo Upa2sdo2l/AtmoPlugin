@@ -329,6 +329,7 @@ namespace PlanetAtmosphere
 			Parameters->ErosionNoiseTexture = NoiseTextures.Erosion;
 			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 			Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
+			Parameters->NoiseFootprintScale = CVars::GetNoiseFootprintScale();
 
 			TShaderMapRef<FAtmosphereCloudRaymarchCS> ComputeShader(GlobalShaderMap);
 			FComputeShaderUtils::AddPass(

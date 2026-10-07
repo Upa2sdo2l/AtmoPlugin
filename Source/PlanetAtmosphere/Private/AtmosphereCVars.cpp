@@ -111,6 +111,15 @@ namespace
 		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 R16F, baked once on the GPU"),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereNoiseFootprintScale(
+		TEXT("r.PlanetAtmosphere.NoiseFootprintScale"),
+		0.125f,
+		TEXT("Noise octaves fade at this fraction of the pixel footprint (density LOD, Step 12).\n")
+		TEXT("< 1: sub-pixel cloud detail is point-sampled and averaged over frames by TSR / temporal accumulation,\n")
+		TEXT("so distant planets keep their cloud cover (unbiased). Costs a little more far away and shimmers more while\n")
+		TEXT("the camera moves (until Phase 3 temporal). 1 = Phase 1 behaviour (clouds of distant planets fade out). Clamped to [0.01, 1]."),
+		ECVF_RenderThreadSafe);
+
 	// ---- Screen-space LOD (Phase 2 / Step 11) ----
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLOD(
@@ -231,6 +240,11 @@ namespace PlanetAtmosphere::CVars
 		return CVarPlanetAtmosphereNoiseSource.GetValueOnAnyThread(false) == 0
 			? ENoiseSource::Procedural
 			: ENoiseSource::BakedTextures;
+	}
+
+	float GetNoiseFootprintScale()
+	{
+		return FMath::Clamp(CVarPlanetAtmosphereNoiseFootprintScale.GetValueOnAnyThread(false), 0.01f, 1.0f);
 	}
 
 	FScreenLODSettings GetScreenLODSettings()

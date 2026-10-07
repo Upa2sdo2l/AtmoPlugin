@@ -99,6 +99,8 @@ public:
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, ErosionNoiseTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, NoiseSampler)
 		SHADER_PARAMETER(int32, NoiseSource)
+		// Density LOD (Phase 2 / Step 12): multiplier of the pixel footprint used for noise octave fading.
+		SHADER_PARAMETER(float, NoiseFootprintScale)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
