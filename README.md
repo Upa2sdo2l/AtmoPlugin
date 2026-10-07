@@ -193,8 +193,8 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 ## Current Status
 
 **Phase 3 — Step 19: interleaved 3×3 rendering**
-- The raymarch traces one pixel per N × N block per frame (ordered-dither order; even N shift the order every cycle so
-  every pixel meets all TSR sub-pixel jitter phases); the temporal pass reconstructs the full image: bilinear of the block
+- The raymarch traces one pixel per N × N block per frame (ordered-dither order rotated by a pseudo-random amount every
+  cycle, so every pixel meets the TSR sub-pixel jitter phases whatever the engine's jitter sequence length); the temporal pass reconstructs the full image: bilinear of the block
   samples as the current frame, reprojection data of the nearest sample, new-frame weight × exp(−d²/2·0.5²) by the
   distance to it, clamp to the 3×3 block samples with a motion-adaptive gamma (8 static → 1.25 from 0.5 px of motion)
 - Prototype: raymarch cost ~1/9; static scenes converge to the Step 18 quality (≈1.5 s instead of 0.3 s); in motion the

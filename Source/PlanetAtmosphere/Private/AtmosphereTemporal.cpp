@@ -32,9 +32,15 @@ namespace
 	FIntPoint TemporalInterleaveOffset(int32 Factor, uint32 Counter)
 	{
 		const int32 NumCells = Factor * Factor;
-		// Even N: the cycle (4 / 16 frames) would always meet the same phases of the 8-frame TSR sub-pixel jitter; shifting
-		// the order by one every cycle makes every pixel visit all jitter phases (prototype: 2x2 "salt" 17.5 -> 12.4 %).
-		const uint32 Rank = (Factor % 2 == 0) ? (Counter + Counter / NumCells) % NumCells : Counter % NumCells;
+		// The order is rotated by a pseudo-random amount every cycle. A fixed order revisits a pixel every N^2 frames, so
+		// if the engine's TAA / TSR jitter sequence length is a multiple of N^2 the pixel always gets the same sub-pixel
+		// jitter phase(s) and the "salt" is never averaged (UE test: 3x3 sparkled on a far planet, 2x2 did not; TSR scales
+		// its sample count with the upscale factor, e.g. 9 or 18). With the hashed rotation every pixel meets most phases of
+		// any sequence length (simulated for lengths 8..32 and N = 2..4).
+		const uint32 Cycle = Counter / static_cast<uint32>(NumCells);
+		uint32 Shift = Cycle * 0x9E3779B1u;
+		Shift ^= Shift >> 16;
+		const uint32 Rank = (Counter % static_cast<uint32>(NumCells) + Shift) % static_cast<uint32>(NumCells);
 		const int32* Table = Factor == 2 ? TemporalDither2 : (Factor == 3 ? TemporalDither3 : TemporalDither4);
 		for (int32 Cell = 0; Cell < NumCells; ++Cell)
 		{
