@@ -131,6 +131,61 @@ namespace PlanetAtmosphere
 			OutParameters.MinTransmittance = CVars::GetMinTransmittance();
 		}
 
+		/**
+		 * Radius of the atmosphere top sphere on screen, in pixels of the view rect (render resolution).
+		 * Returns a huge value when the camera is inside the sphere (always full detail).
+		 * Double precision: distances can be thousands of km.
+		 */
+		double ComputeScreenRadiusPx(const FSceneView& View, const FIntRect& ViewRect, const FVector3d& CameraRelativeToPlanet, double AtmosphereTopRadius)
+		{
+			const double Distance = CameraRelativeToPlanet.Length();
+			if (Distance <= AtmosphereTopRadius * 1.0001)
+			{
+				return TNumericLimits<float>::Max();
+			}
+
+			// Projection: M[0][0] = horizontal scale (cot(half FOV) for perspective, 1 / half-width for orthographic);
+			// UE perspective matrices have M[3][3] = 0, orthographic ones M[3][3] = 1.
+			const FMatrix& Projection = View.ViewMatrices.GetProjectionMatrix();
+			const double HalfWidthPx = 0.5 * static_cast<double>(ViewRect.Width());
+			const bool bPerspective = Projection.M[3][3] < 0.5;
+			if (!bPerspective)
+			{
+				return AtmosphereTopRadius * Projection.M[0][0] * HalfWidthPx;
+			}
+
+			// Angular radius of a sphere seen from outside: sin(a) = R / d -> tan(a) = R / sqrt(d^2 - R^2).
+			const double TanAngularRadius = AtmosphereTopRadius / FMath::Sqrt(Distance * Distance - AtmosphereTopRadius * AtmosphereTopRadius);
+			return TanAngularRadius * Projection.M[0][0] * HalfWidthPx;
+		}
+
+		/**
+		 * Screen-space LOD (Phase 2 / Step 11, CPU prototype): detail is interpolated in log2(radius) between
+		 * MinDetailRadius (minimum) and FullDetailRadius (full RaymarchSteps / LightSteps).
+		 */
+		void ApplyScreenLOD(const CVars::FScreenLODSettings& LOD, double RadiusPx, int32 FullRaymarchSteps, int32 FullLightSteps,
+			int32& OutRaymarchSteps, int32& OutLightSteps)
+		{
+			OutRaymarchSteps = FullRaymarchSteps;
+			OutLightSteps = FullLightSteps;
+			if (!LOD.bEnabled || RadiusPx >= LOD.FullDetailRadiusPx)
+			{
+				return;
+			}
+
+			const double Detail = FMath::Clamp(
+				FMath::Log2(FMath::Max(RadiusPx, 1e-3) / LOD.MinDetailRadiusPx) / FMath::Log2(LOD.FullDetailRadiusPx / LOD.MinDetailRadiusPx),
+				0.0, 1.0);
+			const double StepFraction = FMath::Lerp(static_cast<double>(LOD.MinStepFraction), 1.0, Detail);
+			const int32 MinRaymarchSteps = FMath::Min(4, FullRaymarchSteps);
+			OutRaymarchSteps = FMath::Clamp(FMath::RoundToInt32(FullRaymarchSteps * StepFraction), MinRaymarchSteps, FullRaymarchSteps);
+
+			const int32 MinLightSteps = FMath::Min(LOD.MinLightSteps, FullLightSteps);
+			OutLightSteps = FMath::Clamp(
+				FMath::RoundToInt32(FMath::Lerp(static_cast<double>(MinLightSteps), static_cast<double>(FullLightSteps), Detail)),
+				MinLightSteps, FullLightSteps);
+		}
+
 		FVector4f ToAxis4f(const FVector3d& Axis)
 		{
 			return FVector4f(static_cast<float>(Axis.X), static_cast<float>(Axis.Y), static_cast<float>(Axis.Z), 0.0f);
@@ -139,10 +194,13 @@ namespace PlanetAtmosphere
 		/** Sorts near -> far, truncates to MaxVisible and packs. All large-number differences in double. */
 		void FillInstanceParameters(
 			const FSceneView& View,
+			const FIntRect& ViewRect,
 			TArray<FAtmosphereVisibleInstance>& Instances,
 			FAtmosphereInstanceParameters& OutParameters)
 		{
 			const FVector ViewOrigin = View.ViewMatrices.GetViewOrigin();
+			const CVars::FScreenLODSettings LOD = CVars::GetScreenLODSettings();
+			const int32 FullLightSteps = CVars::GetLightSteps();
 
 			// Near -> far by distance to the atmosphere top sphere (negative when the camera is inside).
 			Instances.Sort([&ViewOrigin](const FAtmosphereVisibleInstance& A, const FAtmosphereVisibleInstance& B)
@@ -178,6 +236,14 @@ namespace PlanetAtmosphere
 				const FVector3d CameraRelativeToPlanet = ViewOrigin - Instance.PlanetCenterWorld;
 				const double CameraAltitude = CameraRelativeToPlanet.Length() - R.Planet;
 
+				// Screen-space LOD (Step 11).
+				const double RadiusPx = ComputeScreenRadiusPx(View, ViewRect, CameraRelativeToPlanet, R.AtmosphereTop);
+				int32 RaymarchSteps = Instance.RaymarchSteps;
+				int32 LightSteps = FullLightSteps;
+				ApplyScreenLOD(LOD, RadiusPx, Instance.RaymarchSteps, FullLightSteps, RaymarchSteps, LightSteps);
+				UE_LOG(LogPlanetAtmosphere, VeryVerbose, TEXT("Atmosphere %d: screen radius %.0f px -> raymarch steps %d / %d, light steps %d / %d"),
+					Index, RadiusPx, RaymarchSteps, Instance.RaymarchSteps, LightSteps, FullLightSteps);
+
 				const double ExtinctionPerCm =
 					static_cast<double>(Instance.CloudDensity) * BaseCloudExtinctionPerMeter / MetersToUnrealUnits;
 
@@ -196,8 +262,8 @@ namespace PlanetAtmosphere
 					static_cast<float>(Instance.CloudShapeScaleUU));
 				OutParameters.AtmosphereData3[Index] = FVector4f(
 					Instance.CloudErosion,
-					static_cast<float>(Instance.RaymarchSteps),
-					0.0f,
+					static_cast<float>(RaymarchSteps),
+					static_cast<float>(LightSteps),
 					0.0f);
 				OutParameters.AtmosphereAxisX[Index] = ToAxis4f(Instance.PlanetAxisX);
 				OutParameters.AtmosphereAxisY[Index] = ToAxis4f(Instance.PlanetAxisY);
@@ -230,7 +296,7 @@ namespace PlanetAtmosphere
 		{
 			FAtmosphereBoundsDebugCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereBoundsDebugCS::FParameters>();
 			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
-			FillInstanceParameters(View, Instances, Parameters->AtmosphereParams);
+			FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
 			Parameters->DebugIntensity = CVars::GetDebugIntensity();
 
 			TShaderMapRef<FAtmosphereBoundsDebugCS> ComputeShader(GlobalShaderMap);
@@ -254,7 +320,7 @@ namespace PlanetAtmosphere
 			FAtmosphereCloudRaymarchCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudRaymarchCS::FParameters>();
 			Parameters->View = View.ViewUniformBuffer;
 			FillViewParameters(GraphBuilder, View, Setup, Parameters->ViewParams);
-			FillInstanceParameters(View, Instances, Parameters->AtmosphereParams);
+			FillInstanceParameters(View, Setup.ViewRect, Instances, Parameters->AtmosphereParams);
 			Parameters->DebugMode = static_cast<int32>(DebugMode);
 			Parameters->bDrawPlanetSurface = CVars::ShouldDrawPlanetSurface() ? 1 : 0;
 			FillLightingParameters(Sun, *Parameters);
