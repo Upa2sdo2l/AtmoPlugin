@@ -75,4 +75,16 @@ namespace PlanetAtmosphere::CVars
 
 	/** r.PlanetAtmosphere.MinTransmittance — the ray stops below this transmittance, clamped to [0, 0.2]. */
 	float GetMinTransmittance();
+
+	// ---- Noise (Phase 2 / Step 10) ----
+
+	/** Values of r.PlanetAtmosphere.NoiseSource. */
+	enum class ENoiseSource : int32
+	{
+		Procedural = 0,   // Phase 1 PA_Fbm: reference and fallback
+		BakedTextures = 1,
+	};
+
+	/** r.PlanetAtmosphere.NoiseSource — base-shape / erosion noise source. */
+	ENoiseSource GetNoiseSource();
 }

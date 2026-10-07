@@ -21,12 +21,14 @@ PlanetAtmosphere/
 │   └── Private/
 │       ├── AtmosphereRenderer.*             RDG pass setup (camera-relative data, dispatch)
 │       ├── AtmosphereShaders.*              global shader classes
+│       ├── AtmosphereNoiseTextures.*        shared baked 3D noise textures (FRenderResource, baked once on the GPU)
 │       ├── AtmosphereStats.h                CPU stat group (`stat PlanetAtmosphere`)
 │       └── AtmosphereCVars.*                r.PlanetAtmosphere.* console variables
 └── Shaders/Private/
     ├── PlanetAtmosphereCommon.ush           precision-safe ray/sphere math, compositing helpers
     ├── PlanetAtmosphereShaderData.ush       shared view/atmosphere parameters, per-pixel ray setup
-    ├── PlanetAtmosphereNoise.ush            noise primitives (Phase 1: procedural)
+    ├── PlanetAtmosphereNoise.ush            noise: procedural (Phase 1) and baked-texture sampling, periodic fBm
+    ├── NoiseBake.usf                        bakes one mip of a tileable 3D noise texture
     ├── CloudDensity.ush                     SINGLE SOURCE OF TRUTH for cloud density (see below)
     ├── CloudLighting.ush                    phase function, light march toward the sun, planet shadow
     ├── RaymarchSchedule.ush                 where the samples go along a ray: uniform / camera-centered steps, jitter
@@ -63,6 +65,7 @@ The actor's scale is ignored — radii are absolute.
 | `r.PlanetAtmosphere.Jitter` | 2 | 0 = off (banding), 1 = static per-pixel pattern, 2 = animated per frame (averaged by TSR while still) |
 | `r.PlanetAtmosphere.EmptySpaceSkip` | 0 | Coarse probes over N steps in clear air (2..8); off by default — loses thin clouds |
 | `r.PlanetAtmosphere.MinTransmittance` | 0.01 | The view ray stops below this transmittance |
+| `r.PlanetAtmosphere.NoiseSource` | 1 | 0 = procedural Phase 1 noise (reference / fallback), 1 = baked 3D textures |
 
 ## Sun
 
@@ -84,6 +87,14 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
 - Per-frame log: `log LogPlanetAtmosphere Verbose`.
 
+## Noise textures
+
+Base shape (128³, 5 mips) and erosion (64³, 4 mips) noise are tileable 3D R16F textures, 5 392 384 bytes of texel
+data in total. They are baked once on the GPU on first use (`PlanetAtmosphere.BakeNoise` passes; the log prints the
+actual allocation), shared by all worlds and planets, and released at module shutdown. Every mip holds the noise
+with the octaves that survive one texel of footprint, so the mip level replaces the per-octave fade of the
+procedural noise. The weather mask stays procedural (planet-unique). `NoiseSource 0` restores the Phase 1 noise.
+
 ## Single source of truth for cloud density
 
 `Shaders/Private/CloudDensity.ush` is the only place where the cloud density formula exists.
@@ -91,6 +102,9 @@ Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` /
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 2 — Step 10: baked 3D noise textures**
+- Base-shape and erosion noise from shared baked textures (`NoiseSource 1`), procedural Phase 1 noise kept as `NoiseSource 0`
 
 **Phase 2 — Step 9: sample distribution, jitter, early exit**
 - Camera-centered step distribution (steps grow with distance, capped per ray), uniform kept as an option
@@ -103,7 +117,7 @@ Phase 1 (done): plugin + actor/component/world subsystem, multi-planet registry 
 precision-safe camera-relative math (Earth scale), analytical planet/atmosphere/cloud-shell intersections,
 analytical cloud density (single source of truth), raymarch, sun lighting with planet shadow, debug views, profiling.
 
-Next: Step 10 — baked 3D noise textures (density optimization), Step 11 — screen-space LOD.
+Next: Step 11 — screen-space LOD by the atmosphere's size on screen, Phase 2 final profiling.
 Then Phase 2.5 — atmospheric scattering (sky, limb glow, aerial perspective).
 
 ## Dependencies

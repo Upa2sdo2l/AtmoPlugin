@@ -5,6 +5,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #include "ShaderCore.h"
+#include "AtmosphereNoiseTextures.h"
 
 DEFINE_LOG_CATEGORY(LogPlanetAtmosphere);
 
@@ -24,6 +25,8 @@ void FPlanetAtmosphereModule::StartupModule()
 
 void FPlanetAtmosphereModule::ShutdownModule()
 {
+	// Shared GPU noise textures: released on the rendering thread before RHIExit() (see AtmosphereNoiseTextures.h).
+	PlanetAtmosphere::ReleaseNoiseTextures_GameThread();
 }
 
 IMPLEMENT_MODULE(FPlanetAtmosphereModule, PlanetAtmosphere)

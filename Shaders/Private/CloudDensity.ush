@@ -70,7 +70,7 @@ float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Al
 	}
 
 	// Base shape: inside covered regions the base noise still carves individual clouds.
-	const float Base = saturate(0.5 + 1.5 * PA_Fbm(PosPlanetLocal / Layer.ShapeScale, 4, Footprint / Layer.ShapeScale));
+	const float Base = saturate(0.5 + 1.5 * PA_SampleBaseShapeNoise(PosPlanetLocal / Layer.ShapeScale, Footprint / Layer.ShapeScale));
 	float Shape = saturate(PA_Remap(Base * HeightProfile, lerp(1.0, 0.35, CoverageMask), 1.0, 0.0, 1.0));
 	if (Shape <= 0.0)
 	{
@@ -79,7 +79,7 @@ float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Al
 
 	// Erosion: high-frequency noise eats into the edges.
 	const float ErosionScale = Layer.ShapeScale * 0.15;
-	const float ErosionNoise = saturate(0.5 + 1.5 * PA_Fbm(PosPlanetLocal / ErosionScale, 2, Footprint / ErosionScale));
+	const float ErosionNoise = saturate(0.5 + 1.5 * PA_SampleErosionNoise(PosPlanetLocal / ErosionScale, Footprint / ErosionScale));
 	Shape = saturate(PA_Remap(Shape, ErosionNoise * Layer.Erosion * 0.6, 1.0, 0.0, 1.0));
 
 	return Shape;

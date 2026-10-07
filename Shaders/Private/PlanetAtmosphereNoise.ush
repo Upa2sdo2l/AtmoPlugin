@@ -4,9 +4,13 @@
 
 // Noise primitives used by CloudDensity.ush.
 //
-// Phase 1: procedural, evaluated in the shader (no textures, no persistent resources).
-// Phase 2 replaces the implementation with baked 3D noise textures BEHIND THE SAME SIGNATURES,
-// so CloudDensity.ush (the single source of truth for density) does not change.
+// Two sources behind the same entry points (PA_SampleBaseShapeNoise / PA_SampleErosionNoise), chosen by
+// r.PlanetAtmosphere.NoiseSource:
+//   0 = procedural PA_Fbm, exactly the Phase 1 noise (reference and fallback, unchanged);
+//   1 = baked tileable 3D textures (Phase 2 / Step 10), generated once on the GPU by NoiseBake.usf from
+//       PA_FbmPeriodic below. Mip m holds the same noise with the octaves that survive a footprint of one
+//       mip-m texel, so SampleLevel(LOD = log2(footprint in texels)) replaces the per-octave fade of PA_Fbm.
+// CloudDensity.ush (the single source of truth for density) only calls the entry points.
 //
 // Value ranges (measured): PA_GradientNoise ~[-1, 1]; PA_Fbm has std ~0.19-0.23 (95% within +-0.33),
 // which CloudDensity.ush stretches to an approximately uniform [0, 1].
@@ -84,3 +88,109 @@ float PA_Fbm(float3 P, int Octaves, float FootprintInNoiseUnits)
 	}
 	return Sum / Norm;
 }
+
+// ---- Tileable (periodic) noise — content of the baked textures (Step 10) -----------------------
+//
+// The lattice of octave k wraps with period PA_NOISE_TILE * 2^k cells, i.e. every octave repeats after
+// PA_NOISE_TILE noise units. Lacunarity is exactly 2 (instead of 2.03) so that all octaves tile together;
+// integer per-octave offsets keep the lattice periodic. Same gradient hash, interpolation, x1.6 scale,
+// octave fade and normalization as PA_GradientNoise / PA_Fbm. Validated against the CPU prototype.
+
+#define PA_NOISE_TILE 4.0
+
+// Texture layout. Must match PlanetAtmosphere::NoiseTextures in AtmosphereNoiseTextures.h.
+#define PA_BASE_NOISE_SIZE 128       // texels per side of mip 0, covering PA_NOISE_TILE units
+#define PA_BASE_NOISE_OCTAVES 4
+#define PA_BASE_NOISE_MAX_MIP 4      // mips 0..4 (128..8); mip 4 = all octaves faded (zeros)
+#define PA_EROSION_NOISE_SIZE 64
+#define PA_EROSION_NOISE_OCTAVES 2
+#define PA_EROSION_NOISE_MAX_MIP 3   // mips 0..3 (64..8); mip 3 = zeros
+
+float PA_GradientNoisePeriodic(float3 P, int Period)
+{
+	const float3 CellF = floor(P);
+	const int3 Cell = int3(CellF);
+	const float3 F = P - CellF;
+	const float3 U = F * F * F * (F * (F * 6.0 - 15.0) + 10.0);
+
+	// P >= 0 for the bake (texel centers + positive offsets), so the cells are non-negative.
+	#define PA_PERIODIC_CORNER(O) dot(PA_LatticeGradient((Cell + int3 O) % Period), F - float3 O)
+	const float N000 = PA_PERIODIC_CORNER((0, 0, 0));
+	const float N100 = PA_PERIODIC_CORNER((1, 0, 0));
+	const float N010 = PA_PERIODIC_CORNER((0, 1, 0));
+	const float N110 = PA_PERIODIC_CORNER((1, 1, 0));
+	const float N001 = PA_PERIODIC_CORNER((0, 0, 1));
+	const float N101 = PA_PERIODIC_CORNER((1, 0, 1));
+	const float N011 = PA_PERIODIC_CORNER((0, 1, 1));
+	const float N111 = PA_PERIODIC_CORNER((1, 1, 1));
+	#undef PA_PERIODIC_CORNER
+
+	const float X00 = lerp(N000, N100, U.x);
+	const float X10 = lerp(N010, N110, U.x);
+	const float X01 = lerp(N001, N101, U.x);
+	const float X11 = lerp(N011, N111, U.x);
+	const float Y0 = lerp(X00, X10, U.y);
+	const float Y1 = lerp(X01, X11, U.y);
+	return lerp(Y0, Y1, U.z) * 1.6;
+}
+
+/** Periodic fBm (period PA_NOISE_TILE in P). FootprintInNoiseUnits fades octaves exactly like PA_Fbm. */
+float PA_FbmPeriodic(float3 P, int Octaves, float FootprintInNoiseUnits)
+{
+	float Sum = 0.0;
+	float Amplitude = 0.5;
+	float Norm = 0.0;
+	int Frequency = 1;
+	for (int Octave = 0; Octave < Octaves; ++Octave)
+	{
+		const float Weight = saturate(2.0 - 4.0 * FootprintInNoiseUnits * (float)Frequency);
+		if (Weight > 0.0)
+		{
+			const float3 OctaveP = P * (float)Frequency + 17.0 * (float)Octave;
+			Sum += Amplitude * Weight * PA_GradientNoisePeriodic(OctaveP, (int)PA_NOISE_TILE * Frequency);
+		}
+		Norm += Amplitude;
+		Amplitude *= 0.5;
+		Frequency *= 2;
+	}
+	return Sum / Norm;
+}
+
+// ---- Entry points used by CloudDensity.ush -----------------------------------------------------
+
+#ifndef PA_NOISE_BAKE_PASS   // the bake pass itself has no noise textures bound
+
+Texture3D<float> BaseNoiseTexture;      // PA_FbmPeriodic(4 octaves), PA_BASE_NOISE_SIZE^3, R16F, mips 0..PA_BASE_NOISE_MAX_MIP
+Texture3D<float> ErosionNoiseTexture;   // PA_FbmPeriodic(2 octaves), PA_EROSION_NOISE_SIZE^3, R16F, mips 0..PA_EROSION_NOISE_MAX_MIP
+SamplerState NoiseSampler;              // trilinear, wrap
+int NoiseSource;                        // 0 = procedural (Phase 1), 1 = baked textures
+
+/** P and Footprint in noise units. LOD = log2(footprint in mip-0 texels). */
+float PA_SampleNoiseTexture(Texture3D<float> Tex, float3 P, float FootprintInNoiseUnits, float Size, float MaxMip)
+{
+	const float TexelsPerUnit = Size / PA_NOISE_TILE;
+	const float Lod = clamp(log2(max(FootprintInNoiseUnits * TexelsPerUnit, 1e-6)), 0.0, MaxMip);
+	return Tex.SampleLevel(NoiseSampler, P / PA_NOISE_TILE, Lod);
+}
+
+/** Base cloud shape noise: 4-octave fBm, range and statistics of PA_Fbm(P, 4, Footprint). */
+float PA_SampleBaseShapeNoise(float3 P, float FootprintInNoiseUnits)
+{
+	if (NoiseSource != 0)
+	{
+		return PA_SampleNoiseTexture(BaseNoiseTexture, P, FootprintInNoiseUnits, PA_BASE_NOISE_SIZE, PA_BASE_NOISE_MAX_MIP);
+	}
+	return PA_Fbm(P, 4, FootprintInNoiseUnits);
+}
+
+/** Erosion noise: 2-octave fBm, range and statistics of PA_Fbm(P, 2, Footprint). */
+float PA_SampleErosionNoise(float3 P, float FootprintInNoiseUnits)
+{
+	if (NoiseSource != 0)
+	{
+		return PA_SampleNoiseTexture(ErosionNoiseTexture, P, FootprintInNoiseUnits, PA_EROSION_NOISE_SIZE, PA_EROSION_NOISE_MAX_MIP);
+	}
+	return PA_Fbm(P, 2, FootprintInNoiseUnits);
+}
+
+#endif // PA_NOISE_BAKE_PASS

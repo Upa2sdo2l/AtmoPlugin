@@ -94,5 +94,31 @@ public:
 		SHADER_PARAMETER(int32, JitterMode)
 		SHADER_PARAMETER(int32, EmptySpaceSkipSpan)
 		SHADER_PARAMETER(float, MinTransmittance)
+		// Noise (Phase 2 / Step 10). PlanetAtmosphereNoise.ush. Textures are bound for both sources.
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, BaseNoiseTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, ErosionNoiseTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, NoiseSampler)
+		SHADER_PARAMETER(int32, NoiseSource)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * Bakes one mip of a tileable 3D noise texture (Phase 2 / Step 10). Shaders/Private/NoiseBake.usf.
+ * Dispatched only when the shared noise textures are created (AtmosphereNoiseTextures.cpp).
+ */
+class FAtmosphereNoiseBakeCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereNoiseBakeCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereNoiseBakeCS, FGlobalShader);
+
+	/** Must match [numthreads(4, 4, 4)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 4;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float>, OutNoise)
+		SHADER_PARAMETER(int32, MipSize)
+		SHADER_PARAMETER(int32, Octaves)
+		SHADER_PARAMETER(float, TexelSize)
 	END_SHADER_PARAMETER_STRUCT()
 };
