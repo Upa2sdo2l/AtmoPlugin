@@ -20,9 +20,6 @@ namespace
 	/** Cascades of views not rendered for this many frames are freed (closed viewport, finished PIE session). */
 	constexpr uint32 CloudShadowMaxAgeFrames = 120;
 
-	/** The cascades are regenerated when the sun direction in the planet frame changes by more than 0.25 deg. */
-	constexpr double CloudShadowSunChangeCos = 0.99999048072;   // cos(0.25 deg)
-
 	/** Extent levels: S0 = MinExtent x 2^k. 2^30 x 1 km covers any planet. */
 	constexpr int32 CloudShadowMaxExtentLevel = 30;
 
@@ -98,23 +95,27 @@ namespace
 	TGlobalResource<FPlanetAtmosphereCloudShadows> GPlanetAtmosphereCloudShadows;
 }
 
-void FPlanetAtmosphereCloudShadows::FillParameters(const FViewEntry& Entry, int32 PlanetIndex, FAtmosphereCloudShadowParameters& OutParameters)
+void FPlanetAtmosphereCloudShadows::FillParameters(const FViewEntry& Entry, int32 PlanetIndex, float Blend, FAtmosphereCloudShadowParameters& OutParameters)
 {
 	using PlanetAtmosphere::CloudShadows::TileSize;
+	using PlanetAtmosphere::CloudShadows::NumCascades;
 	OutParameters.CloudShadowPlanet = PlanetIndex;
 	OutParameters.CloudShadowResolution = Entry.Resolution;
-	for (int32 Cascade = 0; Cascade < PlanetAtmosphere::CloudShadows::NumCascades; ++Cascade)
+	OutParameters.CloudShadowFrontBase = Entry.FrontSet * NumCascades;
+	OutParameters.CloudShadowBackBase = (1 - Entry.FrontSet) * NumCascades;
+	OutParameters.CloudShadowBlend = Blend;
+	for (int32 Slot = 0; Slot < PlanetAtmosphere::CloudShadows::NumSlots; ++Slot)
 	{
-		const FCascade& C = Entry.Cascades[Cascade];
+		const FCascade& C = Entry.Cascades[Slot];
 		const double Texel = FMath::Max(C.TexelSize, 1.0);
-		OutParameters.CloudShadowAxisU[Cascade] = FVector4f(
+		OutParameters.CloudShadowAxisU[Slot] = FVector4f(
 			static_cast<float>(C.AxisU.X), static_cast<float>(C.AxisU.Y), static_cast<float>(C.AxisU.Z), static_cast<float>(Texel));
-		OutParameters.CloudShadowAxisV[Cascade] = FVector4f(
+		OutParameters.CloudShadowAxisV[Slot] = FVector4f(
 			static_cast<float>(C.AxisV.X), static_cast<float>(C.AxisV.Y), static_cast<float>(C.AxisV.Z), static_cast<float>(1.0 / Texel));
-		OutParameters.CloudShadowSun[Cascade] = FVector4f(
+		OutParameters.CloudShadowSun[Slot] = FVector4f(
 			static_cast<float>(C.Sun.X), static_cast<float>(C.Sun.Y), static_cast<float>(C.Sun.Z), C.bConfigured ? 1.0f : 0.0f);
 		// Global texel indices stay far below 2^24 (exact in float): planet radius / smallest texel (1 km x 2 / 1024).
-		OutParameters.CloudShadowWindow[Cascade] = FVector4f(
+		OutParameters.CloudShadowWindow[Slot] = FVector4f(
 			static_cast<float>(C.OriginTileX * TileSize), static_cast<float>(C.OriginTileY * TileSize),
 			static_cast<float>(C.CameraWindowTexel.X), static_cast<float>(C.CameraWindowTexel.Y));
 	}
@@ -191,7 +192,9 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		{
 			return nullptr;
 		}
-		FillParameters(Entry, Index, OutParameters);
+		const float SameFrameBlend = (Entry.bBackActive && Entry.CrossfadeFrame > 0)
+			? static_cast<float>(Entry.CrossfadeFrame) / static_cast<float>(Entry.CrossfadeFrames + 1) : 0.0f;
+		FillParameters(Entry, Index, SameFrameBlend, OutParameters);
 		return GraphBuilder.RegisterExternalTexture(Entry.Atlas);
 	}
 	Entry.bUsed = true;
@@ -201,7 +204,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 	const int32 TilesPerSide = Res / TileSize;
 	const int32 TilesPerCascade = TilesPerSide * TilesPerSide;
 
-	// ---- Atlas (new on first use or after a resolution change: every cascade starts over) ----
+	// ---- Atlas (new on first use or after a resolution change: everything starts over) ----
 	FRDGTextureRef Atlas = nullptr;
 	const bool bNewAtlas = !Entry.Atlas.IsValid() || Entry.Resolution != Res;
 	if (bNewAtlas)
@@ -212,8 +215,15 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		{
 			Cascade = FCascade();
 		}
+		for (FCascadeSet& Set : Entry.Sets)
+		{
+			Set = FCascadeSet();
+		}
+		Entry.FrontSet = 0;
+		Entry.bBackActive = false;
+		Entry.CrossfadeFrame = 0;
 		Atlas = GraphBuilder.CreateTexture(
-			FRDGTextureDesc::Create2D(FIntPoint(Res, Res * NumCascades), PF_FloatRGBA, FClearValueBinding::Black,
+			FRDGTextureDesc::Create2D(FIntPoint(Res, Res * NumSlots), PF_FloatRGBA, FClearValueBinding::Black,
 				ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV),
 			TEXT("PlanetAtmosphere.CloudShadowAtlas"));
 	}
@@ -222,15 +232,15 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		Atlas = GraphBuilder.RegisterExternalTexture(Entry.Atlas);
 	}
 
-	// ---- What the content depends on: the planet, its cloud layer (bitwise, as packed for the shader), noise and
-	// generation settings. Any change regenerates every cascade. ----
+	// ---- What the content depends on: the planet, its cloud layer (bitwise, as packed for the shader), noise, generation
+	// and extent settings. Any change starts both sets over (there is nothing valid to keep showing). ----
 	FVector4f ContentKey[3];
 	ContentKey[0] = FVector4f(
 		InstanceParameters.AtmosphereData0[Index].W, InstanceParameters.AtmosphereData1[Index].W,
 		InstanceParameters.AtmosphereData2[Index].X, InstanceParameters.AtmosphereData2[Index].Y);
 	ContentKey[1] = FVector4f(
 		InstanceParameters.AtmosphereData2[Index].Z, InstanceParameters.AtmosphereData2[Index].W,
-		InstanceParameters.AtmosphereData3[Index].X, 0.0f);
+		InstanceParameters.AtmosphereData3[Index].X, static_cast<float>(Settings.MinExtentCm));
 	ContentKey[2] = FVector4f(
 		static_cast<float>(static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource())), PlanetAtmosphere::CVars::GetNoiseFootprintScale(),
 		static_cast<float>(Settings.GenerationSteps), 0.0f);
@@ -245,6 +255,13 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		{
 			Cascade.bConfigured = false;
 		}
+		for (FCascadeSet& Set : Entry.Sets)
+		{
+			Set = FCascadeSet();
+		}
+		Entry.FrontSet = 0;
+		Entry.bBackActive = false;
+		Entry.CrossfadeFrame = 0;
 		Entry.bHasPlanet = true;
 		Entry.PlanetId = Planet.PlanetId;
 		FMemory::Memcpy(Entry.ContentKey, ContentKey, sizeof(ContentKey));
@@ -258,65 +275,125 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 
 	// Extent level k: cascade 0 half-size S0 = MinExtent x 2^k, the smallest k with S0 >= height above the clouds, but no
 	// larger than needed for cascade 2 (16 S0) to cover the planet (far away the whole planet is in view: finer texels
-	// instead of cascades many times its size). The current level is kept while it is at most one above the needed one
-	// (no regeneration back and forth around a threshold).
+	// instead of cascades many times its size). A set keeps its level while it is at most one above the needed one
+	// (no rebuilds back and forth around a threshold).
 	const double TargetHalfSize = FMath::Min(HeightAboveClouds, Radii.CloudTop / 16.0);
 	int32 NeededLevel = 0;
 	while (NeededLevel < CloudShadowMaxExtentLevel && Settings.MinExtentCm * FMath::Pow(2.0, static_cast<double>(NeededLevel)) < TargetHalfSize)
 	{
 		++NeededLevel;
 	}
-	if (Entry.ExtentLevel < NeededLevel || Entry.ExtentLevel > NeededLevel + 1)
-	{
-		UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("Cloud shadows of view %u: extent level %d -> %d (camera %.1f km above the clouds)"),
-			ViewKey, Entry.ExtentLevel, NeededLevel, HeightAboveClouds * 1e-5);
-		Entry.ExtentLevel = NeededLevel;
-	}
-	const double HalfSize0 = Settings.MinExtentCm * FMath::Pow(2.0, static_cast<double>(Entry.ExtentLevel));
 
-	// Window centre: the sub-camera point on the middle of the cloud layer.
-	const FVector3d CenterPoint = CameraLocal.GetSafeNormal() * (0.5 * (Radii.CloudBottom + Radii.CloudTop));
-
-	// ---- Per cascade: configuration, window, tile ownership ----
+	// ---- Sets: configure the front on first use; otherwise start a background rebuild of the back set when the sun moved
+	// or the level left its range; finish a crossfade by swapping. ----
 	int32 ClearMask = 0;
-	TArray<FVector4f> InvalidateTiles;
-	int64 CenterTileX[NumCascades];
-	int64 CenterTileY[NumCascades];
-	for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
+	const auto ConfigureSet = [&](int32 SetIndex, int32 Level, const TCHAR* Reason)
 	{
-		FCascade& C = Entry.Cascades[CascadeIndex];
-		const double Texel = 2.0 * HalfSize0 * FMath::Pow(4.0, static_cast<double>(CascadeIndex)) / static_cast<double>(Res);
-		const bool bReconfigure = !C.bConfigured || C.TexelSize != Texel || C.State.Num() != TilesPerCascade
-			|| FVector3d::DotProduct(C.Sun, SunLocal) < CloudShadowSunChangeCos;
-		if (bReconfigure)
+		FCascadeSet& Set = Entry.Sets[SetIndex];
+		Set.bConfigured = true;
+		Set.ExtentLevel = Level;
+		const double HalfSize0 = Settings.MinExtentCm * FMath::Pow(2.0, static_cast<double>(Level));
+		for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
 		{
-			// Should be rare (camera height crossing a level, sun turned, parameter edit): repeated lines with a static
-			// camera mean the cascades never finish (diagnostic for the UE test).
-			UE_LOG(LogPlanetAtmosphere, Log, TEXT("Cloud shadows of view %u, frame %u: cascade %d regenerated (%s), texel %.1f m"),
-				ViewKey, FrameNumber, CascadeIndex,
-				!C.bConfigured ? (bNewAtlas ? TEXT("new atlas") : TEXT("planet / cloud parameters / settings / extent level"))
-					: (C.TexelSize != Texel ? TEXT("texel size")
-					: (C.State.Num() != TilesPerCascade ? TEXT("resolution") : TEXT("sun direction"))),
-				Texel * 1e-2);
+			const int32 Slot = SetIndex * NumCascades + CascadeIndex;
+			FCascade& C = Entry.Cascades[Slot];
+			C = FCascade();
 			C.bConfigured = true;
-			C.TexelSize = Texel;
+			C.TexelSize = 2.0 * HalfSize0 * FMath::Pow(4.0, static_cast<double>(CascadeIndex)) / static_cast<double>(Res);
 			C.Sun = SunLocal;
 			CloudShadowMakeAxes(SunLocal, C.AxisU, C.AxisV);
 			C.HeldTileX.Init(TNumericLimits<int64>::Max(), TilesPerCascade);
 			C.HeldTileY.Init(TNumericLimits<int64>::Max(), TilesPerCascade);
 			C.State.Init(ETileState::Invalid, TilesPerCascade);
 			C.GeneratedFrame.Init(0, TilesPerCascade);
-			ClearMask |= 1 << CascadeIndex;
+			ClearMask |= 1 << Slot;
 		}
+		// A first configuration or a level change should be rare (repeated lines with a static camera = the cascades never
+		// finish: diagnostic for the UE test); sun rebuilds are routine with a moving sun (Verbose).
+		if (FCString::Strcmp(Reason, TEXT("sun direction")) == 0)
+		{
+			UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("Cloud shadows of view %u, frame %u: set %d rebuilt (%s), level %d, texel %.1f m"),
+				ViewKey, FrameNumber, SetIndex, Reason, Level, Entry.Cascades[SetIndex * NumCascades].TexelSize * 1e-2);
+		}
+		else
+		{
+			UE_LOG(LogPlanetAtmosphere, Log, TEXT("Cloud shadows of view %u, frame %u: set %d %s (%s), level %d, texel %.1f m"),
+				ViewKey, FrameNumber, SetIndex, SetIndex == Entry.FrontSet ? TEXT("configured") : TEXT("rebuilt"), Reason, Level,
+				Entry.Cascades[SetIndex * NumCascades].TexelSize * 1e-2);
+		}
+	};
+
+	if (Entry.bBackActive && Entry.CrossfadeFrame > 0)
+	{
+		++Entry.CrossfadeFrame;
+		if (Entry.CrossfadeFrame > Entry.CrossfadeFrames)
+		{
+			// Swap: the back set lights the image from now on; the old front set is free for the next rebuild.
+			const int32 OldFront = Entry.FrontSet;
+			Entry.FrontSet = 1 - OldFront;
+			Entry.Sets[OldFront] = FCascadeSet();
+			for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
+			{
+				Entry.Cascades[OldFront * NumCascades + CascadeIndex].bConfigured = false;
+			}
+			Entry.bBackActive = false;
+			Entry.CrossfadeFrame = 0;
+			UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("Cloud shadows of view %u, frame %u: set %d now in front"), ViewKey, FrameNumber, Entry.FrontSet);
+		}
+	}
+
+	const int32 BackSet = 1 - Entry.FrontSet;
+	const FCascadeSet& Front = Entry.Sets[Entry.FrontSet];
+	if (!Front.bConfigured)
+	{
+		ConfigureSet(Entry.FrontSet, NeededLevel, bNewAtlas ? TEXT("new atlas") : TEXT("planet / cloud parameters / settings"));
+		Entry.bBackActive = false;
+		Entry.CrossfadeFrame = 0;
+	}
+	else if (!Entry.bBackActive)
+	{
+		const FVector3d& FrontSun = Entry.Cascades[Entry.FrontSet * NumCascades].Sun;
+		const double RebuildCos = FMath::Cos(FMath::DegreesToRadians(static_cast<double>(Settings.SunRebuildAngleDeg)));
+		const bool bSunMoved = FVector3d::DotProduct(FrontSun, SunLocal) < RebuildCos;
+		const bool bLevelOutOfRange = Front.ExtentLevel < NeededLevel || Front.ExtentLevel > NeededLevel + 1;
+		if (bSunMoved || bLevelOutOfRange)
+		{
+			ConfigureSet(BackSet, bLevelOutOfRange ? NeededLevel : Front.ExtentLevel, bLevelOutOfRange ? TEXT("extent level") : TEXT("sun direction"));
+			Entry.bBackActive = true;
+			Entry.CrossfadeFrame = 0;
+		}
+	}
+
+	// Window centre: the sub-camera point on the middle of the cloud layer.
+	const FVector3d CenterPoint = CameraLocal.GetSafeNormal() * (0.5 * (Radii.CloudBottom + Radii.CloudTop));
+
+	// ---- Per slot of the active sets: window, tile ownership ----
+	bool bSlotActive[NumSlots] = {};
+	for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
+	{
+		bSlotActive[Entry.FrontSet * NumCascades + CascadeIndex] = Entry.Cascades[Entry.FrontSet * NumCascades + CascadeIndex].bConfigured;
+		bSlotActive[BackSet * NumCascades + CascadeIndex] = Entry.bBackActive && Entry.Cascades[BackSet * NumCascades + CascadeIndex].bConfigured;
+	}
+	TArray<FVector4f> InvalidateTiles;
+	int64 CenterTileX[NumSlots] = {};
+	int64 CenterTileY[NumSlots] = {};
+	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
+	{
+		if (!bSlotActive[Slot])
+		{
+			continue;
+		}
+		FCascade& C = Entry.Cascades[Slot];
+		const double Texel = C.TexelSize;
 
 		// Window snapped to whole tiles around the sub-camera point.
 		const double TileWorld = static_cast<double>(TileSize) * Texel;
 		const double CenterU = FVector3d::DotProduct(CenterPoint, C.AxisU);
 		const double CenterV = FVector3d::DotProduct(CenterPoint, C.AxisV);
-		CenterTileX[CascadeIndex] = static_cast<int64>(FMath::RoundToDouble(CenterU / TileWorld));
-		CenterTileY[CascadeIndex] = static_cast<int64>(FMath::RoundToDouble(CenterV / TileWorld));
-		C.OriginTileX = CenterTileX[CascadeIndex] - TilesPerSide / 2;
-		C.OriginTileY = CenterTileY[CascadeIndex] - TilesPerSide / 2;
+		CenterTileX[Slot] = static_cast<int64>(FMath::RoundToDouble(CenterU / TileWorld));
+		CenterTileY[Slot] = static_cast<int64>(FMath::RoundToDouble(CenterV / TileWorld));
+		C.OriginTileX = CenterTileX[Slot] - TilesPerSide / 2;
+		C.OriginTileY = CenterTileY[Slot] - TilesPerSide / 2;
 		C.CameraWindowTexel = FVector2d(
 			CenterU / Texel - static_cast<double>(C.OriginTileX * TileSize),
 			CenterV / Texel - static_cast<double>(C.OriginTileY * TileSize));
@@ -343,72 +420,116 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		}
 	}
 
-	// ---- Generation queue: nearest to the window centre first, round-robin over the cascades ----
+	// ---- Generation queue: the front set first (its new tiles are what the image misses), then the back set; within a
+	// set nearest to the window centre first, round-robin over the cascades ----
 	struct FCandidate
 	{
 		int32 Tile;
 		int64 Distance2;
 	};
-	TArray<FCandidate> Candidates[NumCascades];
-	int32 NumPending[NumCascades];
-	for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
+	TArray<FCandidate> Candidates[NumSlots];
+	int32 NumPending[NumSlots] = {};
+	int32 Next[NumSlots] = {};
+	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
 	{
-		const FCascade& C = Entry.Cascades[CascadeIndex];
+		if (!bSlotActive[Slot])
+		{
+			continue;
+		}
+		const FCascade& C = Entry.Cascades[Slot];
 		for (int32 Tile = 0; Tile < TilesPerCascade; ++Tile)
 		{
 			if (C.State[Tile] != ETileState::Valid)
 			{
-				const int64 DX = C.HeldTileX[Tile] - CenterTileX[CascadeIndex];
-				const int64 DY = C.HeldTileY[Tile] - CenterTileY[CascadeIndex];
-				Candidates[CascadeIndex].Add({ Tile, DX * DX + DY * DY });
+				const int64 DX = C.HeldTileX[Tile] - CenterTileX[Slot];
+				const int64 DY = C.HeldTileY[Tile] - CenterTileY[Slot];
+				Candidates[Slot].Add({ Tile, DX * DX + DY * DY });
 			}
 		}
-		Candidates[CascadeIndex].Sort([](const FCandidate& A, const FCandidate& B) { return A.Distance2 < B.Distance2; });
-		NumPending[CascadeIndex] = Candidates[CascadeIndex].Num();
+		Candidates[Slot].Sort([](const FCandidate& A, const FCandidate& B) { return A.Distance2 < B.Distance2; });
+		NumPending[Slot] = Candidates[Slot].Num();
 	}
 
 	TArray<FVector4f> GenerateTiles;
-	int32 Next[NumCascades] = {};
 	const uint32 FirstCascade = Entry.RoundRobin++;
-	while (GenerateTiles.Num() < Settings.UpdateBudgetTiles)
+	for (const int32 SetIndex : { Entry.FrontSet, BackSet })
 	{
-		bool bAny = false;
-		for (int32 Offset = 0; Offset < NumCascades && GenerateTiles.Num() < Settings.UpdateBudgetTiles; ++Offset)
+		while (GenerateTiles.Num() < Settings.UpdateBudgetTiles)
 		{
-			const int32 CascadeIndex = static_cast<int32>((FirstCascade + static_cast<uint32>(Offset)) % NumCascades);
-			if (Next[CascadeIndex] < Candidates[CascadeIndex].Num())
+			bool bAny = false;
+			for (int32 Offset = 0; Offset < NumCascades && GenerateTiles.Num() < Settings.UpdateBudgetTiles; ++Offset)
 			{
-				FCascade& C = Entry.Cascades[CascadeIndex];
-				const int32 Tile = Candidates[CascadeIndex][Next[CascadeIndex]++].Tile;
-				C.State[Tile] = ETileState::Valid;
-				C.GeneratedFrame[Tile] = FrameNumber;
-				GenerateTiles.Add(FVector4f(static_cast<float>(C.HeldTileX[Tile]), static_cast<float>(C.HeldTileY[Tile]),
-					static_cast<float>(CascadeIndex), 1.0f));
-				bAny = true;
+				const int32 Slot = SetIndex * NumCascades + static_cast<int32>((FirstCascade + static_cast<uint32>(Offset)) % NumCascades);
+				if (Next[Slot] < Candidates[Slot].Num())
+				{
+					FCascade& C = Entry.Cascades[Slot];
+					const int32 Tile = Candidates[Slot][Next[Slot]++].Tile;
+					C.State[Tile] = ETileState::Valid;
+					C.GeneratedFrame[Tile] = FrameNumber;
+					GenerateTiles.Add(FVector4f(static_cast<float>(C.HeldTileX[Tile]), static_cast<float>(C.HeldTileY[Tile]),
+						static_cast<float>(Slot), 1.0f));
+					bAny = true;
+				}
 			}
-		}
-		if (!bAny)
-		{
-			break;
+			if (!bAny)
+			{
+				break;
+			}
 		}
 	}
 
 	// Stale tiles not regenerated this frame: invalidated on the GPU (writes only, outside the generation budget).
-	for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
+	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
 	{
-		FCascade& C = Entry.Cascades[CascadeIndex];
+		if (!bSlotActive[Slot])
+		{
+			continue;
+		}
+		FCascade& C = Entry.Cascades[Slot];
 		for (int32 Tile = 0; Tile < TilesPerCascade; ++Tile)
 		{
 			if (C.State[Tile] == ETileState::Stale)
 			{
 				C.State[Tile] = ETileState::Invalid;
 				InvalidateTiles.Add(FVector4f(static_cast<float>(C.HeldTileX[Tile]), static_cast<float>(C.HeldTileY[Tile]),
-					static_cast<float>(CascadeIndex), 0.0f));
+					static_cast<float>(Slot), 0.0f));
 			}
 		}
 	}
 
-	FillParameters(Entry, Index, OutParameters);
+	// The back set is complete (every tile generated, at the latest in this frame's passes): the crossfade starts in this
+	// frame. CrossfadeFrames 0 = swap at once.
+	if (Entry.bBackActive && Entry.CrossfadeFrame == 0)
+	{
+		bool bComplete = true;
+		for (int32 CascadeIndex = 0; CascadeIndex < NumCascades && bComplete; ++CascadeIndex)
+		{
+			const int32 Slot = BackSet * NumCascades + CascadeIndex;
+			bComplete = Next[Slot] >= NumPending[Slot];
+		}
+		if (bComplete)
+		{
+			Entry.CrossfadeFrames = Settings.CrossfadeFrames;
+			Entry.CrossfadeFrame = 1;
+			if (Entry.CrossfadeFrames == 0)
+			{
+				// Swap now: the back set (generated in this graph) lights this frame.
+				const int32 OldFront = Entry.FrontSet;
+				Entry.FrontSet = BackSet;
+				Entry.Sets[OldFront] = FCascadeSet();
+				for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
+				{
+					Entry.Cascades[OldFront * NumCascades + CascadeIndex].bConfigured = false;
+				}
+				Entry.bBackActive = false;
+				Entry.CrossfadeFrame = 0;
+			}
+		}
+	}
+
+	const float Blend = (Entry.bBackActive && Entry.CrossfadeFrame > 0)
+		? static_cast<float>(Entry.CrossfadeFrame) / static_cast<float>(Entry.CrossfadeFrames + 1) : 0.0f;
+	FillParameters(Entry, Index, Blend, OutParameters);
 
 	// ---- Passes: whole-cascade clears, tile invalidations, then generation (RDG keeps this order: same UAV) ----
 	if (ClearMask != 0 || InvalidateTiles.Num() > 0 || GenerateTiles.Num() > 0)
@@ -427,7 +548,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 				RDG_EVENT_NAME("PlanetAtmosphere.CloudShadowClear mask %d", ClearMask),
 				ClearShader,
 				ClearParameters,
-				FComputeShaderUtils::GetGroupCount(FIntPoint(Res, Res * NumCascades), FAtmosphereCloudShadowClearCS::ThreadGroupSize));
+				FComputeShaderUtils::GetGroupCount(FIntPoint(Res, Res * NumSlots), FAtmosphereCloudShadowClearCS::ThreadGroupSize));
 		}
 		CloudShadowAddTilePasses(GraphBuilder, GlobalShaderMap, InstanceParameters, OutParameters, Inputs, Settings.GenerationSteps,
 			Atlas, InvalidateTiles, TEXT("Invalidate"));
@@ -435,11 +556,16 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 			Atlas, GenerateTiles, TEXT("Generate"));
 
 		UE_LOG(LogPlanetAtmosphere, Verbose,
-			TEXT("Cloud shadows of view %u, frame %u: generated %d tiles, invalidated %d tiles + cascade mask %d, pending %d / %d / %d (budget %d), ")
-			TEXT("cascade 0 half-size %.1f km, texel %.1f m"),
+			TEXT("Cloud shadows of view %u, frame %u: generated %d tiles, invalidated %d tiles + slot mask %d, pending front %d / %d / %d, ")
+			TEXT("back %d / %d / %d (budget %d), front set %d texel %.1f m, crossfade %.2f"),
 			ViewKey, FrameNumber, GenerateTiles.Num(), InvalidateTiles.Num(), ClearMask,
-			NumPending[0] - Next[0], NumPending[1] - Next[1], NumPending[2] - Next[2], Settings.UpdateBudgetTiles,
-			HalfSize0 * 1e-5, Entry.Cascades[0].TexelSize * 1e-2);
+			NumPending[Entry.FrontSet * NumCascades] - Next[Entry.FrontSet * NumCascades],
+			NumPending[Entry.FrontSet * NumCascades + 1] - Next[Entry.FrontSet * NumCascades + 1],
+			NumPending[Entry.FrontSet * NumCascades + 2] - Next[Entry.FrontSet * NumCascades + 2],
+			NumPending[BackSet * NumCascades] - Next[BackSet * NumCascades],
+			NumPending[BackSet * NumCascades + 1] - Next[BackSet * NumCascades + 1],
+			NumPending[BackSet * NumCascades + 2] - Next[BackSet * NumCascades + 2],
+			Settings.UpdateBudgetTiles, Entry.FrontSet, Entry.Cascades[Entry.FrontSet * NumCascades].TexelSize * 1e-2, Blend);
 	}
 
 	if (bNewAtlas)
@@ -447,7 +573,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		// Immediate allocation + external: the atlas outlives this graph, its first passes are cull roots.
 		Entry.Atlas = GraphBuilder.ConvertToExternalTexture(Atlas);
 		UE_LOG(LogPlanetAtmosphere, Log, TEXT("Cloud shadows of view %u: atlas %d x %d RGBA16F (%u bytes) [ComputeMemorySize], %d tiles per cascade"),
-			ViewKey, Res, Res * NumCascades, Entry.Atlas.IsValid() ? Entry.Atlas->ComputeMemorySize() : 0u, TilesPerCascade);
+			ViewKey, Res, Res * NumSlots, Entry.Atlas.IsValid() ? Entry.Atlas->ComputeMemorySize() : 0u, TilesPerCascade);
 	}
 	return Atlas;
 }
@@ -484,13 +610,16 @@ namespace PlanetAtmosphere::CloudShadows
 	{
 		OutParameters.CloudShadowPlanet = -1;
 		OutParameters.CloudShadowResolution = 0;
+		OutParameters.CloudShadowFrontBase = 0;
+		OutParameters.CloudShadowBackBase = NumCascades;
+		OutParameters.CloudShadowBlend = 0.0f;
 		const FVector4f Zero(0.0f, 0.0f, 0.0f, 0.0f);
-		for (int32 Cascade = 0; Cascade < NumCascades; ++Cascade)
+		for (int32 Slot = 0; Slot < NumSlots; ++Slot)
 		{
-			OutParameters.CloudShadowAxisU[Cascade] = Zero;
-			OutParameters.CloudShadowAxisV[Cascade] = Zero;
-			OutParameters.CloudShadowSun[Cascade] = Zero;
-			OutParameters.CloudShadowWindow[Cascade] = Zero;
+			OutParameters.CloudShadowAxisU[Slot] = Zero;
+			OutParameters.CloudShadowAxisV[Slot] = Zero;
+			OutParameters.CloudShadowSun[Slot] = Zero;
+			OutParameters.CloudShadowWindow[Slot] = Zero;
 		}
 	}
 

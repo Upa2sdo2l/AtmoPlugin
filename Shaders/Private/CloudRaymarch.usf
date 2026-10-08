@@ -94,6 +94,7 @@ int CloudShadowSurfaceSteps;       // r.PlanetAtmosphere.CloudShadows.SurfaceMar
 int CloudShadowSurfaceMaxSteps;    // r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps (>= SurfaceSteps)
 float CloudShadowSurfaceMaxStep;   // r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep, in units of the planet's CloudShapeScale
 float CloudShadowSurfaceMaxTexel;  // r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel, in units of the planet's CloudShapeScale
+int CloudShadowSurfaceJitter;      // r.PlanetAtmosphere.CloudShadows.SurfaceMarchJitter: 1 = jittered samples, 0 = step centres
 
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
@@ -227,24 +228,43 @@ float PA_SurfaceCloudShadow(FPAAtmosphere A, FPACloudLayer Layer, int Index, flo
 	{
 		return 1.0;   // exactly no clouds (CloudDensity.ush)
 	}
-	float MarchWeight = 1.0;
-	float CascadeTransmittance = -1.0;
+	// Step 25: front set, during a crossfade also the back set (each with its own march weight); the march runs once if
+	// either needs it.
+	float FrontWeight = 1.0;
+	float BackWeight = 1.0;
+	float FrontTransmittance = -1.0;
+	float BackTransmittance = -1.0;
+	const bool bCrossfade = Index == CloudShadowPlanet && CloudShadowBlend > 0.0;
 	if (Index == CloudShadowPlanet)
 	{
-		bool bMissing;
-		CascadeTransmittance = PA_CloudShadowSurfaceTransmittance(CloudShadowAtlas, PA_ToPlanetLocal(A, P), A.PlanetRadius,
-			A.CloudBottom, A.CloudTop, CloudShadowSurfaceMaxTexel * Layer.ShapeScale, MarchWeight, bMissing);
-		State.SurfaceShadowMissing = bMissing ? 1u : 0u;
+		const float3 PLocal = PA_ToPlanetLocal(A, P);
+		const float MaxTexel = CloudShadowSurfaceMaxTexel * Layer.ShapeScale;
+		bool bFrontMissing;
+		FrontTransmittance = PA_CloudShadowSurfaceTransmittance(CloudShadowAtlas, CloudShadowFrontBase, PLocal, A.PlanetRadius,
+			A.CloudBottom, A.CloudTop, MaxTexel, FrontWeight, bFrontMissing);
+		State.SurfaceShadowMissing = bFrontMissing ? 1u : 0u;
+		if (bCrossfade)
+		{
+			bool bBackMissing;
+			BackTransmittance = PA_CloudShadowSurfaceTransmittance(CloudShadowAtlas, CloudShadowBackBase, PLocal, A.PlanetRadius,
+				A.CloudBottom, A.CloudTop, MaxTexel, BackWeight, bBackMissing);
+		}
 	}
-	State.SurfaceShadowMarchWeight = MarchWeight;
-	if (MarchWeight <= 0.0)
+	State.SurfaceShadowMarchWeight = bCrossfade ? lerp(FrontWeight, BackWeight, CloudShadowBlend) : FrontWeight;
+	float MarchTransmittance = 1.0;
+	if (FrontWeight > 0.0 || (bCrossfade && BackWeight > 0.0))
 	{
-		return CascadeTransmittance;
+		MarchTransmittance = exp(-PA_CloudLayerCrossingOpticalDepth(
+			A, Layer, P, 0.0, Sun, T * Ray.FootprintPerUnitDistance, CloudShadowSurfaceSteps, CloudShadowSurfaceMaxSteps,
+			CloudShadowSurfaceMaxStep * Layer.ShapeScale, CloudShadowSurfaceJitter != 0 ? Jitter : 0.5, State.DensitySamples));
 	}
-	const float MarchTransmittance = exp(-PA_CloudLayerCrossingOpticalDepth(
-		A, Layer, P, 0.0, Sun, T * Ray.FootprintPerUnitDistance, CloudShadowSurfaceSteps, CloudShadowSurfaceMaxSteps,
-		CloudShadowSurfaceMaxStep * Layer.ShapeScale, Jitter, State.DensitySamples));
-	return MarchWeight >= 1.0 ? MarchTransmittance : lerp(CascadeTransmittance, MarchTransmittance, MarchWeight);
+	const float Front = FrontWeight >= 1.0 ? MarchTransmittance : lerp(FrontTransmittance, MarchTransmittance, FrontWeight);
+	if (!bCrossfade)
+	{
+		return Front;
+	}
+	const float Back = BackWeight >= 1.0 ? MarchTransmittance : lerp(BackTransmittance, MarchTransmittance, BackWeight);
+	return lerp(Front, Back, CloudShadowBlend);
 }
 
 /** Integrates one step: sample at T representing the step width Dt. Returns the density of the sample. */
@@ -745,9 +765,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		if (DebugMode >= 9 && DebugMode <= 11)
 		{
 			const int Cascade = DebugMode - 9;
+			const int Slot = CloudShadowFrontBase + Cascade;   // Step 25: the set in use (front)
 			const int2 LocalPixel = int2(Ray.Pixel) - int2(ViewRectMinAndSize.xy);
 			const int Res = CloudShadowResolution;
-			if (CloudShadowPlanet < 0 || CloudShadowSun[Cascade].w < 0.5)
+			if (CloudShadowPlanet < 0 || CloudShadowSun[Slot].w < 0.5)
 			{
 				if (all(LocalPixel < 24))
 				{
@@ -762,8 +783,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				const int2 WindowTexel = int2(LocalPixel.x, Res / Scale - 1 - LocalPixel.y) * Scale;   // +V up
 				if (all(LocalPixel < Res / Scale) && all(WindowTexel >= 0) && all(WindowTexel < Res))
 				{
-					const int2 GlobalTexel = int2(CloudShadowWindow[Cascade].xy) + WindowTexel;
-					const float4 Texel = CloudShadowAtlas.Load(int3(PA_ShadowStorageTexel(Cascade, GlobalTexel), 0));
+					const int2 GlobalTexel = int2(CloudShadowWindow[Slot].xy) + WindowTexel;
+					const float4 Texel = CloudShadowAtlas.Load(int3(PA_ShadowStorageTexel(Slot, GlobalTexel), 0));
 					Transmittance = 0.0;
 					if (Texel.a < 0.5)
 					{
@@ -773,7 +794,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 					{
 						Luminance = lerp(float3(0.02, 0.04, 0.15), float3(1.0, 1.0, 1.0), exp(-Texel.b));
 					}
-					const float2 ToCamera = float2(WindowTexel) - CloudShadowWindow[Cascade].zw;
+					const float2 ToCamera = float2(WindowTexel) - CloudShadowWindow[Slot].zw;
 					const float Ring = abs(length(ToCamera) - 6.0 * (float)Scale);
 					if (Ring < (float)Scale)
 					{

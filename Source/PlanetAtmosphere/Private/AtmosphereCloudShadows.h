@@ -17,6 +17,10 @@ class FSceneView;
 namespace PlanetAtmosphere::CloudShadows
 {
 	constexpr int32 NumCascades = PLANET_ATMOSPHERE_SHADOW_CASCADES;
+	/** Step 25: front set (lighting) + back set (rebuilt, then crossfaded in); slot = set x NumCascades + cascade. */
+	constexpr int32 NumSets = 2;
+	constexpr int32 NumSlots = PLANET_ATMOSPHERE_SHADOW_SLOTS;
+	static_assert(NumSlots == NumSets * NumCascades, "PLANET_ATMOSPHERE_SHADOW_SLOTS must be 2 x the cascades");
 	/** Texels per tile side = the update granularity. Must match PA_SHADOW_TILE (CloudShadowCommon.ush). */
 	constexpr int32 TileSize = 32;
 	constexpr int32 MaxTilesPerPass = PLANET_ATMOSPHERE_SHADOW_MAX_TILES_PER_PASS;
@@ -43,11 +47,19 @@ struct FAtmosphereCloudShadowInputs
  *    so that cascade 2 just covers the planet (hysteresis of one level), Res x Res texels; window centred on the sub-camera point, snapped to whole tiles (no shimmer: a texel
  *    always covers the same piece of the planet). Storage is toroidal, so a moving window only invalidates the tiles that
  *    left it.
- *  - Atlas Res x 3 Res RGBA16F (Beer Shadow Map: front, back, optical depth, valid), created on first use
- *    (CreateTexture + ConvertToExternalTexture, like the LUT pools) and registered in later graphs.
+ *  - Atlas Res x 6 Res RGBA16F (Beer Shadow Map: front, back, optical depth, valid; two sets of 3 cascades), created on
+ *    first use (CreateTexture + ConvertToExternalTexture, like the LUT pools) and registered in later graphs.
+ *  - Step 25 (AD-28), double buffering: the FRONT set lights the image. When the sun direction in the planet frame moves
+ *    by more than r.PlanetAtmosphere.CloudShadows.SunRebuildAngle or the extent level leaves its hysteresis range, the
+ *    BACK set is configured for the new state and generated in the background (after the front's own new tiles); when it
+ *    is complete the image crossfades to it over CrossfadeFrames, then the sets swap. No fallback march and no image jump
+ *    at a rebuild (prototype p25: a rebuild without it brightened low-sun clouds by 2-20 % for ~24 frames; the swap
+ *    itself changes the image by 0.4-5 %, the crossfade spreads that). Planet / cloud parameter / resolution changes
+ *    still start over (nothing valid to show).
  *  - CPU state per storage tile: which global tile it holds and whether it is valid. A tile that changes owner is
- *    invalidated on the GPU (alpha 0, cheap) unless it is regenerated in the same frame; a configuration change (planet, sun
- *    beyond 0.25 deg, extent level, resolution, cloud parameters, noise / generation settings) clears the whole cascade.
+ *    invalidated on the GPU (alpha 0, cheap) unless it is regenerated in the same frame. A new sun direction / extent level
+ *    rebuilds the back set (see Step 25 below); planet, resolution, cloud parameters, noise / generation / extent settings
+ *    start both sets over.
  *  - Generation: r.PlanetAtmosphere.CloudShadows.UpdateBudget tiles per frame, round-robin over the cascades, nearest to
  *    the window centre first. Invalid texels are never used: the raymarch falls back to its light march there (Step 23),
  *    so a new region costs quality for a moment, never a hitch.
@@ -104,6 +116,12 @@ private:
 		TArray<uint32> GeneratedFrame;
 	};
 
+	struct FCascadeSet
+	{
+		bool bConfigured = false;
+		int32 ExtentLevel = -1;
+	};
+
 	struct FViewEntry
 	{
 		TRefCountPtr<IPooledRenderTarget> Atlas;
@@ -111,14 +129,20 @@ private:
 		bool bHasPlanet = false;
 		uint32 PlanetId = 0;
 		FVector4f ContentKey[3];
-		int32 ExtentLevel = -1;
 		uint32 RoundRobin = 0;
 		uint32 LastUsedFrame = 0;
 		bool bUsed = false;
-		FCascade Cascades[PlanetAtmosphere::CloudShadows::NumCascades];
+		// Step 25: slot = set x NumCascades + cascade.
+		FCascade Cascades[PlanetAtmosphere::CloudShadows::NumSlots];
+		FCascadeSet Sets[PlanetAtmosphere::CloudShadows::NumSets];
+		int32 FrontSet = 0;
+		bool bBackActive = false;     // the back set is configured and being generated / crossfaded in
+		int32 CrossfadeFrame = 0;     // > 0: crossfading front -> back, weight CrossfadeFrame / (CrossfadeFrames + 1)
+		int32 CrossfadeFrames = 0;    // length of the current crossfade
 	};
 
-	static void FillParameters(const FViewEntry& Entry, int32 PlanetIndex, FAtmosphereCloudShadowParameters& OutParameters);
+	/** Blend = weight of the back set during a crossfade (0 = front only). */
+	static void FillParameters(const FViewEntry& Entry, int32 PlanetIndex, float Blend, FAtmosphereCloudShadowParameters& OutParameters);
 
 	/**
 	 * Primary planet of the view: the largest on screen (camera inside = largest; ties -> the nearer one) among the planets
