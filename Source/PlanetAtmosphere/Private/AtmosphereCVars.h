@@ -167,8 +167,12 @@ namespace PlanetAtmosphere::CVars
 		bool bLighting = true;           // the cascades light the primary planet's clouds (hybrid); false = full light march
 		int32 LocalMarchSteps = 3;       // samples of the short local march, [1, 8]
 		double LocalMarchLengthCm = 1.0e5;   // its length (cm), from the CVar in km
+		// Step 25
+		float SunRebuildAngleDeg = 0.1f; // sun movement in the planet frame that starts a background rebuild, [0.01, 10]
+		int32 CrossfadeFrames = 16;      // frames of the crossfade to the rebuilt set, [0, 120]
 		// Step 24
 		bool bSurface = true;            // cloud shadows on the placeholder surface
+		bool bSurfaceMarchJitter = true; // per-pixel animated jitter of the surface march samples
 		int32 SurfaceMarchSteps = 12;    // minimum samples of the march through the cloud layer from a surface point, [1, 64]
 		int32 SurfaceMarchMaxSteps = 48; // maximum samples (long low-sun paths), [SurfaceMarchSteps, 128]
 		float SurfaceMarchMaxStep = 0.125f;  // longest step, in units of CloudShapeScale, [0, 4]; 0 = always SurfaceMarchSteps

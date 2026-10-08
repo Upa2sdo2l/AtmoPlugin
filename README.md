@@ -124,12 +124,15 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudShadows.Lighting` | 1 | Sunlight on the primary planet's clouds = short local march × cascades (Step 23); 0 = the full light march everywhere (A/B) |
 | `r.PlanetAtmosphere.CloudShadows.LocalMarchSteps` | 3 | Samples of the local march toward the sun (1 = fast, 2 = compromise, 3 = default, up to 8); reduced for distant samples by `r.PlanetAtmosphere.LightLOD` |
 | `r.PlanetAtmosphere.CloudShadows.LocalMarchLength` | 1.0 | Length of the local march, km (0.1..20) |
+| `r.PlanetAtmosphere.CloudShadows.SunRebuildAngle` | 0.1 | Sun movement in the planet frame (degrees; time of day, planet rotation) after which the second set of cascades is built in the background and crossfaded in (Step 25). Shadows lag the sun by at most this angle |
+| `r.PlanetAtmosphere.CloudShadows.CrossfadeFrames` | 16 | Frames of the crossfade to the rebuilt set (0 = switch at once) |
 | `r.PlanetAtmosphere.CloudShadows.Surface` | 1 | Cloud shadows on the direct sunlight of the placeholder surface (Step 24); 0 = off (A/B). Scene geometry is not shadowed |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps` | 12 | Minimum samples of the march from a surface point through the cloud layer toward the sun, where the cascades are too coarse (from high up / orbit) and on planets without cascades (1..64; prototype worst-case error 8 → 7.4, 12 → 3.5, 16 → 2.4) |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep` | 0.125 | Longest step of that march, × `CloudShapeScale` (1 km at 8 km): long low-sun paths get more steps, otherwise the shadows turn into too-bright "ladders" (sun 8°: 12 fixed steps 9.5, ≤ 1 km steps 0.8). 0 = always `SurfaceMarchSteps` |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps` | 48 | Upper limit of those steps |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchJitter` | 1 | Per-pixel animated jitter of those samples (0 = step centres, A/B) |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel` | 0.0625 | Coarsest cascade texel used on the surface, × the planet's `CloudShapeScale` (1/16 = 500 m at 8 km); coarser → march. 0 = always march |
-| `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 3 Res RGBA16F, 6 MB per view at 512 |
+| `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 6 Res RGBA16F (two sets of 3 cascades, Step 25), 12 MB per view at 512 |
 | `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |
 | `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 32 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades: RTX 3050 frame peaks 8 → 0.11 ms, 16 → 0.14 ms, 32 → 0.23 ms; 32 fills all cascades in 24 frames |
 | `r.PlanetAtmosphere.CloudShadows.MinExtent` | 8 | Half-size of cascade 0 near the cloud layer, km; grows with the camera height in powers of two; cascade i = × 4^i |
@@ -205,14 +208,19 @@ shader recompile (`recompileshaders`): toggle `r.PlanetAtmosphere.Atmosphere.Lut
 
 Per view, 3 cloud shadow cascades of the **primary planet** (the one largest on screen; the camera inside an atmosphere
 wins; the previous one is kept until another is 1.25× larger, since a switch regenerates the cascades). Each cascade is a sun-aligned orthographic grid in the planet-local frame, a window of Res × Res texels around
-the point under the camera, snapped to 32-texel tiles (no shimmering), stored toroidally in one Res × 3 Res RGBA16F atlas
+the point under the camera, snapped to 32-texel tiles (no shimmering), stored toroidally in one Res × 6 Res RGBA16F atlas (two sets, see below)
 (Beer Shadow Map: front and back of the cloud matter along the texel's ray through the cloud shell, optical depth of the
 shell, valid flag). Half-size of cascade 0 = `MinExtent` × 2^k, the first power of two above the camera height over the
 clouds (at most what lets cascade 2 cover the whole planet); cascade i = × 4^i. Tiles are generated progressively (`UpdateBudget` per frame, nearest to the camera first,
 round-robin over the cascades) and kept across frames: a static camera costs nothing, a moving one only the tiles that
-enter the window. A change of planet, sun direction (> 0.25° in the planet frame), extent level, resolution, cloud
-parameters or noise settings regenerates the cascades; tiles not generated yet are marked invalid (the light march is
-used there, so new regions never cause a hitch). Planet rotation is not considered until Phase 6.
+enter the window. Tiles not generated yet are marked invalid (the light march is used there, so new regions never cause
+a hitch).
+Step 25 — two sets: the **front** set lights the image. When the sun direction in the planet frame (time of day, planet
+rotation) has moved by more than `SunRebuildAngle`, or the camera height leaves the extent level's range, the **back** set
+is built for the new state in the background (after the front's own new tiles) and, once complete, crossfaded in over
+`CrossfadeFrames`; then the sets swap. So a rebuild never drops to the light march (which made low-sun clouds 2–20 %
+brighter for ~24 frames) and the swap itself (0.4–5 % image change from the rotated texel grid) is spread over the
+crossfade. A change of planet, resolution, cloud parameters, noise or extent settings starts both sets over.
 Log: `Cloud shadows of view N: atlas …` on creation; per frame (Verbose) generated / invalidated / pending tiles.
 
 Surface (Step 24): the direct sunlight of the placeholder surface is multiplied by the cloud transmittance of its sun
@@ -229,6 +237,14 @@ Raymarch, debug views and the cloud shadow cascades call `PA_SampleCloudDensity(
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 4 — Step 25: stability of the cloud shadows**
+- Prototype p25: shimmer while the camera moves is negligible (fixed points: mean frame-to-frame change 0.00–0.04,
+  p99 0); the problem was the rebuild on a sun change (> 0.25°): ~24 frames of the light march, low-sun clouds 2–20 %
+  brighter, every ~15 s with a 6-hour day
+- Double-buffered cascades with a crossfade (above); rebuild angle 0.25° → 0.1° (shadows near the ground lag the sun by
+  at most that: surface error +0.0–0.4); `CloudShadows.SunRebuildAngle`, `.CrossfadeFrames`, `.SurfaceMarchJitter`
+- One primary planet per view kept (user decision): other planets use the marches
 
 **Phase 4 — Step 24: cloud shadows on the planet surface**
 - Placeholder surface: direct sun × cloud transmittance; cascades near the camera, a march through the cloud layer where

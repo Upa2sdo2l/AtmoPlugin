@@ -407,6 +407,7 @@ namespace PlanetAtmosphere
 			// MaxStep 0 = fixed SurfaceMarchSteps: the max step count is then the min one.
 			Parameters->CloudShadowSurfaceMaxSteps = ShadowSettings.SurfaceMarchMaxStep > 0.0f ? ShadowSettings.SurfaceMarchMaxSteps : ShadowSettings.SurfaceMarchSteps;
 			Parameters->CloudShadowSurfaceMaxStep = ShadowSettings.SurfaceMarchMaxStep;
+			Parameters->CloudShadowSurfaceJitter = ShadowSettings.bSurfaceMarchJitter ? 1 : 0;
 			Parameters->CloudShadowSurfaceMaxTexel = ShadowSettings.SurfaceMaxTexel;
 		}
 

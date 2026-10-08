@@ -332,6 +332,22 @@ namespace
 		TEXT("Length of the local march in km (Step 21 prototype: 1 km; longer with few steps is worse). Clamped to [0.1, 20]."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSunRebuildAngle(
+		TEXT("r.PlanetAtmosphere.CloudShadows.SunRebuildAngle"),
+		0.1f,
+		TEXT("Phase 4 / Step 25: when the sun direction in the planet frame (time of day, planet rotation) has moved by more than\n")
+		TEXT("this many degrees since the cascades in use were built, a second set is built in the background and crossfaded in.\n")
+		TEXT("Until then shadows lag the sun by up to this angle (prototype, surface error x 100 near the ground: 0.25 deg +0.0..0.9,\n")
+		TEXT("1 deg +1.2..3.3). A 6-hour day: a rebuild every ~6 s at 0.1 deg. Clamped to [0.01, 10]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsCrossfadeFrames(
+		TEXT("r.PlanetAtmosphere.CloudShadows.CrossfadeFrames"),
+		16,
+		TEXT("Frames over which the image moves from the cascades in use to the freshly rebuilt set (Step 25). A rebuild changes\n")
+		TEXT("the image by 0.4-5 % (rotated texel grid, prototype p25); the crossfade spreads that. 0 = switch at once. Clamped to [0, 120]."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsSurface(
 		TEXT("r.PlanetAtmosphere.CloudShadows.Surface"),
 		1,
@@ -357,6 +373,14 @@ namespace
 		TEXT("steps = path through the layer / this, within [SurfaceMarchSteps, SurfaceMarchMaxSteps]. Longer steps at low sun\n")
 		TEXT("make \"ladder\" shadows that are too bright (prototype, sun 8 deg: 12 fixed steps 9.5, 1 km steps 0.8). 0 = always\n")
 		TEXT("SurfaceMarchSteps. Clamped to [0, 4]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsSurfaceMarchJitter(
+		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMarchJitter"),
+		1,
+		TEXT("Per-pixel animated jitter of the surface march samples (Step 24 fix): turns what is left of the step pattern into\n")
+		TEXT("noise that the temporal accumulation averages (prototype: frame noise 2-3 x 100 |dT| before accumulation).\n")
+		TEXT("1 = on (default), 0 = samples at the step centres (A/B)."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxSteps(
@@ -553,7 +577,10 @@ namespace PlanetAtmosphere::CVars
 		Settings.bLighting = CVarPlanetAtmosphereCloudShadowsLighting.GetValueOnAnyThread(false) != 0;
 		Settings.LocalMarchSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsLocalMarchSteps.GetValueOnAnyThread(false), 1, 8);
 		Settings.LocalMarchLengthCm = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereCloudShadowsLocalMarchLength.GetValueOnAnyThread(false)), 0.1, 20.0) * 1.0e5;
+		Settings.SunRebuildAngleDeg = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSunRebuildAngle.GetValueOnAnyThread(false), 0.01f, 10.0f);
+		Settings.CrossfadeFrames = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsCrossfadeFrames.GetValueOnAnyThread(false), 0, 120);
 		Settings.bSurface = CVarPlanetAtmosphereCloudShadowsSurface.GetValueOnAnyThread(false) != 0;
+		Settings.bSurfaceMarchJitter = CVarPlanetAtmosphereCloudShadowsSurfaceMarchJitter.GetValueOnAnyThread(false) != 0;
 		Settings.SurfaceMarchSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchSteps.GetValueOnAnyThread(false), 1, 64);
 		Settings.SurfaceMarchMaxSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxSteps.GetValueOnAnyThread(false), Settings.SurfaceMarchSteps, 128);
 		Settings.SurfaceMarchMaxStep = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxStep.GetValueOnAnyThread(false), 0.0f, 4.0f);

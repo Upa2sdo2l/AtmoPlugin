@@ -58,6 +58,12 @@ END_SHADER_PARAMETER_STRUCT()
 /** Cloud shadow cascades (Phase 4). Must match PA_SHADOW_CASCADES (Shaders/Private/CloudShadowCommon.ush). */
 #define PLANET_ATMOSPHERE_SHADOW_CASCADES 3
 
+/**
+ * Step 25: two sets of cascades (front = used for lighting, back = rebuilt for a new sun direction / extent level, then
+ * crossfaded in) -> 6 cascade slots in the atlas, slot = set x 3 + cascade. Must match PA_SHADOW_SLOTS.
+ */
+#define PLANET_ATMOSPHERE_SHADOW_SLOTS 6
+
 /** Tiles of cascade texels written by one FAtmosphereCloudShadowGenerateCS dispatch. = PA_SHADOW_MAX_TILES_PER_PASS. */
 #define PLANET_ATMOSPHERE_SHADOW_MAX_TILES_PER_PASS 64
 
@@ -70,16 +76,21 @@ END_SHADER_PARAMETER_STRUCT()
 BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereCloudShadowParameters, )
 	// Index of the primary planet in the atmosphere arrays (FAtmosphereInstanceParameters); -1 = no cascades this frame.
 	SHADER_PARAMETER(int32, CloudShadowPlanet)
-	// Texels per cascade side (multiple of the 32-texel tile); cascade c = rows [c * Res, (c + 1) * Res) of the atlas.
+	// Texels per cascade side (multiple of the 32-texel tile); slot s = rows [s * Res, (s + 1) * Res) of the atlas.
 	SHADER_PARAMETER(int32, CloudShadowResolution)
-	// xyz = light-plane axis U (unit), w = texel size (cm)
-	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowAxisU, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+	// Step 25: first slot of the front set (lighting) and of the back set; weight of the back set during a crossfade
+	// (0 = front only).
+	SHADER_PARAMETER(int32, CloudShadowFrontBase)
+	SHADER_PARAMETER(int32, CloudShadowBackBase)
+	SHADER_PARAMETER(float, CloudShadowBlend)
+	// Per slot: xyz = light-plane axis U (unit), w = texel size (cm)
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowAxisU, [PLANET_ATMOSPHERE_SHADOW_SLOTS])
 	// xyz = light-plane axis V (unit), w = 1 / texel size
-	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowAxisV, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowAxisV, [PLANET_ATMOSPHERE_SHADOW_SLOTS])
 	// xyz = direction toward the sun this cascade was built for (unit), w = 1 if the cascade is configured
-	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowSun, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowSun, [PLANET_ATMOSPHERE_SHADOW_SLOTS])
 	// xy = global texel index of the window's first texel, zw = sub-camera point in window texels (debug view)
-	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowWindow, [PLANET_ATMOSPHERE_SHADOW_CASCADES])
+	SHADER_PARAMETER_ARRAY(FVector4f, CloudShadowWindow, [PLANET_ATMOSPHERE_SHADOW_SLOTS])
 END_SHADER_PARAMETER_STRUCT()
 
 /** r.PlanetAtmosphere.DebugMode 1 — analytical planet / atmosphere / cloud shells. Shaders/Private/AtmosphereBoundsDebug.usf */
@@ -179,6 +190,7 @@ public:
 		SHADER_PARAMETER(int32, CloudShadowSurfaceSteps)
 		SHADER_PARAMETER(int32, CloudShadowSurfaceMaxSteps)
 		SHADER_PARAMETER(float, CloudShadowSurfaceMaxStep)
+		SHADER_PARAMETER(int32, CloudShadowSurfaceJitter)
 		SHADER_PARAMETER(float, CloudShadowSurfaceMaxTexel)
 	END_SHADER_PARAMETER_STRUCT()
 };
@@ -202,7 +214,7 @@ public:
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereCloudShadowParameters, CloudShadowParams)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutShadowAtlas)
-		// xy = global tile index (32 x 32 texels), z = cascade, w = 1 generate / 0 invalidate
+		// xy = global tile index (32 x 32 texels), z = slot (set x 3 + cascade), w = 1 generate / 0 invalidate
 		SHADER_PARAMETER_ARRAY(FVector4f, ShadowTiles, [PLANET_ATMOSPHERE_SHADOW_MAX_TILES_PER_PASS])
 		SHADER_PARAMETER(int32, NumShadowTiles)
 		SHADER_PARAMETER(int32, ShadowGenerationSteps)
@@ -217,8 +229,8 @@ public:
 };
 
 /**
- * Invalidates whole cascades of the atlas (alpha 0): new atlas, or a cascade whose configuration changed.
- * Shaders/Private/CloudShadowGenerate.usf, entry ClearCS. Dispatch: Res x (3 Res) threads.
+ * Invalidates whole cascade slots of the atlas (alpha 0): new atlas, or a set whose configuration changed.
+ * Shaders/Private/CloudShadowGenerate.usf, entry ClearCS. Dispatch: Res x (6 Res) threads.
  */
 class FAtmosphereCloudShadowClearCS : public FGlobalShader
 {
@@ -232,7 +244,7 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutShadowAtlas)
 		SHADER_PARAMETER(int32, ShadowAtlasResolution)
-		// bit c = clear cascade c
+		// bit s = clear slot s
 		SHADER_PARAMETER(int32, ClearCascadeMask)
 	END_SHADER_PARAMETER_STRUCT()
 };

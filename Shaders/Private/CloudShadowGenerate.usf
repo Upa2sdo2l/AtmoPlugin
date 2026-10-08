@@ -2,7 +2,7 @@
 
 // Phase 4 / Step 22 — cloud shadow cascades of the primary planet (Beer Shadow Map, see CloudShadowCommon.ush).
 //
-// GenerateCS: one 32 x 32 tile of cascade texels per group z (tile list from AtmosphereCloudShadows.cpp). Mode 1: per
+// GenerateCS: one 32 x 32 tile of cascade texels per group z (z = slot of either set, Step 25) (tile list from AtmosphereCloudShadows.cpp). Mode 1: per
 //   texel, GenerationSteps uniform samples along the cloud-shell segment of the texel ray (from the sun side), density
 //   ONLY from PA_SampleCloudDensity (AD-1) with the noise octaves faded at NoiseFootprintScale x the texel size (Step 21
 //   prototype: 1/4 texel; a footprint of the step length loses clouds, AD-14). Writes
@@ -11,7 +11,7 @@
 //     b = optical depth of the segment (stops at PA_SHADOW_MAX_OPTICAL_DEPTH)
 //     a = 1 (valid)
 //   Mode 0: invalidates the tile (alpha 0) - the window moved and the storage now belongs to another tile.
-// ClearCS: invalidates whole cascades (new atlas / changed configuration).
+// ClearCS: invalidates whole cascade slots (new atlas / a set configured anew).
 
 #include "/Engine/Private/Common.ush"
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
@@ -19,23 +19,23 @@
 
 RWTexture2D<float4> OutShadowAtlas;
 
-float4 ShadowTiles[PA_SHADOW_MAX_TILES_PER_PASS];   // xy = global tile, z = cascade, w = 1 generate / 0 invalidate
+float4 ShadowTiles[PA_SHADOW_MAX_TILES_PER_PASS];   // xy = global tile, z = slot (set x 3 + cascade), w = 1 generate / 0 invalidate
 int NumShadowTiles;
 int ShadowGenerationSteps;
 float NoiseFootprintScale;
 
 int ShadowAtlasResolution;                          // ClearCS
-int ClearCascadeMask;                               // ClearCS: bit c = cascade c
+int ClearCascadeMask;                               // ClearCS: bit s = slot s
 
-float4 PA_GenerateShadowTexel(int Cascade, int2 GlobalTexel)
+float4 PA_GenerateShadowTexel(int Slot, int2 GlobalTexel)
 {
 	const FPAAtmosphere A = PA_LoadAtmosphere(CloudShadowPlanet);
 	const FPACloudLayer Layer = PA_MakeCloudLayer(A);
 
-	const float Texel = CloudShadowAxisU[Cascade].w;
-	const float3 AxisU = CloudShadowAxisU[Cascade].xyz;
-	const float3 AxisV = CloudShadowAxisV[Cascade].xyz;
-	const float3 Sun = CloudShadowSun[Cascade].xyz;
+	const float Texel = CloudShadowAxisU[Slot].w;
+	const float3 AxisU = CloudShadowAxisU[Slot].xyz;
+	const float3 AxisV = CloudShadowAxisV[Slot].xyz;
+	const float3 Sun = CloudShadowSun[Slot].xyz;
 	const float U = ((float)GlobalTexel.x + 0.5) * Texel;
 	const float V = ((float)GlobalTexel.y + 0.5) * Texel;
 	const float Rho = sqrt(U * U + V * V);
@@ -91,16 +91,16 @@ void GenerateCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThread
 		return;
 	}
 	const float4 Tile = ShadowTiles[TileIndex];
-	const int Cascade = clamp((int)Tile.z, 0, PA_SHADOW_CASCADES - 1);
+	const int Slot = clamp((int)Tile.z, 0, PA_SHADOW_SLOTS - 1);
 	const int2 LocalTexel = int2(GroupId.xy) * 8 + int2(GroupThreadId.xy);
 	const int2 GlobalTexel = int2(Tile.xy) * PA_SHADOW_TILE + LocalTexel;
-	const int2 StorageTexel = PA_ShadowStorageTexel(Cascade, GlobalTexel);
+	const int2 StorageTexel = PA_ShadowStorageTexel(Slot, GlobalTexel);
 
 	// Explicit branch: with HLSL 2018 the ?: operator evaluates both sides (an invalidated tile would pay the march).
 	[branch]
 	if (Tile.w > 0.5)
 	{
-		OutShadowAtlas[StorageTexel] = PA_GenerateShadowTexel(Cascade, GlobalTexel);
+		OutShadowAtlas[StorageTexel] = PA_GenerateShadowTexel(Slot, GlobalTexel);
 	}
 	else
 	{
@@ -112,12 +112,12 @@ void GenerateCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThread
 void ClearCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
 	const int Res = ShadowAtlasResolution;
-	if ((int)DispatchThreadId.x >= Res || (int)DispatchThreadId.y >= Res * PA_SHADOW_CASCADES)
+	if ((int)DispatchThreadId.x >= Res || (int)DispatchThreadId.y >= Res * PA_SHADOW_SLOTS)
 	{
 		return;
 	}
-	const int Cascade = (int)DispatchThreadId.y / Res;
-	if (((uint)ClearCascadeMask & (1u << (uint)Cascade)) != 0u)
+	const int Slot = (int)DispatchThreadId.y / Res;
+	if (((uint)ClearCascadeMask & (1u << (uint)Slot)) != 0u)
 	{
 		OutShadowAtlas[DispatchThreadId.xy] = PA_SHADOW_INVALID;
 	}
