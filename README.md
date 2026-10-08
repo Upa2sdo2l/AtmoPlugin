@@ -123,7 +123,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudShadows` | 1 | Cloud shadow cascades of the primary planet (Phase 4). Step 22: generated and shown in debug modes 9–11 only |
 | `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 3 Res RGBA16F, 6 MB per view at 512 |
 | `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |
-| `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 8 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades |
+| `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 32 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades: RTX 3050 frame peaks 8 → 0.11 ms, 16 → 0.14 ms, 32 → 0.23 ms; 32 fills all cascades in 24 frames |
 | `r.PlanetAtmosphere.CloudShadows.MinExtent` | 8 | Half-size of cascade 0 near the cloud layer, km; grows with the camera height in powers of two; cascade i = × 4^i |
 
 ## Clouds through the atmosphere (Step 15)

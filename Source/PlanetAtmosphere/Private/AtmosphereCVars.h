@@ -159,7 +159,7 @@ namespace PlanetAtmosphere::CVars
 		bool bEnabled = true;
 		int32 Resolution = 512;          // texels per cascade side, multiple of 32 in [128, 1024]
 		int32 GenerationSteps = 32;      // samples per texel ray through the cloud shell, [8, 128]
-		int32 UpdateBudgetTiles = 8;     // 32 x 32-texel tiles generated per view and frame, [0, 768]; 0 = no updates
+		int32 UpdateBudgetTiles = 32;    // 32 x 32-texel tiles generated per view and frame, [0, 768]; 0 = no updates
 		double MinExtentCm = 8.0e5;      // half-size of cascade 0 near the ground (cm), from the CVar in km
 	};
 	FCloudShadowSettings GetCloudShadowSettings();

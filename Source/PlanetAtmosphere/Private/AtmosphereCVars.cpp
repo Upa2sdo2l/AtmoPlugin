@@ -293,10 +293,11 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsUpdateBudget(
 		TEXT("r.PlanetAtmosphere.CloudShadows.UpdateBudget"),
-		8,
+		32,
 		TEXT("Tiles of 32 x 32 cascade texels generated per view and frame (the GPU cost of the cascades, stat gpu ->\n")
 		TEXT("PlanetAtmosphere.CloudShadows). New tiles first near the camera, round-robin over the 3 cascades. A full set of\n")
-		TEXT("3 cascades at 512 = 768 tiles. 0 = no generation (the cascades stay as they are). Clamped to [0, 768]."),
+		TEXT("3 cascades at 512 = 768 tiles. Measured on an RTX 3050 (frame peaks): 8 -> 0.11 ms, 16 -> 0.14 ms, 32 -> 0.23 ms;\n")
+		TEXT("32 (default) fills all 3 cascades in 24 frames. 0 = no generation (the cascades stay as they are). Clamped to [0, 768]."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsMinExtent(
