@@ -91,6 +91,47 @@ float PA_CloudSunTransmittance(
 	return exp(-PA_CloudSunOpticalDepth(A, Layer, P, SunDirection, BaseFootprint, NumSteps, MarchLength, NumDensitySamples));
 }
 
+/**
+ * Phase 4 / Step 24 (AD-27): cloud optical depth of the sun path from P BELOW the cloud layer (the planet surface;
+ * planet-relative, world axes, altitude known): NumSteps uniform midpoint samples over the whole layer crossing
+ * (cloud-bottom exit -> cloud-top exit), no length cap. Noise footprint max(BaseFootprint, step / 4): a footprint of the
+ * whole step fades the octaves and loses clouds (AD-14; prototype p24: 6 steps 5.5 vs 21.9 at orbit 400 km). No
+ * pixel-footprint LOD of the step count: from orbit the march is what keeps the shadows sharp (fewer steps far away only
+ * add error). Stops above PA_LIGHT_MARCH_MAX_OPTICAL_DEPTH.
+ */
+float PA_CloudLayerCrossingOpticalDepth(
+	FPAAtmosphere A, FPACloudLayer Layer,
+	float3 P, float Altitude, float3 SunDirection,
+	float BaseFootprint, int NumSteps,
+	inout uint NumDensitySamples)
+{
+	const float2 BottomHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudBottom);
+	const float2 TopHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudTop);
+	const float Start = max(BottomHit.y, 0.0);
+	const float Length = max(TopHit.y, 0.0) - Start;
+	if (Length <= 0.0 || NumSteps <= 0)
+	{
+		return 0.0;
+	}
+
+	const float Ds = Length / (float)NumSteps;
+	const float Footprint = max(BaseFootprint, 0.25 * Ds);
+	float OpticalDepth = 0.0;
+	for (int Step = 0; Step < NumSteps; ++Step)
+	{
+		const float3 SampleP = P + SunDirection * (Start + ((float)Step + 0.5) * Ds);
+		const float SampleAltitude = length(SampleP) - A.PlanetRadius;
+		const float Density = PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, SampleP), SampleAltitude, Footprint);
+		NumDensitySamples += 1u;
+		OpticalDepth += Density * A.CloudExtinction * Ds;
+		if (OpticalDepth > PA_LIGHT_MARCH_MAX_OPTICAL_DEPTH)
+		{
+			break;
+		}
+	}
+	return OpticalDepth;
+}
+
 /** 1 in sunlight, 0 in the planet's shadow, with a narrow soft terminator. P planet-relative. */
 float PA_PlanetShadow(float3 P, float3 SunDirection, float PlanetRadius)
 {

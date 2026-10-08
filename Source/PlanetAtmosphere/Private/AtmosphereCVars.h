@@ -25,7 +25,8 @@ namespace PlanetAtmosphere::CVars
 		ShadowCascade0 = 9,   // Phase 4 / Step 22: cascade atlas overlays
 		ShadowCascade1 = 10,
 		ShadowCascade2 = 11,
-		CloudShadowUsage = 12,   // Step 23: lit samples served by the cascades (green) / the fallback light march (red)
+		CloudShadowUsage = 12,   // Step 23: lit samples served by the cascades (green) / the fallback light march (red); Step 24: + surface
+		SurfaceCloudShadow = 13, // Step 24: cloud transmittance of the sun path on the placeholder surface
 	};
 
 	/** Values of r.PlanetAtmosphere.StepDistribution. */
@@ -166,6 +167,10 @@ namespace PlanetAtmosphere::CVars
 		bool bLighting = true;           // the cascades light the primary planet's clouds (hybrid); false = full light march
 		int32 LocalMarchSteps = 3;       // samples of the short local march, [1, 8]
 		double LocalMarchLengthCm = 1.0e5;   // its length (cm), from the CVar in km
+		// Step 24
+		bool bSurface = true;            // cloud shadows on the placeholder surface
+		int32 SurfaceMarchSteps = 12;    // samples of the march through the cloud layer from a surface point, [1, 64]
+		float SurfaceMaxTexel = 0.0625f; // coarsest cascade texel used for the surface, in units of CloudShapeScale, [0, 16]
 	};
 	FCloudShadowSettings GetCloudShadowSettings();
 }

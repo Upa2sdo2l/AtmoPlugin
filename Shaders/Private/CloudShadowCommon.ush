@@ -3,7 +3,8 @@
 #pragma once
 
 // Cloud shadow cascades (Phase 4). Declarations and helpers shared by CloudShadowGenerate.usf (writes the atlas) and
-// CloudRaymarch.usf (debug views 9-11; Step 23: lookup for the sun path beyond the short local march).
+// CloudRaymarch.usf (debug views 9-11; Step 23: lookup for the sun path beyond the short local march; Step 24: shadows on
+// the planet surface).
 // C++ counterpart: FAtmosphereCloudShadowParameters (AtmosphereShaders.h), state in AtmosphereCloudShadows.cpp.
 //
 // Geometry (planet-local frame of the primary planet, cm): each cascade is an orthographic grid in the plane
@@ -67,13 +68,64 @@ bool PA_ShadowRaySegment(float Rho, float PlanetRadius, float CloudBottom, float
 }
 
 /**
+ * Position of QLocal (planet local, cm) in Cascade's window: Base = global texel of the lower-left corner of the 2 x 2
+ * bilinear footprint (texel centres at integers), Blend = bilinear weights. Returns the distance in texels from the
+ * footprint to the nearest edge of the usable window (1 texel margin); < 0 = not in this cascade's window.
+ */
+float PA_ShadowWindowPosition(int Cascade, float3 QLocal, out int2 Base, out float2 Blend)
+{
+	const float2 TexelPosition = float2(dot(QLocal, CloudShadowAxisU[Cascade].xyz), dot(QLocal, CloudShadowAxisV[Cascade].xyz))
+		* CloudShadowAxisV[Cascade].w - 0.5;   // global texel coordinates, texel centers at integers
+	const float2 BaseF = floor(TexelPosition);
+	Blend = TexelPosition - BaseF;
+	Base = int2(BaseF);
+	const int2 InWindow = Base - int2(CloudShadowWindow[Cascade].xy);
+	const int2 Margin = min(InWindow - 1, (CloudShadowResolution - 3) - InWindow);
+	return (float)min(Margin.x, Margin.y);
+}
+
+/**
+ * Bilinear Beer Shadow Map transmittance of the 2 x 2 texels at Base for the point at sun-axis coordinate W: per texel
+ * the optical depth at W's depth along that texel's own ray, OD = min(ext x max(depth - front, 0), total),
+ * ext = total / (back - front); the four transmittances are blended (Step 21 prototype: "bsm_pcf"). A point below the
+ * cloud layer gets the whole column (depth clamped to 1). Returns -1 if one of the texels is not generated yet.
+ */
+float PA_ShadowCascadeTransmittance(Texture2D<float4> Atlas, int Cascade, int2 Base, float2 Blend, float W,
+	float PlanetRadius, float CloudBottom, float CloudTop)
+{
+	const float Texel = CloudShadowAxisU[Cascade].w;
+	float Transmittance = 0.0;
+	for (int Corner = 0; Corner < 4; ++Corner)
+	{
+		const int2 Offset = int2(Corner & 1, Corner >> 1);
+		const int2 GlobalTexel = Base + Offset;
+		const float4 Data = Atlas.Load(int3(PA_ShadowStorageTexel(Cascade, GlobalTexel), 0));
+		if (Data.a < 0.5)
+		{
+			return -1.0;   // tile not generated yet
+		}
+		const float2 TexelUV = (float2(GlobalTexel) + 0.5) * Texel;
+		float WEntry;
+		float Length;
+		float OpticalDepth = 0.0;
+		if (PA_ShadowRaySegment(length(TexelUV), PlanetRadius, CloudBottom, CloudTop, WEntry, Length))
+		{
+			const float Depth = saturate((WEntry - W) / Length);   // 0 = cloud-top entry, 1 = end of the segment
+			const float Extinction = Data.b / max(Data.g - Data.r, 1e-4);
+			OpticalDepth = min(Extinction * max(Depth - Data.r, 0.0), Data.b);
+		}
+		const float Weight = (Offset.x != 0 ? Blend.x : 1.0 - Blend.x) * (Offset.y != 0 ? Blend.y : 1.0 - Blend.y);
+		Transmittance += Weight * exp(-OpticalDepth);
+	}
+	return Transmittance;
+}
+
+/**
  * Cloud transmittance toward the sun at QLocal (planet-local, cm) from the cascades (Phase 4 / Step 23): the smallest
- * cascade whose window holds the 2 x 2 texel footprint (+1 texel margin); per texel the Beer Shadow Map optical depth
- * at QLocal's depth along that texel's own ray, OD = min(ext x max(depth - front, 0), total), ext = total / (back - front);
- * the four transmittances are blended bilinearly (Step 21 prototype: "bsm_pcf"). Returns -1 when no cascade covers the
- * point or one of the texels is not generated yet: the caller uses the full light march then.
- * Only the sun-side segment of a texel ray is stored (see the note at the top); a point in the planet's shadow must not
- * get here (the caller gates by the sun visibility).
+ * cascade whose window holds the 2 x 2 texel footprint (+1 texel margin), PA_ShadowCascadeTransmittance there.
+ * Returns -1 when no cascade covers the point or one of the texels is not generated yet: the caller uses the full light
+ * march then. Only the sun-side segment of a texel ray is stored (see the note at the top); a point in the planet's
+ * shadow must not get here (the caller gates by the sun visibility).
  */
 float PA_CloudShadowTransmittance(Texture2D<float4> Atlas, float3 QLocal, float PlanetRadius, float CloudBottom, float CloudTop)
 {
@@ -81,49 +133,71 @@ float PA_CloudShadowTransmittance(Texture2D<float4> Atlas, float3 QLocal, float 
 	{
 		return -1.0;
 	}
-	const int Res = CloudShadowResolution;
 	for (int Cascade = 0; Cascade < PA_SHADOW_CASCADES; ++Cascade)
 	{
 		if (CloudShadowSun[Cascade].w < 0.5)
 		{
 			continue;
 		}
-		const float Texel = CloudShadowAxisU[Cascade].w;
-		const float2 TexelPosition = float2(dot(QLocal, CloudShadowAxisU[Cascade].xyz), dot(QLocal, CloudShadowAxisV[Cascade].xyz))
-			* CloudShadowAxisV[Cascade].w - 0.5;   // global texel coordinates, texel centers at integers
-		const float2 BaseF = floor(TexelPosition);
-		const float2 Blend = TexelPosition - BaseF;
-		const int2 Base = int2(BaseF);
-		const int2 InWindow = Base - int2(CloudShadowWindow[Cascade].xy);
-		if (any(InWindow < 1) || any(InWindow > Res - 3))
+		int2 Base;
+		float2 Blend;
+		if (PA_ShadowWindowPosition(Cascade, QLocal, Base, Blend) < 0.0)
 		{
 			continue;   // not in this cascade's window: try the next (larger) one
 		}
+		return PA_ShadowCascadeTransmittance(Atlas, Cascade, Base, Blend, dot(QLocal, CloudShadowSun[Cascade].xyz),
+			PlanetRadius, CloudBottom, CloudTop);
+	}
+	return -1.0;
+}
 
-		const float W = dot(QLocal, CloudShadowSun[Cascade].xyz);
-		float Transmittance = 0.0;
-		for (int Corner = 0; Corner < 4; ++Corner)
+/**
+ * Phase 4 / Step 24 (AD-27): cloud transmittance toward the sun at a point of the planet surface (below the cloud layer,
+ * day side) from the cascades, with the selection rule of the Step 24 prototype: a cascade texel coarser than MaxTexel
+ * (cm) blurs the surface shadows more than a march through the layer costs in error (p24b: texel 0.5 km ~ 3.0 vs 2.5,
+ * 2 km 6.5 vs 2.2, 8 km 22 vs 2.3), so those points are marched instead (OutMarchWeight = 1). Inside the last window
+ * whose texel is fine enough, the last tile toward its edge blends into the march (OutMarchWeight 0 -> 1), so the switch
+ * is not a hard ring. Cascades grow by 4 per index, so the first configured cascade coarser than MaxTexel ends the search.
+ * Returns the cascade transmittance (meaningful when OutMarchWeight < 1), or -1 with OutMarchWeight = 1 when the march has
+ * to do everything; bOutMissing = the cascade would have been used but its texels are not generated yet.
+ */
+float PA_CloudShadowSurfaceTransmittance(Texture2D<float4> Atlas, float3 QLocal, float PlanetRadius, float CloudBottom,
+	float CloudTop, float MaxTexel, out float OutMarchWeight, out bool bOutMissing)
+{
+	OutMarchWeight = 1.0;
+	bOutMissing = false;
+	if (CloudShadowPlanet < 0)
+	{
+		return -1.0;
+	}
+	for (int Cascade = 0; Cascade < PA_SHADOW_CASCADES; ++Cascade)
+	{
+		if (CloudShadowSun[Cascade].w < 0.5)
 		{
-			const int2 Offset = int2(Corner & 1, Corner >> 1);
-			const int2 GlobalTexel = Base + Offset;
-			const float4 Data = Atlas.Load(int3(PA_ShadowStorageTexel(Cascade, GlobalTexel), 0));
-			if (Data.a < 0.5)
-			{
-				return -1.0;   // tile not generated yet
-			}
-			const float2 TexelUV = (float2(GlobalTexel) + 0.5) * Texel;
-			float WEntry;
-			float Length;
-			float OpticalDepth = 0.0;
-			if (PA_ShadowRaySegment(length(TexelUV), PlanetRadius, CloudBottom, CloudTop, WEntry, Length))
-			{
-				const float Depth = saturate((WEntry - W) / Length);   // 0 = cloud-top entry, 1 = end of the segment
-				const float Extinction = Data.b / max(Data.g - Data.r, 1e-4);
-				OpticalDepth = min(Extinction * max(Depth - Data.r, 0.0), Data.b);
-			}
-			const float Weight = (Offset.x != 0 ? Blend.x : 1.0 - Blend.x) * (Offset.y != 0 ? Blend.y : 1.0 - Blend.y);
-			Transmittance += Weight * exp(-OpticalDepth);
+			continue;
 		}
+		if (CloudShadowAxisU[Cascade].w > MaxTexel)
+		{
+			return -1.0;   // this cascade and every larger one are too coarse: march
+		}
+		int2 Base;
+		float2 Blend;
+		const float EdgeDistance = PA_ShadowWindowPosition(Cascade, QLocal, Base, Blend);
+		if (EdgeDistance < 0.0)
+		{
+			continue;
+		}
+		// Can the next cascade take over beyond this window? (Index clamped: HLSL evaluates both sides of &&.)
+		const int Next = min(Cascade + 1, PA_SHADOW_CASCADES - 1);
+		const bool bNextUsable = Cascade + 1 < PA_SHADOW_CASCADES && CloudShadowSun[Next].w > 0.5 && CloudShadowAxisU[Next].w <= MaxTexel;
+		const float Transmittance = PA_ShadowCascadeTransmittance(Atlas, Cascade, Base, Blend, dot(QLocal, CloudShadowSun[Cascade].xyz),
+			PlanetRadius, CloudBottom, CloudTop);
+		if (Transmittance < 0.0)
+		{
+			bOutMissing = true;
+			return -1.0;
+		}
+		OutMarchWeight = bNextUsable ? 0.0 : saturate(1.0 - EdgeDistance / (float)PA_SHADOW_TILE);
 		return Transmittance;
 	}
 	return -1.0;

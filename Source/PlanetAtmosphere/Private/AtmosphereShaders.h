@@ -174,6 +174,10 @@ public:
 		SHADER_PARAMETER(int32, CloudShadowLighting)
 		SHADER_PARAMETER(int32, CloudShadowLocalSteps)
 		SHADER_PARAMETER(float, CloudShadowLocalLength)
+		// Step 24: cloud shadows on the placeholder surface (cascades where fine enough, else a march through the layer).
+		SHADER_PARAMETER(int32, CloudShadowSurface)
+		SHADER_PARAMETER(int32, CloudShadowSurfaceSteps)
+		SHADER_PARAMETER(float, CloudShadowSurfaceMaxTexel)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

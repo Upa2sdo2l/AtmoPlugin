@@ -400,6 +400,11 @@ namespace PlanetAtmosphere
 			Parameters->CloudShadowLighting = (CloudShadowAtlas && ShadowSettings.bLighting) ? 1 : 0;
 			Parameters->CloudShadowLocalSteps = ShadowSettings.LocalMarchSteps;
 			Parameters->CloudShadowLocalLength = static_cast<float>(ShadowSettings.LocalMarchLengthCm);
+
+			// Step 24: cloud shadows on the placeholder surface. Works without cascades too (then the march everywhere).
+			Parameters->CloudShadowSurface = ShadowSettings.bSurface ? 1 : 0;
+			Parameters->CloudShadowSurfaceSteps = ShadowSettings.SurfaceMarchSteps;
+			Parameters->CloudShadowSurfaceMaxTexel = ShadowSettings.SurfaceMaxTexel;
 		}
 
 		// DebugMode 8 (Temporal Weight) marches like the final image; the composite overlays the temporal weight.

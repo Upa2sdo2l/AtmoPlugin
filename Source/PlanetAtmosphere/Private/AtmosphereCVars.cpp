@@ -27,7 +27,9 @@ namespace
 		TEXT(" 8 = Temporal Weight (weight of the current frame in the temporal accumulation: green = history, red = current frame only / history rejected)\n")
 		TEXT(" 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2 (final image + the cloud shadow cascade of the primary planet in the top-left corner:\n")
 		TEXT("   white = lit column, dark blue = shadowed, magenta checker = not generated yet, red ring = sub-camera point; red square = no cascades)\n")
-		TEXT(" 12 = Cloud Shadow Usage (lit cloud samples of the primary planet: green = lit through the cascades, red = full light march fallback)"),
+		TEXT(" 12 = Cloud Shadow Usage (lit cloud samples of the primary planet: green = lit through the cascades, red = full light march fallback;\n")
+		TEXT("   pixels without such samples show the surface shadow source: green = cascades, blue = march through the layer, red = march, tiles not generated yet)\n")
+		TEXT(" 13 = Surface Cloud Shadow (cloud transmittance of the sun path on the placeholder surface: white = lit, black = shadowed; dark blue = no direct sun)"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -330,6 +332,31 @@ namespace
 		TEXT("Length of the local march in km (Step 21 prototype: 1 km; longer with few steps is worse). Clamped to [0.1, 20]."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsSurface(
+		TEXT("r.PlanetAtmosphere.CloudShadows.Surface"),
+		1,
+		TEXT("Phase 4 / Step 24: shadows of the clouds on the direct sunlight of the placeholder planet surface\n")
+		TEXT("(r.PlanetAtmosphere.DebugPlanetSurface). Primary planet: the cascades where their texel is fine enough\n")
+		TEXT("(SurfaceMaxTexel), a march through the cloud layer elsewhere; other planets: the march. Scene geometry is not shadowed.\n")
+		TEXT("1 = on (default), 0 = off (A/B)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsSurfaceMarchSteps(
+		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps"),
+		12,
+		TEXT("Samples of the march from a surface point through the whole cloud layer toward the sun (uniform; used where the\n")
+		TEXT("cascades are too coarse, e.g. from orbit, and for planets without cascades). Step 24 prototype (mean error x 100,\n")
+		TEXT("worst scene): 8 -> 7.4, 12 -> 3.5 (default), 16 -> 2.4. Clamped to [1, 64]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel(
+		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel"),
+		0.0625f,
+		TEXT("Coarsest cascade texel used for surface shadows, in units of the planet's CloudShapeScale (0.0625 = 1/16, i.e.\n")
+		TEXT("500 m at the default 8 km); surface points whose cascade is coarser are marched (SurfaceMarchSteps). 0 = always\n")
+		TEXT("march. Clamped to [0, 16]."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLODMinLightSteps(
 		TEXT("r.PlanetAtmosphere.LOD.MinLightSteps"),
 		2,
@@ -360,6 +387,7 @@ namespace PlanetAtmosphere::CVars
 		case 10: return EDebugMode::ShadowCascade1;
 		case 11: return EDebugMode::ShadowCascade2;
 		case 12: return EDebugMode::CloudShadowUsage;
+		case 13: return EDebugMode::SurfaceCloudShadow;
 		default: return EDebugMode::FinalClouds;
 		}
 	}
@@ -509,6 +537,9 @@ namespace PlanetAtmosphere::CVars
 		Settings.bLighting = CVarPlanetAtmosphereCloudShadowsLighting.GetValueOnAnyThread(false) != 0;
 		Settings.LocalMarchSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsLocalMarchSteps.GetValueOnAnyThread(false), 1, 8);
 		Settings.LocalMarchLengthCm = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereCloudShadowsLocalMarchLength.GetValueOnAnyThread(false)), 0.1, 20.0) * 1.0e5;
+		Settings.bSurface = CVarPlanetAtmosphereCloudShadowsSurface.GetValueOnAnyThread(false) != 0;
+		Settings.SurfaceMarchSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchSteps.GetValueOnAnyThread(false), 1, 64);
+		Settings.SurfaceMaxTexel = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel.GetValueOnAnyThread(false), 0.0f, 16.0f);
 		return Settings;
 	}
 }

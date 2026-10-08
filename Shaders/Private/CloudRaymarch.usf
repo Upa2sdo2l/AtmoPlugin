@@ -2,7 +2,7 @@
 
 // Cloud + atmosphere raymarch (r.PlanetAtmosphere.DebugMode 0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps,
 // 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2,
-// 12 = Cloud Shadow Usage).
+// 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -16,7 +16,9 @@
 //      (CloudShadowCommon.ush), with the full light march as the fallback where no cascade texel is available;
 //   6. atmosphere (AtmosphereScattering.ush, Steps 13-14) along the whole ray inside the atmosphere, split at the
 //      clouds' contribution-weighted mean depth (Step 15): the part in front of the clouds attenuates them and adds
-//      haze (aerial perspective), the part behind is seen through them; then the placeholder surface.
+//      haze (aerial perspective), the part behind is seen through them; then the placeholder surface, whose direct
+//      sunlight is shadowed by the clouds since Phase 4 / Step 24 (cascades near the camera, a march through the layer
+//      where their texels are too coarse).
 //   Step 15 cloud lighting with the atmosphere on: sunlight through the atmosphere (transmittance LUT, planet shadow =
 //   the atmosphere's horizon) and sky ambient = Psi_ms (MS LUT) x CloudSkyAmbientScale.
 // Composited front-to-back across planets; the scene behind is attenuated by the final transmittance (applied to the scene
@@ -43,7 +45,7 @@ RWTexture2D<float4> OutLuminance;      // rgb = pre-exposed luminance added in f
 RWTexture2D<float4> OutTransmittance;  // rgb = transmittance applied to the scene color
 
 int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT,
-                             // 9-11 = shadow cascade 0-2, 12 = cloud shadow usage
+                             // 9-11 = shadow cascade 0-2, 12 = cloud shadow usage, 13 = surface cloud shadow
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -86,6 +88,10 @@ Texture2D<float4> CloudShadowAtlas;
 int CloudShadowLighting;        // r.PlanetAtmosphere.CloudShadows.Lighting: 1 = local march + cascades, 0 = full light march
 int CloudShadowLocalSteps;      // r.PlanetAtmosphere.CloudShadows.LocalMarchSteps
 float CloudShadowLocalLength;   // r.PlanetAtmosphere.CloudShadows.LocalMarchLength (cm)
+// Step 24: cloud shadows on the placeholder surface (PA_SurfaceCloudShadow).
+int CloudShadowSurface;            // r.PlanetAtmosphere.CloudShadows.Surface: 1 = on, 0 = no cloud shadows on the surface
+int CloudShadowSurfaceSteps;       // r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps
+float CloudShadowSurfaceMaxTexel;  // r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel, in units of the planet's CloudShapeScale
 
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
@@ -152,6 +158,10 @@ struct FPACloudMarchState
 	uint DensitySamples;     // PA_SampleCloudDensity() calls: primary + empty-space probes + light march (Ray Steps view)
 	uint ShadowCascadeSamples;    // lit samples lit through the cascades (Cloud Shadow Usage view)
 	uint ShadowFallbackSamples;   // lit samples of the primary planet that needed the full light march
+	// Step 24, the visible surface point of this pixel (debug views 12 / 13).
+	float SurfaceCloudShadow;     // cloud transmittance of its sun path; -1 = no surface, -2 = surface without direct sun
+	float SurfaceShadowMarchWeight;   // 0 = cascades, 1 = march through the layer, between = blend band at a window edge
+	uint SurfaceShadowMissing;    // 1 = the cascade texels were not generated yet (march instead)
 };
 
 /** Cloud density at distance T along the ray (one density call). Outputs the planet-relative position and altitude. */
@@ -195,6 +205,43 @@ float PA_CloudSunTransmittanceHybrid(
 		A, Layer, P, Light.SunDirection, Footprint, PA_LightStepsLOD(CloudShadowLocalSteps, Layer, Light, T), LocalLength,
 		NumDensitySamples);
 	return exp(-LocalOpticalDepth) * CascadeTransmittance;
+}
+
+/**
+ * Phase 4 / Step 24 (AD-27): cloud transmittance of the sun path from the surface point P (planet-relative, world axes,
+ * altitude 0) at view distance T. Primary planet: the cascades where their texel is at most CloudShadowSurfaceMaxTexel x
+ * the shape scale, the march through the whole layer crossing elsewhere, blended over the last tile of the last usable
+ * window (PA_CloudShadowSurfaceTransmittance); other planets and texels not generated yet: the march. The march has a
+ * fixed CloudShadowSurfaceSteps (no pixel-footprint LOD: from orbit it is what keeps the shadows sharp).
+ * Prototype p24b (pixel-averaged mean |dT| x 100, 12 scenes from the ground to 2000 km): cascades only 0.5-27,
+ * this rule with 12 steps 0.5-3.5.
+ */
+float PA_SurfaceCloudShadow(FPAAtmosphere A, FPACloudLayer Layer, int Index, float3 P, float T, FPAPixelRay Ray, float3 Sun,
+	inout FPACloudMarchState State)
+{
+	State.SurfaceShadowMarchWeight = 1.0;
+	State.SurfaceShadowMissing = 0u;
+	if (Layer.Coverage <= 0.0)
+	{
+		return 1.0;   // exactly no clouds (CloudDensity.ush)
+	}
+	float MarchWeight = 1.0;
+	float CascadeTransmittance = -1.0;
+	if (Index == CloudShadowPlanet)
+	{
+		bool bMissing;
+		CascadeTransmittance = PA_CloudShadowSurfaceTransmittance(CloudShadowAtlas, PA_ToPlanetLocal(A, P), A.PlanetRadius,
+			A.CloudBottom, A.CloudTop, CloudShadowSurfaceMaxTexel * Layer.ShapeScale, MarchWeight, bMissing);
+		State.SurfaceShadowMissing = bMissing ? 1u : 0u;
+	}
+	State.SurfaceShadowMarchWeight = MarchWeight;
+	if (MarchWeight <= 0.0)
+	{
+		return CascadeTransmittance;
+	}
+	const float MarchTransmittance = exp(-PA_CloudLayerCrossingOpticalDepth(
+		A, Layer, P, 0.0, Sun, T * Ray.FootprintPerUnitDistance, CloudShadowSurfaceSteps, State.DensitySamples));
+	return MarchWeight >= 1.0 ? MarchTransmittance : lerp(CascadeTransmittance, MarchTransmittance, MarchWeight);
 }
 
 /** Integrates one step: sample at T representing the step width Dt. Returns the density of the sample. */
@@ -381,6 +428,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	State.DensitySamples = 0u;
 	State.ShadowCascadeSamples = 0u;
 	State.ShadowFallbackSamples = 0u;
+	State.SurfaceCloudShadow = -1.0;
+	State.SurfaceShadowMarchWeight = 1.0;
+	State.SurfaceShadowMissing = 0u;
 
 	FPACloudLightingContext Light;
 	Light.SunDirection = SunDirection;
@@ -550,18 +600,29 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			const float3 SurfaceNormal = normalize(SurfaceP);
 			const float3 SurfaceAlbedo = AtmosphereSurface[Index].xyz;
 			float3 SurfaceRadiance = Light.AmbientIlluminance * (Light.bHasSun ? PA_DaylightFactor(SurfaceP, Light.SunDirection) : 1.0);
+			const float3 SurfaceVisibility = State.Transmittance * State.AtmosphereTransmittance;
+			State.SurfaceCloudShadow = -2.0;
 			if (Light.bHasSun)
 			{
+				const float SunCos = dot(SurfaceNormal, Light.SunDirection);
 				float3 SunAtSurface = Light.SunIlluminance;
 				if (bDrawAtmosphere)
 				{
 					// Sunlight reaching the ground through the atmosphere (reddened near the terminator).
 					// The surface is at or below the atmosphere bottom -> LUT at H = 0.
-					SunAtSurface *= PA_SampleTransmittanceLut(Index, Scattering, 0.0, dot(SurfaceNormal, Light.SunDirection));
+					SunAtSurface *= PA_SampleTransmittanceLut(Index, Scattering, 0.0, SunCos);
 				}
-				SurfaceRadiance += SunAtSurface * saturate(dot(SurfaceNormal, Light.SunDirection));
+				// Step 24: shadows of this planet's clouds on the direct sunlight (ambient / sky light unchanged until Phase 7).
+				// Only where the sun is above the horizon and the surface is visible at all (debug view 13: always).
+				if (SunCos > 0.0 && CloudShadowSurface != 0 && bDrawClouds
+					&& (max(SurfaceVisibility.r, max(SurfaceVisibility.g, SurfaceVisibility.b)) > PA_MIN_LIGHTING_CONTRIBUTION || DebugMode == 13))
+				{
+					State.SurfaceCloudShadow = PA_SurfaceCloudShadow(A, Layer, Index, SurfaceP, SurfaceT, Ray, Light.SunDirection, State);
+					SunAtSurface *= State.SurfaceCloudShadow;
+				}
+				SurfaceRadiance += SunAtSurface * saturate(SunCos);
 			}
-			State.Accum += (State.Transmittance * State.AtmosphereTransmittance) * SurfaceAlbedo / PA_PI * SurfaceRadiance;
+			State.Accum += SurfaceVisibility * SurfaceAlbedo / PA_PI * SurfaceRadiance;
 			State.Transmittance = 0.0;
 		}
 
@@ -637,7 +698,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		}
 		// Cloud Shadow Usage (Phase 4 / Step 23): which lit cloud samples of the primary planet got their sunlight from the
 		// cascades (green) and which needed the full light march (red: outside the windows / tile not generated yet), over
-		// the darkened image. Pixels without lit samples of the primary planet keep the darkened image.
+		// the darkened image. Step 24: pixels without such cloud samples show the surface shadow source instead: green =
+		// cascades, blue = march through the layer (texel too coarse, other planets; blend band in between), red = march
+		// because the cascade texels are not generated yet. Otherwise the darkened image.
 		if (DebugMode == 12)
 		{
 			const float Total = (float)(State.ShadowCascadeSamples + State.ShadowFallbackSamples);
@@ -647,6 +710,29 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			{
 				const float Cascade = (float)State.ShadowCascadeSamples / Total;
 				Luminance += float3(1.0 - Cascade, Cascade, 0.0) * 0.5;
+			}
+			else if (State.SurfaceCloudShadow >= 0.0)
+			{
+				Luminance += (State.SurfaceShadowMissing != 0u ? float3(1.0, 0.0, 0.0)
+					: lerp(float3(0.0, 1.0, 0.0), float3(0.0, 0.3, 1.0), State.SurfaceShadowMarchWeight)) * 0.5;
+			}
+		}
+		// Surface Cloud Shadow (Step 24): the cloud transmittance of the sun path at the visible surface point, white = lit,
+		// black = shadowed, in front of any clouds; dark blue = surface without direct sun (night side, or Surface 0);
+		// elsewhere the darkened image.
+		if (DebugMode == 13)
+		{
+			Luminance *= 0.25;
+			Transmittance *= 0.25;
+			if (State.SurfaceCloudShadow >= 0.0)
+			{
+				Transmittance = 0.0;
+				Luminance = State.SurfaceCloudShadow;
+			}
+			else if (State.SurfaceCloudShadow < -1.5)
+			{
+				Transmittance = 0.0;
+				Luminance = float3(0.02, 0.04, 0.15);
 			}
 		}
 		// Shadow cascade 0 / 1 / 2 (Phase 4 / Step 22): the cascade window in the top-left corner, north = +V, centred on
