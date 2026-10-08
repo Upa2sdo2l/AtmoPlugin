@@ -440,8 +440,9 @@ float3 PA_Ramp5(float X, float X0, float X1, float X2, float X3, float X4, float
 /**
  * DebugMode 16 (Step 28): is Direction (planet local, unit) on the arrow of its 5-degree cell? Cells: latitude bands of
  * 5 deg, each split into round(72 cos(band latitude)) longitude cells (about square). The arrow is centred on the cell
- * centre, points downwind (wind sampled at the centre), half length 0.45 x cell x clamp(speed / 25 m/s, 0.25, 1), with a
- * head over its last 40 %; a dot where the wind is below 1 m/s. PixelDeg keeps the lines at least a pixel wide.
+ * centre, points downwind (wind sampled at the centre), half length 0.45 x cell x clamp(speed / 25 m/s, 0.4, 1), thin
+ * shaft and a triangular head over its last 45 % (at least 4 shaft widths); a dot where the wind is below 1 m/s.
+ * PixelDeg keeps the lines at least a pixel wide.
  */
 bool PA_WindArrow(int Index, float3 Direction, float PixelDeg)
 {
@@ -463,18 +464,18 @@ bool PA_WindArrow(int Index, float3 Direction, float PixelDeg)
 
 	const float2 Wind = PA_SampleWeather(Index, Centre).zw;
 	const float Speed = length(Wind);
-	const float Width = max(0.05 * CellDeg, PixelDeg);
+	const float Width = max(0.025 * CellDeg, 0.5 * PixelDeg);   // shaft half width (UE test: with 0.05 the head was hidden)
 	if (Speed < 1.0)
 	{
-		return length(Offset) < 2.0 * Width;
+		return length(Offset) < 3.0 * Width;
 	}
 	const float2 Downwind = Wind / Speed;
-	const float HalfLength = 0.45 * CellDeg * clamp(Speed / 25.0, 0.25, 1.0);
+	const float HalfLength = 0.45 * CellDeg * clamp(Speed / 25.0, 0.4, 1.0);
 	const float Along = dot(Offset, Downwind);
 	const float Across = abs(Offset.x * Downwind.y - Offset.y * Downwind.x);
-	const bool bShaft = abs(Along) <= HalfLength && Across <= Width;
-	const float HeadLength = 0.4 * HalfLength;
-	const bool bHead = Along >= HalfLength - HeadLength && Along <= HalfLength && Across <= (HalfLength - Along) * 0.7 + 0.5 * Width;
+	const float HeadLength = max(0.45 * HalfLength, 4.0 * Width);
+	const bool bShaft = Along >= -HalfLength && Along <= HalfLength - HeadLength && Across <= Width;
+	const bool bHead = Along >= HalfLength - HeadLength && Along <= HalfLength && Across <= (HalfLength - Along) * 0.55 + 0.5 * Width;
 	return bShaft || bHead;
 }
 
