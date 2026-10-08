@@ -25,6 +25,7 @@ namespace PlanetAtmosphere::CVars
 		ShadowCascade0 = 9,   // Phase 4 / Step 22: cascade atlas overlays
 		ShadowCascade1 = 10,
 		ShadowCascade2 = 11,
+		CloudShadowUsage = 12,   // Step 23: lit samples served by the cascades (green) / the fallback light march (red)
 	};
 
 	/** Values of r.PlanetAtmosphere.StepDistribution. */
@@ -161,6 +162,10 @@ namespace PlanetAtmosphere::CVars
 		int32 GenerationSteps = 32;      // samples per texel ray through the cloud shell, [8, 128]
 		int32 UpdateBudgetTiles = 32;    // 32 x 32-texel tiles generated per view and frame, [0, 768]; 0 = no updates
 		double MinExtentCm = 8.0e5;      // half-size of cascade 0 near the ground (cm), from the CVar in km
+		// Step 23
+		bool bLighting = true;           // the cascades light the primary planet's clouds (hybrid); false = full light march
+		int32 LocalMarchSteps = 3;       // samples of the short local march, [1, 8]
+		double LocalMarchLengthCm = 1.0e5;   // its length (cm), from the CVar in km
 	};
 	FCloudShadowSettings GetCloudShadowSettings();
 }

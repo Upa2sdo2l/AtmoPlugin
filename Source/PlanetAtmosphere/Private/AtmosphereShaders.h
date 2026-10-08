@@ -166,10 +166,14 @@ public:
 		SHADER_PARAMETER(int32, bMultipleScattering)
 		// Clouds through the atmosphere (Phase 2.5 / Step 15): global multiplier of the per-planet CloudSkyAmbientScale.
 		SHADER_PARAMETER(float, CloudSkyAmbientScaleMultiplier)
-		// Cloud shadow cascades (Phase 4). Step 22: only the debug views 9-11 read them. Without cascades this frame
-		// (CloudShadowPlanet = -1) the transmittance LUT pool is bound as the atlas: never sampled then.
+		// Cloud shadow cascades (Phase 4). Without cascades this frame (CloudShadowPlanet = -1) the transmittance LUT pool
+		// is bound as the atlas: never sampled then.
 		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereCloudShadowParameters, CloudShadowParams)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, CloudShadowAtlas)
+		// Step 23: lighting of the primary planet's clouds = local march + cascades (fallback: the full light march).
+		SHADER_PARAMETER(int32, CloudShadowLighting)
+		SHADER_PARAMETER(int32, CloudShadowLocalSteps)
+		SHADER_PARAMETER(float, CloudShadowLocalLength)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

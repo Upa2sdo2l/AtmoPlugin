@@ -394,6 +394,12 @@ namespace PlanetAtmosphere
 			const FRDGTextureRef CloudShadowAtlas = CloudShadows::Get().Update(
 				GraphBuilder, GlobalShaderMap, View, Parameters->AtmosphereParams, ShadowInputs, Parameters->CloudShadowParams);
 			Parameters->CloudShadowAtlas = CloudShadowAtlas ? CloudShadowAtlas : Luts.Transmittance;
+
+			// Step 23: the cascades light the primary planet's clouds (local march + cascades, fallback: full light march).
+			const CVars::FCloudShadowSettings ShadowSettings = CVars::GetCloudShadowSettings();
+			Parameters->CloudShadowLighting = (CloudShadowAtlas && ShadowSettings.bLighting) ? 1 : 0;
+			Parameters->CloudShadowLocalSteps = ShadowSettings.LocalMarchSteps;
+			Parameters->CloudShadowLocalLength = static_cast<float>(ShadowSettings.LocalMarchLengthCm);
 		}
 
 		// DebugMode 8 (Temporal Weight) marches like the final image; the composite overlays the temporal weight.

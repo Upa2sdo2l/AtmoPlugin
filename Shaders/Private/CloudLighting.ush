@@ -30,21 +30,29 @@ float PA_CloudPhase(float CosTheta)
 }
 
 /**
- * Transmittance of sunlight from P (planet-relative, world axes, inside the cloud shell) toward the sun.
- * Marches NumSteps samples with quadratically growing spacing up to the cloud top (at most 3 layer thicknesses).
+ * Length of the light march from P (planet-relative, world axes, altitude known) toward the sun: up to the cloud-top
+ * exit, at most MaxLength.
  */
-float PA_CloudSunTransmittance(
-	FPAAtmosphere A, FPACloudLayer Layer,
-	float3 P, float Altitude, float3 SunDirection,
-	float BaseFootprint, int NumSteps,
-	inout uint NumDensitySamples)   // incremented per density call (Ray Steps debug view)
+float PA_CloudSunMarchLength(FPAAtmosphere A, float3 P, float Altitude, float3 SunDirection, float MaxLength)
 {
 	// Exit of the cloud-top sphere along the sun direction (precision-safe form, sample altitude known).
 	const float2 TopHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudTop);
-	const float MarchLength = min(max(TopHit.y, 0.0), 3.0 * Layer.Thickness);
+	return min(max(TopHit.y, 0.0), MaxLength);
+}
+
+/**
+ * Optical depth of the clouds from P toward the sun over MarchLength: NumSteps samples with quadratically growing
+ * spacing (fine near P). Stops above PA_LIGHT_MARCH_MAX_OPTICAL_DEPTH.
+ */
+float PA_CloudSunOpticalDepth(
+	FPAAtmosphere A, FPACloudLayer Layer,
+	float3 P, float3 SunDirection,
+	float BaseFootprint, int NumSteps, float MarchLength,
+	inout uint NumDensitySamples)   // incremented per density call (Ray Steps debug view)
+{
 	if (MarchLength <= 0.0 || NumSteps <= 0)
 	{
-		return 1.0;
+		return 0.0;
 	}
 
 	const float InvSteps2 = 1.0 / (float)(NumSteps * NumSteps);
@@ -65,7 +73,22 @@ float PA_CloudSunTransmittance(
 			break;
 		}
 	}
-	return exp(-OpticalDepth);
+	return OpticalDepth;
+}
+
+/**
+ * Transmittance of sunlight from P (planet-relative, world axes, inside the cloud shell) toward the sun: the light march
+ * of Steps 7-12, NumSteps samples up to the cloud top, at most 3 layer thicknesses. Since Phase 4 the fallback where the
+ * cloud shadow cascades are not available (CloudRaymarch.usf).
+ */
+float PA_CloudSunTransmittance(
+	FPAAtmosphere A, FPACloudLayer Layer,
+	float3 P, float Altitude, float3 SunDirection,
+	float BaseFootprint, int NumSteps,
+	inout uint NumDensitySamples)
+{
+	const float MarchLength = PA_CloudSunMarchLength(A, P, Altitude, SunDirection, 3.0 * Layer.Thickness);
+	return exp(-PA_CloudSunOpticalDepth(A, Layer, P, SunDirection, BaseFootprint, NumSteps, MarchLength, NumDensitySamples));
 }
 
 /** 1 in sunlight, 0 in the planet's shadow, with a narrow soft terminator. P planet-relative. */
