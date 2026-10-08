@@ -290,6 +290,14 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 			|| FVector3d::DotProduct(C.Sun, SunLocal) < CloudShadowSunChangeCos;
 		if (bReconfigure)
 		{
+			// Should be rare (camera height crossing a level, sun turned, parameter edit): repeated lines with a static
+			// camera mean the cascades never finish (diagnostic for the UE test).
+			UE_LOG(LogPlanetAtmosphere, Log, TEXT("Cloud shadows of view %u, frame %u: cascade %d regenerated (%s), texel %.1f m"),
+				ViewKey, FrameNumber, CascadeIndex,
+				!C.bConfigured ? (bNewAtlas ? TEXT("new atlas") : TEXT("planet / cloud parameters / settings / extent level"))
+					: (C.TexelSize != Texel ? TEXT("texel size")
+					: (C.State.Num() != TilesPerCascade ? TEXT("resolution") : TEXT("sun direction"))),
+				Texel * 1e-2);
 			C.bConfigured = true;
 			C.TexelSize = Texel;
 			C.Sun = SunLocal;

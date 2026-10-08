@@ -217,6 +217,9 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 - Cascades as described above; the image does not use them yet (Step 23: short local march + cascade for the rest of
   the sun path, decision from the Step 21 prototype)
 - `DebugMode 9 / 10 / 11`, `stat gpu` → PlanetAtmosphere.CloudShadows, CVars `r.PlanetAtmosphere.CloudShadows.*`
+- Fix (Step 19 interleave): with N > 1 the step jitter is evaluated on the block coordinate. On the traced pixels
+  (stride N) the interleaved gradient noise aliased into persistent screen-space stripes on clouds and crawling
+  patterns on far clouds at 3×3
 
 **Phase 4 — Step 21: prototype** (CPU): the current 6-step light march is too bright at low sun (21 km cap, coarse far
 steps); cascades alone are too coarse from orbit; chosen: 1 km local march + Beer-shadow-map cascades (mean error 8.5 → 3.4–4.1 %)
