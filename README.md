@@ -238,6 +238,12 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
+**Phase 4 closed (Steps 21–25)** — cloud shadows: 3 sun-aligned cascades per view for the primary planet (Beer Shadow
+Map, progressive tile generation, two sets with background rebuild + crossfade), hybrid sun transmittance for the clouds,
+shadows on the planet surface. UE measurements (RTX 3050, Interleave 3, PlanetAtmosphere.Raymarch default / without
+cloud shadows): sunset in clouds 1.08 / 0.95 ms, low orbit 1.12 / 1.06 ms, far planet 1.36 / 1.14 ms → +0.06…0.22 ms;
+CloudShadows 0 ms when static, ~0.12 ms (peak 0.22) while the sun moves; atlas 12 MB per view.
+
 **Phase 4 — Step 25: stability of the cloud shadows**
 - Prototype p25: shimmer while the camera moves is negligible (fixed points: mean frame-to-frame change 0.00–0.04,
   p99 0); the problem was the rebuild on a sun change (> 0.25°): ~24 frames of the light march, low-sun clouds 2–20 %
@@ -353,7 +359,7 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Step 25 — stability (camera jumps, sun changes, planet rotation), multi-planet policy, profiling, Phase 4 checklist.
+Next: Phase 5 — weather GPU state (wind, humidity, temperature, cloud water).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies
