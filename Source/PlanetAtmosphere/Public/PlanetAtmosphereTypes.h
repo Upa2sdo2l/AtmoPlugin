@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "PlanetWeatherTypes.h"
 
 /** Plugin log category. Per-frame output uses Verbose: `log LogPlanetAtmosphere Verbose`. */
 PLANETATMOSPHERE_API DECLARE_LOG_CATEGORY_EXTERN(LogPlanetAtmosphere, Log, All);
@@ -117,4 +118,20 @@ struct FAtmosphereVisibleInstance
 
 	/** Atmosphere scattering (Step 13), render-side units. */
 	FPlanetAtmosphereScattering ScatteringUU;
+
+	/** Weather parameters (Phase 5 / Step 27), model units (the planet radius comes from RadiiUU). */
+	FPlanetWeatherParameters Weather;
+};
+
+/**
+ * Weather time of one world (Phase 5 / Step 27), gathered on the game thread from UAtmosphereWorldSubsystem and copied to
+ * the render thread by value (like FAtmosphereSunLight).
+ */
+struct FAtmosphereWeatherTime
+{
+	/** Game seconds of the weather clock (AtmosphereWorldSubsystem::GetWeatherTime). */
+	double Seconds = 0.0;
+
+	/** False if the world has no atmosphere subsystem (then no weather is computed). */
+	bool bValid = false;
 };

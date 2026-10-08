@@ -13,3 +13,4 @@ IMPLEMENT_GLOBAL_SHADER(FAtmosphereMultipleScatteringLutCS, "/Plugin/PlanetAtmos
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereNoiseBakeCS, "/Plugin/PlanetAtmosphere/Private/NoiseBake.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereCloudShadowGenerateCS, "/Plugin/PlanetAtmosphere/Private/CloudShadowGenerate.usf", "GenerateCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FAtmosphereCloudShadowClearCS, "/Plugin/PlanetAtmosphere/Private/CloudShadowGenerate.usf", "ClearCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FAtmosphereWeatherGenerateCS, "/Plugin/PlanetAtmosphere/Private/WeatherGenerate.usf", "WeatherCS", SF_Compute);

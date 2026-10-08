@@ -182,4 +182,72 @@ public:
 	/** Number of raymarch steps (higher = better quality, more expensive) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (ClampMin = "16", ClampMax = "256"))
 	int32 RaymarchSteps = 64;
+
+	// ===== WEATHER (Phase 5 / Step 27) =====
+	// Deterministic planetary weather (model C): climatology + transported synoptic noise + storm objects, a pure function
+	// of (seed, weather time, these parameters, PlanetRadius). Same values -> same weather on every machine.
+	// Defaults are Earth-like. Weather time: UAtmosphereWorldSubsystem (SetWeatherTime / SetWeatherTimeScale),
+	// default = world time x r.PlanetAtmosphere.Weather.TimeScale (4: one 24 h day = 6 real hours).
+	// Note: Earth-like bands also need an Earth-like size and rotation; the default 1000 km planet rotating in 24 h is a
+	// slow rotator for its size (Hadley cells reach 60 deg). Use PlanetRadius 6,371,000 m or a faster rotation.
+	// Step 27 only computes the weather (visible with r.PlanetAtmosphere.DebugMode 14); it drives the clouds from Step 29.
+
+	/** Seed of the weather sequence (storms, noise). Same seed and parameters = same weather. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
+	int32 WeatherSeed = 1;
+
+	/** Length of one rotation (planet day) in game hours. Faster rotation = narrower climate belts, more storms. Earth: 24. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "1.0", ClampMax = "2400.0", UIMax = "240.0"))
+	float RotationPeriodHours = 24.0f;
+
+	/** Retrograde rotation: the winds and the rotation sense of the storms flip. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
+	bool bRetrogradeRotation = false;
+
+	/** Axial tilt in degrees: how far the tropical rain belt moves with the seasons. Earth: 23.44. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "90.0"))
+	float AxialTilt = 23.44f;
+
+	/** Year length in planet days (rotations). Earth: 365.25. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "1.0", UIMax = "1000.0"))
+	float YearLengthDays = 365.25f;
+
+	/** Position in the year at weather time 0: 0 = northern spring equinox, 0.25 = northern summer, 0.5 = autumn, 0.75 = winter. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SeasonPhase = 0.0f;
+
+	/** Global mean temperature, degrees Celsius. Earth: 15. (Temperature field: Step 28 debug view.) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "-250.0", ClampMax = "500.0", UIMin = "-100.0", UIMax = "100.0"))
+	float MeanTemperature = 15.0f;
+
+	/** Temperature difference between the equator and the poles, kelvin. Earth: ~40. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "200.0"))
+	float EquatorPoleTemperatureDifference = 40.0f;
+
+	/** Mean relative humidity at the cloud level (0 = dry, 1 = saturated): the baseline amount of cloud. Earth-like: 0.6. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float MeanHumidity = 0.6f;
+
+	/** Mean lifetime of an extratropical cyclone, planet days. Default 5; 3..7 for testing. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.5", ClampMax = "30.0", UIMin = "3.0", UIMax = "7.0"))
+	float CycloneLifetimeDays = 5.0f;
+
+	/** Extratropical cyclones alive per hemisphere on average (scaled by the rotation rate). Earth-like: 6. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "12.0"))
+	float CyclonesPerHemisphere = 6.0f;
+
+	/** Radius of an extratropical cyclone in meters (smaller on planets smaller than Earth). Earth-like: 1,200,000 m. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "50000.0", ClampMax = "5000000.0"))
+	double CycloneRadius = 1200000.0;
+
+	/** Tropical cyclones per hemisphere in its warm season. Earth-like: 1.5. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "4.0"))
+	float TropicalCyclonesPerHemisphere = 1.5f;
+
+	/** Multiplier of all wind speeds (zonal flow, storm drift, storm winds). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "5.0"))
+	float WindScale = 1.0f;
+
+	/** Weather parameters with runtime-safe clamps (UPROPERTY clamps only apply to Details-panel edits), model units. */
+	FPlanetWeatherParameters GetValidatedWeatherParameters() const;
 };

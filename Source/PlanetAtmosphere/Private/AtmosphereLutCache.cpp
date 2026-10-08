@@ -45,6 +45,7 @@ namespace
 		Dst.AtmosphereOzone[DstIndex] = Src.AtmosphereOzone[SrcIndex];
 		Dst.AtmosphereSurface[DstIndex] = Src.AtmosphereSurface[SrcIndex];
 		Dst.AtmosphereLutInfo[DstIndex] = Src.AtmosphereLutInfo[SrcIndex];
+		Dst.AtmosphereWeatherInfo[DstIndex] = Src.AtmosphereWeatherInfo[SrcIndex];
 	}
 
 	/**

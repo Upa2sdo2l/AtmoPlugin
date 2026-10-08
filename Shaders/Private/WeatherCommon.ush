@@ -1,0 +1,48 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Planetary weather (Phase 5 / Step 27): reading the weather atlas written by WeatherGenerate.usf.
+// C++ counterpart: FPlanetAtmosphereWeather (AtmosphereWeather.h); per-planet data AtmosphereWeatherInfo
+// (PlanetAtmosphereShaderData.ush). Step 27 reads it only in the debug view 14; Step 29 drives the cloud coverage with it.
+//
+// Atlas layout: RGBA16F (cloud water / coverage, effective humidity, wind east m/s, wind north m/s), one equi-angular
+// cube-sphere (PA_WeatherFaceCoord, WeatherModel.ush) per snapshot: face f at columns [f Res, (f + 1) Res), snapshot ring
+// entry r of planet slot s at rows [(3 s + r) Res, (3 s + r + 1) Res). Three snapshots per planet on a global time grid:
+// the two around the weather time (interpolated here) and the next one, built in the background.
+
+#include "/Plugin/PlanetAtmosphere/Private/WeatherModel.ush"
+
+Texture2D<float4> WeatherAtlas;            // the transmittance LUT pool when there is no weather (never sampled then)
+SamplerState WeatherSampler;               // bilinear, clamp
+int WeatherResolution;                     // texels per face side
+float4 WeatherAtlasSizeAndInvSize;         // xy = atlas size (texels), zw = 1 / size
+
+/** One snapshot: RowBase = first atlas row of the snapshot (texels). Bilinear inside the face (clamped to it). */
+float4 PA_SampleWeatherSnapshot(float3 Direction, float RowBase)
+{
+	const FPAWeatherFaceCoord Coord = PA_WeatherFaceCoord(Direction);
+	const float Res = (float)WeatherResolution;
+	const float2 FaceTexel = clamp((float2(Coord.A, Coord.B) + 1.0) * (0.5 * Res), 0.5, Res - 0.5);
+	const float2 UV = (float2((float)Coord.Face * Res, RowBase) + FaceTexel) * WeatherAtlasSizeAndInvSize.zw;
+	return WeatherAtlas.SampleLevel(WeatherSampler, UV, 0);
+}
+
+/** True if planet Index (view order) has weather this frame. */
+bool PA_HasWeather(int Index)
+{
+	return AtmosphereWeatherInfo[Index].x >= 0.0;
+}
+
+/**
+ * Weather of planet Index (view order) in Direction (planet local, any length), interpolated in time between the two
+ * snapshots around the weather time: x = cloud water / coverage (0..1), y = effective relative humidity (0..1),
+ * z = wind east (m/s), w = wind north (m/s). Only valid if PA_HasWeather(Index).
+ */
+float4 PA_SampleWeather(int Index, float3 Direction)
+{
+	const float4 Info = AtmosphereWeatherInfo[Index];
+	const float4 A = PA_SampleWeatherSnapshot(Direction, Info.y);
+	const float4 B = PA_SampleWeatherSnapshot(Direction, Info.z);
+	return lerp(A, B, Info.w);
+}

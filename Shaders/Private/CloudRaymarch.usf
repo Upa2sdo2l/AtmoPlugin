@@ -2,7 +2,7 @@
 
 // Cloud + atmosphere raymarch (r.PlanetAtmosphere.DebugMode 0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps,
 // 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2,
-// 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow).
+// 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow, 14 = Weather Coverage).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -32,6 +32,7 @@
 #include "/Plugin/PlanetAtmosphere/Private/RaymarchSchedule.ush"
 #include "/Plugin/PlanetAtmosphere/Private/AtmosphereScattering.ush"
 #include "/Plugin/PlanetAtmosphere/Private/CloudShadowCommon.ush"
+#include "/Plugin/PlanetAtmosphere/Private/WeatherCommon.ush"
 
 // Interleaved rendering (Phase 3 / Step 19): with InterleaveFactor N > 1 one thread per N x N block traces the pixel
 // block * N + InterleaveOffset (clamped into the view) and writes to texel = block of the reduced outputs;
@@ -45,7 +46,7 @@ RWTexture2D<float4> OutLuminance;      // rgb = pre-exposed luminance added in f
 RWTexture2D<float4> OutTransmittance;  // rgb = transmittance applied to the scene color
 
 int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT,
-                             // 9-11 = shadow cascade 0-2, 12 = cloud shadow usage, 13 = surface cloud shadow
+                             // 9-11 = shadow cascade 0-2, 12 = cloud shadow usage, 13 = surface cloud shadow, 14 = weather coverage
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -418,6 +419,55 @@ float3 PA_HeightColor(float H)
 	return float3(saturate(2.0 * H - 1.0), 1.0 - abs(2.0 * H - 1.0), saturate(1.0 - 2.0 * H));
 }
 
+/**
+ * DebugMode 14 (Phase 5 / Step 27): the weather cloud water of the nearest planet on the sphere in the middle of its cloud
+ * layer (unlit): dark blue = 0 .. white = 1; latitude lines every 30 deg (equator orange, poles' lines grey); magenta
+ * checker = this planet has no weather this frame. Returns false where the ray misses every such sphere (or scene geometry
+ * is closer): the caller then shows the darkened image.
+ */
+bool PA_WeatherCoverageView(FPAPixelRay Ray, out float3 Luminance)
+{
+	Luminance = 0.0;
+	for (int Index = 0; Index < NumAtmospheres && Index < PA_MAX_ATMOSPHERES; ++Index)
+	{
+		const FPAAtmosphere A = PA_LoadAtmosphere(Index);
+		const float MidAltitude = 0.5 * (A.CloudBottom + A.CloudTop);
+		const float2 Hit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, MidAltitude);
+		if (Hit.x > Hit.y || Hit.y <= 0.0)
+		{
+			continue;
+		}
+		const float T = Hit.x > 0.0 ? Hit.x : Hit.y;   // from below the sphere: the layer overhead
+		if (T > Ray.SceneDistance)
+		{
+			continue;
+		}
+		const float3 Local = PA_ToPlanetLocal(A, A.CameraRel + Ray.Dir * T);
+		const float3 Direction = normalize(Local);
+		if (PA_HasWeather(Index))
+		{
+			const float Cover = saturate(PA_SampleWeather(Index, Direction).x);
+			Luminance = lerp(float3(0.02, 0.04, 0.15), float3(1.0, 1.0, 1.0), Cover);
+		}
+		else
+		{
+			const float2 Cell = floor(float2(atan2(Direction.y, Direction.x), asin(clamp(Direction.z, -1.0, 1.0))) * (36.0 / PA_PI));
+			Luminance = fmod(abs(Cell.x + Cell.y), 2.0) > 0.5 ? float3(1.0, 0.0, 1.0) : float3(0.25, 0.0, 0.25);
+		}
+
+		// Latitude lines every 30 deg, about one pixel wide at any distance.
+		const float LatitudeDeg = asin(clamp(Direction.z, -1.0, 1.0)) * (180.0 / PA_PI);
+		const float PixelDeg = Ray.FootprintPerUnitDistance * T / max(A.PlanetRadius + MidAltitude, 1.0) * (180.0 / PA_PI);
+		const float LineDistance = abs(LatitudeDeg - 30.0 * round(LatitudeDeg / 30.0));
+		if (LineDistance < max(PixelDeg, 0.05))
+		{
+			Luminance = abs(LatitudeDeg) < 15.0 ? float3(1.0, 0.45, 0.0) : float3(0.5, 0.5, 0.5);
+		}
+		return true;
+	}
+	return false;
+}
+
 [numthreads(8, 8, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -435,6 +485,16 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 	const uint2 OutputTexel = Factor == 1 ? Ray.Pixel : Block;
+
+	// Weather Coverage view (Step 27): no march, the weather atlas only (never temporally accumulated: Factor = 1).
+	if (DebugMode == 14)
+	{
+		float3 WeatherLuminance;
+		const bool bWeatherHit = PA_WeatherCoverageView(Ray, WeatherLuminance);
+		OutLuminance[OutputTexel] = float4(WeatherLuminance, -1.0);
+		OutTransmittance[OutputTexel] = float4(bWeatherHit ? 0.0 : 0.25, bWeatherHit ? 0.0 : 0.25, bWeatherHit ? 0.0 : 0.25, (float)PA_REPROJ_NO_PLANET);
+		return;
+	}
 	// Footprint used for noise LOD only (density + light march). See NoiseFootprintScale.
 	const float PixelFootprintPerUnitDistance = Ray.FootprintPerUnitDistance;
 	Ray.FootprintPerUnitDistance *= NoiseFootprintScale;

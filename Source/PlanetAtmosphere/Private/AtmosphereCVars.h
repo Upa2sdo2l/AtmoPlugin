@@ -27,6 +27,7 @@ namespace PlanetAtmosphere::CVars
 		ShadowCascade2 = 11,
 		CloudShadowUsage = 12,   // Step 23: lit samples served by the cascades (green) / the fallback light march (red); Step 24: + surface
 		SurfaceCloudShadow = 13, // Step 24: cloud transmittance of the sun path on the placeholder surface
+		WeatherCoverage = 14,    // Phase 5 / Step 27: weather cloud water (coverage) on the cloud layer sphere
 	};
 
 	/** Values of r.PlanetAtmosphere.StepDistribution. */
@@ -179,4 +180,21 @@ namespace PlanetAtmosphere::CVars
 		float SurfaceMaxTexel = 0.0625f; // coarsest cascade texel used for the surface, in units of CloudShapeScale, [0, 16]
 	};
 	FCloudShadowSettings GetCloudShadowSettings();
+
+	/** r.PlanetAtmosphere.Weather.* (Phase 5 / Step 27), validated. */
+	struct FWeatherSettings
+	{
+		bool bEnabled = true;
+		int32 Resolution = 256;                  // texels per cube-face side, multiple of 8 in [64, 512]
+		int32 MaxPlanets = 4;                    // planets with weather per view (nearest first), [1, 8]
+		double SnapshotIntervalSeconds = 600.0;  // game seconds between two weather snapshots, [10, 86400]
+		int32 FacesPerFrame = 1;                 // cube faces of the next snapshot built per frame and planet, [1, 6]
+	};
+	FWeatherSettings GetWeatherSettings();
+
+	/** r.PlanetAtmosphere.Weather.TimeScale — game seconds of weather per world second (default clock), [0, 1e6]. */
+	double GetWeatherTimeScale();
+
+	/** r.PlanetAtmosphere.Weather.TimeOffsetHours — game hours added to the weather clock (testing). */
+	double GetWeatherTimeOffsetHours();
 }

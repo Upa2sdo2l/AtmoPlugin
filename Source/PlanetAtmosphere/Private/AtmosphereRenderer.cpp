@@ -15,6 +15,7 @@
 #include "AtmosphereLutCache.h"
 #include "AtmosphereTemporal.h"
 #include "AtmosphereCloudShadows.h"
+#include "AtmosphereWeather.h"
 #include "RHIStaticStates.h"
 
 // `stat gpu` (Step 17 split, master prompt section 28):
@@ -229,6 +230,7 @@ namespace PlanetAtmosphere
 			OutParameters.NumAtmospheres = NumAtmospheres;
 
 			const FVector4f Zero(0.0f, 0.0f, 0.0f, 0.0f);
+			const FVector4f NoWeather(-1.0f, 0.0f, 0.0f, 0.0f);
 			for (int32 Index = 0; Index < PLANET_ATMOSPHERE_MAX_VISIBLE; ++Index)
 			{
 				if (Index >= NumAtmospheres)
@@ -246,6 +248,7 @@ namespace PlanetAtmosphere
 					OutParameters.AtmosphereOzone[Index] = Zero;
 					OutParameters.AtmosphereSurface[Index] = Zero;
 					OutParameters.AtmosphereLutInfo[Index] = Zero;
+					OutParameters.AtmosphereWeatherInfo[Index] = NoWeather;
 					continue;
 				}
 
@@ -304,6 +307,8 @@ namespace PlanetAtmosphere
 
 				// LUT pool slot: assigned by the LUT cache (Step 16) for the raymarch pass; 0 for the bounds debug pass.
 				OutParameters.AtmosphereLutInfo[Index] = Zero;
+				// Weather slot: assigned by the weather (Step 27) for the raymarch pass; none otherwise.
+				OutParameters.AtmosphereWeatherInfo[Index] = NoWeather;
 			}
 		}
 	}
@@ -313,7 +318,8 @@ namespace PlanetAtmosphere
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs,
 		TArray<FAtmosphereVisibleInstance>& Instances,
-		const FAtmosphereSunLight& Sun)
+		const FAtmosphereSunLight& Sun,
+		const FAtmosphereWeatherTime& WeatherTime)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_PlanetAtmosphere_SetupPasses);
 
@@ -321,6 +327,7 @@ namespace PlanetAtmosphere
 		// nothing to draw).
 		Temporal::GetHistory().CollectGarbage(View.Family->FrameNumber);
 		CloudShadows::Get().CollectGarbage(View.Family->FrameNumber);
+		Weather::Get().CollectGarbage(View.Family->FrameNumber);
 
 		FAtmospherePassSetup Setup;
 		if (!PrepareCommon(GraphBuilder, Inputs, Instances, Setup))
@@ -379,6 +386,25 @@ namespace PlanetAtmosphere
 			!CVars::IsLutCacheEnabled(), Parameters->AtmosphereParams, Luts))
 		{
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
+		}
+
+		// Phase 5 / Step 27: weather snapshots of the view's planets (nearest r.PlanetAtmosphere.Weather.MaxPlanets), built
+		// before the raymarch, which always binds the atlas (so these passes are never culled) and reads it in DebugMode 14.
+		// Writes AtmosphereWeatherInfo; without weather the transmittance pool is bound in its slot (never sampled).
+		{
+			FAtmosphereWeatherInputs WeatherInputs;
+			WeatherInputs.Planets = TConstArrayView<FAtmosphereVisibleInstance>(Instances.GetData(), Parameters->AtmosphereParams.NumAtmospheres);
+			WeatherInputs.Time = WeatherTime;
+			int32 WeatherResolution = 0;
+			const FRDGTextureRef WeatherAtlas = Weather::Get().Update(
+				GraphBuilder, GlobalShaderMap, View.Family->FrameNumber, WeatherInputs, Parameters->AtmosphereParams, WeatherResolution);
+			Parameters->WeatherAtlas = WeatherAtlas ? WeatherAtlas : Luts.Transmittance;
+			Parameters->WeatherSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			Parameters->WeatherResolution = FMath::Max(WeatherResolution, 1);
+			const FIntPoint WeatherExtent = WeatherAtlas ? WeatherAtlas->Desc.Extent : FIntPoint(1, 1);
+			Parameters->WeatherAtlasSizeAndInvSize = FVector4f(
+				static_cast<float>(WeatherExtent.X), static_cast<float>(WeatherExtent.Y),
+				1.0f / static_cast<float>(FMath::Max(WeatherExtent.X, 1)), 1.0f / static_cast<float>(FMath::Max(WeatherExtent.Y, 1)));
 		}
 
 		// Phase 4 / Step 22: cloud shadow cascades of the primary planet (largest on screen, with hysteresis), updated

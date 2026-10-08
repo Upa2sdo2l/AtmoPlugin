@@ -1,0 +1,70 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Phase 5 / Step 27 — one weather snapshot (one time) of one planet: evaluates model C (WeatherModel.ush) at the texel
+// centres of up to 6 cube faces (dispatch z = face list entry) and writes them into the planet's snapshot rows of the
+// weather atlas (layout: WeatherCommon.ush). Time-dependent uniforms and the storm list come from the CPU
+// (AtmosphereWeatherModel.cpp, double precision), scheduled by AtmosphereWeather.cpp.
+
+#define PA_WEATHER_GENERATE 1
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/WeatherModel.ush"
+
+RWTexture2D<float4> OutWeatherAtlas;
+int WeatherResolution;          // texels per face side
+int WeatherRowBase;             // first atlas row of this snapshot
+float4 WeatherFaces[6];         // x = cube face written by dispatch slice z
+float4 WeatherPlanet;           // radius km, rotation sign, wind scale, mean humidity
+float4 WeatherCells;            // Hadley edge deg, Ferrel edge deg, thermal equator rad, unused
+float4 WeatherNoise;            // anchor ages (h) 0 / 1, crossfade weights 0 / 1
+float4 WeatherItcz;             // cluster anchor weights 0 / 1, drift angle rad, unused
+float4 WeatherPhases;           // easterly wave phases (wavenumber 7, 11), storm-track wave phase, ITCZ meander phase
+int WeatherNoiseSeed0;          // uint32 bit patterns
+int WeatherNoiseSeed1;
+int WeatherItczSeed0;
+int WeatherItczSeed1;
+
+FPAWeatherInputs PA_LoadWeatherInputs()
+{
+	FPAWeatherInputs In;
+	In.RadiusKm = WeatherPlanet.x;
+	In.Sign = WeatherPlanet.y;
+	In.WindScale = WeatherPlanet.z;
+	In.Humidity = WeatherPlanet.w;
+	In.HadleyDegrees = WeatherCells.x;
+	In.FerrelDegrees = WeatherCells.y;
+	In.ThermalEquator = WeatherCells.z;
+	In.NoiseSeed0 = asuint(WeatherNoiseSeed0);
+	In.NoiseSeed1 = asuint(WeatherNoiseSeed1);
+	In.NoiseAge0 = WeatherNoise.x;
+	In.NoiseAge1 = WeatherNoise.y;
+	In.NoiseWeight0 = WeatherNoise.z;
+	In.NoiseWeight1 = WeatherNoise.w;
+	In.ItczSeed0 = asuint(WeatherItczSeed0);
+	In.ItczSeed1 = asuint(WeatherItczSeed1);
+	In.ItczWeight0 = WeatherItcz.x;
+	In.ItczWeight1 = WeatherItcz.y;
+	In.ItczDriftAngle = WeatherItcz.z;
+	In.ItczWavePhase7 = WeatherPhases.x;
+	In.ItczWavePhase11 = WeatherPhases.y;
+	In.StormTrackWavePhase = WeatherPhases.z;
+	In.MeanderPhase = WeatherPhases.w;
+	return In;
+}
+
+[numthreads(8, 8, 1)]
+void WeatherCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int Res = WeatherResolution;
+	if (DispatchThreadId.x >= (uint)Res || DispatchThreadId.y >= (uint)Res || DispatchThreadId.z >= 6u)
+	{
+		return;
+	}
+	const int Face = (int)WeatherFaces[DispatchThreadId.z].x;
+	const float A = ((float)DispatchThreadId.x + 0.5) / (float)Res * 2.0 - 1.0;
+	const float B = ((float)DispatchThreadId.y + 0.5) / (float)Res * 2.0 - 1.0;
+
+	const FPAWeatherSample Weather = PA_EvaluateWeather(PA_WeatherFaceDirection(Face, A, B), PA_LoadWeatherInputs());
+	OutWeatherAtlas[int2(Face * Res + (int)DispatchThreadId.x, WeatherRowBase + (int)DispatchThreadId.y)] =
+		float4(Weather.Cover, Weather.Humidity, Weather.WindEast, Weather.WindNorth);
+}

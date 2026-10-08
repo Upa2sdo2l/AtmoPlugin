@@ -5,6 +5,7 @@
 #include "PlanetAtmosphereComponent.h"
 #include "PlanetAtmosphereViewExtension.h"
 #include "PlanetAtmosphereTypes.h"
+#include "AtmosphereCVars.h"
 #include "SceneViewExtension.h"
 #include "Engine/World.h"
 #include "Misc/App.h"
@@ -65,4 +66,50 @@ void UAtmosphereWorldSubsystem::UnregisterAtmosphere(UPlanetAtmosphereComponent*
 		UE_LOG(LogPlanetAtmosphere, Log, TEXT("AtmosphereWorldSubsystem: Unregistered atmosphere '%s' (Remaining: %d)"),
 			*GetPathNameSafe(Component), RegisteredAtmospheres.Num());
 	}
+}
+
+double UAtmosphereWorldSubsystem::GetWeatherTimeScale() const
+{
+	return bWeatherTimeScaleOverridden ? WeatherTimeScaleOverride : PlanetAtmosphere::CVars::GetWeatherTimeScale();
+}
+
+double UAtmosphereWorldSubsystem::GetWeatherBaseTime() const
+{
+	const UWorld* World = GetWorld();
+	const double WorldSeconds = World ? World->GetTimeSeconds() : 0.0;
+	const double Scale = GetWeatherTimeScale();
+	return bWeatherTimeAnchored
+		? WeatherAnchorTime + (WorldSeconds - WeatherAnchorWorldTime) * Scale
+		: WorldSeconds * Scale;
+}
+
+double UAtmosphereWorldSubsystem::GetWeatherTime() const
+{
+	return GetWeatherBaseTime() + PlanetAtmosphere::CVars::GetWeatherTimeOffsetHours() * 3600.0;
+}
+
+void UAtmosphereWorldSubsystem::SetWeatherTime(double WeatherTimeSeconds)
+{
+	const UWorld* World = GetWorld();
+	bWeatherTimeAnchored = true;
+	WeatherAnchorTime = WeatherTimeSeconds;
+	WeatherAnchorWorldTime = World ? World->GetTimeSeconds() : 0.0;
+	UE_LOG(LogPlanetAtmosphere, Log, TEXT("AtmosphereWorldSubsystem: weather time set to %.1f s (%.2f h) in world '%s'"),
+		WeatherTimeSeconds, WeatherTimeSeconds / 3600.0, *GetNameSafe(World));
+}
+
+void UAtmosphereWorldSubsystem::SetWeatherTimeScale(double GameSecondsPerWorldSecond)
+{
+	// Re-anchor at the current time first, so that only the rate changes.
+	SetWeatherTime(GetWeatherBaseTime());
+	bWeatherTimeScaleOverridden = true;
+	WeatherTimeScaleOverride = FMath::Clamp(GameSecondsPerWorldSecond, 0.0, 1.0e6);
+	UE_LOG(LogPlanetAtmosphere, Log, TEXT("AtmosphereWorldSubsystem: weather time scale set to %g"), WeatherTimeScaleOverride);
+}
+
+void UAtmosphereWorldSubsystem::ClearWeatherTimeOverride()
+{
+	bWeatherTimeAnchored = false;
+	bWeatherTimeScaleOverridden = false;
+	UE_LOG(LogPlanetAtmosphere, Log, TEXT("AtmosphereWorldSubsystem: weather clock back to world time x r.PlanetAtmosphere.Weather.TimeScale"));
 }
