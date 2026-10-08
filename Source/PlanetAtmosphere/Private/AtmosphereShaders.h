@@ -61,6 +61,18 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereWeatherClimate, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 END_SHADER_PARAMETER_STRUCT()
 
+/**
+ * The weather atlas (Phase 5, WeatherAtlas.ush), bound to every pass that evaluates the cloud density (Step 29: the cloud
+ * water sets the local coverage) and to the raymarch's weather debug views. Without weather this frame the transmittance
+ * LUT pool is bound (never sampled: AtmosphereWeatherInfo.x = -1 everywhere).
+ */
+BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereWeatherAtlasParameters, )
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, WeatherAtlas)
+	SHADER_PARAMETER_SAMPLER(SamplerState, WeatherSampler)
+	SHADER_PARAMETER(int32, WeatherResolution)
+	SHADER_PARAMETER(FVector4f, WeatherAtlasSizeAndInvSize)
+END_SHADER_PARAMETER_STRUCT()
+
 /** Cloud shadow cascades (Phase 4). Must match PA_SHADOW_CASCADES (Shaders/Private/CloudShadowCommon.ush). */
 #define PLANET_ATMOSPHERE_SHADOW_CASCADES 3
 
@@ -198,12 +210,8 @@ public:
 		SHADER_PARAMETER(float, CloudShadowSurfaceMaxStep)
 		SHADER_PARAMETER(int32, CloudShadowSurfaceJitter)
 		SHADER_PARAMETER(float, CloudShadowSurfaceMaxTexel)
-		// Weather (Phase 5 / Step 27, WeatherCommon.ush): the weather atlas, per planet AtmosphereWeatherInfo. Without weather
-		// this frame the transmittance LUT pool is bound (never sampled: AtmosphereWeatherInfo.x = -1 everywhere).
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, WeatherAtlas)
-		SHADER_PARAMETER_SAMPLER(SamplerState, WeatherSampler)
-		SHADER_PARAMETER(int32, WeatherResolution)
-		SHADER_PARAMETER(FVector4f, WeatherAtlasSizeAndInvSize)
+		// Weather (Phase 5): the weather atlas (density, Step 29; debug views 14-17), per planet AtmosphereWeatherInfo.
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereWeatherAtlasParameters, WeatherParams)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -284,6 +292,8 @@ public:
 		SHADER_PARAMETER(int32, NoiseSource)
 		// r.PlanetAtmosphere.NoiseFootprintScale: noise octaves fade at this fraction of the texel size (prototype: 1/4).
 		SHADER_PARAMETER(float, NoiseFootprintScale)
+		// Step 29: the weather drives the coverage in the density (same atlas as the raymarch).
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereWeatherAtlasParameters, WeatherParams)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

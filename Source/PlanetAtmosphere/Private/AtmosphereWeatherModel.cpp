@@ -240,6 +240,24 @@ namespace PlanetAtmosphere::Weather
 		return static_cast<double>(Hash(A, B, C, D)) / 4294967296.0;
 	}
 
+	bool SameParameters(const FPlanetWeatherParameters& A, const FPlanetWeatherParameters& B)
+	{
+		return A.Seed == B.Seed
+			&& A.RotationPeriodHours == B.RotationPeriodHours
+			&& A.bRetrograde == B.bRetrograde
+			&& A.AxialTiltDegrees == B.AxialTiltDegrees
+			&& A.YearLengthDays == B.YearLengthDays
+			&& A.SeasonPhase == B.SeasonPhase
+			&& A.MeanTemperatureK == B.MeanTemperatureK
+			&& A.EquatorPoleDifferenceK == B.EquatorPoleDifferenceK
+			&& A.Humidity == B.Humidity
+			&& A.CycloneLifetimeDays == B.CycloneLifetimeDays
+			&& A.CyclonesPerHemisphere == B.CyclonesPerHemisphere
+			&& A.CycloneRadiusKm == B.CycloneRadiusKm
+			&& A.TropicalCyclonesPerHemisphere == B.TropicalCyclonesPerHemisphere
+			&& A.WindScale == B.WindScale;
+	}
+
 	void ComputeCellEdges(const FPlanetWeatherParameters& Params, double PlanetRadiusKm, double& OutHadleyDegrees, double& OutFerrelDegrees)
 	{
 		const double Earth = EarthOmega * EarthRadiusKm;

@@ -12,22 +12,7 @@
 // entry r of planet slot s at rows [(3 s + r) Res, (3 s + r + 1) Res). Three snapshots per planet on a global time grid:
 // the two around the weather time (interpolated here) and the next one, built in the background.
 
-#include "/Plugin/PlanetAtmosphere/Private/WeatherModel.ush"
-
-Texture2D<float4> WeatherAtlas;            // the transmittance LUT pool when there is no weather (never sampled then)
-SamplerState WeatherSampler;               // bilinear, clamp
-int WeatherResolution;                     // texels per face side
-float4 WeatherAtlasSizeAndInvSize;         // xy = atlas size (texels), zw = 1 / size
-
-/** One snapshot: RowBase = first atlas row of the snapshot (texels). Bilinear inside the face (clamped to it). */
-float4 PA_SampleWeatherSnapshot(float3 Direction, float RowBase)
-{
-	const FPAWeatherFaceCoord Coord = PA_WeatherFaceCoord(Direction);
-	const float Res = (float)WeatherResolution;
-	const float2 FaceTexel = clamp((float2(Coord.A, Coord.B) + 1.0) * (0.5 * Res), 0.5, Res - 0.5);
-	const float2 UV = (float2((float)Coord.Face * Res, RowBase) + FaceTexel) * WeatherAtlasSizeAndInvSize.zw;
-	return WeatherAtlas.SampleLevel(WeatherSampler, UV, 0);
-}
+#include "/Plugin/PlanetAtmosphere/Private/WeatherAtlas.ush"
 
 /** True if planet Index (view order) has weather this frame. */
 bool PA_HasWeather(int Index)

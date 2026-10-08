@@ -142,8 +142,9 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 6 Res RGBA16F (two sets of 3 cascades, Step 25), 12 MB per view at 512 |
 | `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |
 | `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 32 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades: RTX 3050 frame peaks 8 → 0.11 ms, 16 → 0.14 ms, 32 → 0.23 ms; 32 fills all cascades in 24 frames |
+| `r.PlanetAtmosphere.CloudShadows.WeatherRefresh` | 600 | Step 29: cascade tiles generated more than this many game seconds of weather time ago are regenerated (after the missing tiles of both sets, within `UpdateBudget`); 0 = never |
 | `r.PlanetAtmosphere.CloudShadows.MinExtent` | 8 | Half-size of cascade 0 near the cloud layer, km; grows with the camera height in powers of two; cascade i = × 4^i |
-| `r.PlanetAtmosphere.Weather` | 1 | Planetary weather (Phase 5): computed per planet on the GPU; Step 27 shows it only in `DebugMode 14`. 0 = no weather passes (atlas freed after 120 frames) |
+| `r.PlanetAtmosphere.Weather` | 1 | Planetary weather (Phase 5): computed per planet on the GPU; its cloud water sets the local cloud coverage (Step 29); debug views `DebugMode 14`–`17`. 0 = the procedural cloud mask as before Phase 5, no weather passes (atlas freed after 120 frames) |
 | `r.PlanetAtmosphere.Weather.TimeScale` | 4 | Default weather clock: game seconds per world second (4 = one 24 h day in 6 real hours; 0 = frozen). Overridden by `SetWeatherTimeScale` |
 | `r.PlanetAtmosphere.Weather.TimeOffsetHours` | 0 | Game hours added to the weather clock (testing: jump in time) |
 | `r.PlanetAtmosphere.Weather.Resolution` | 256 | Texels per cube-face side (64..512): ~39 km per texel on an Earth-size planet; 9.4 MB per planet at 256 |
@@ -208,8 +209,24 @@ over long times.
   spread over the frames left before it is needed (estimated from the previous frame's time step), so it never has to
   be built synchronously as long as a snapshot lasts at least one frame (faster than that: increase `SnapshotInterval`).
   Storm winds fade out between 2.5 and 4 storm radii (before: a circular jump of up to ~10 m/s at the 4-radius cut).
-- The clouds do not follow the weather yet (Step 29). Debug views on the middle of the cloud layer, latitude lines every
-  30° (equator orange): `DebugMode 14` cloud water, `15` humidity, `16` wind (speed + arrows), `17` temperature.
+- **Clouds** (Step 29): the weather's cloud water C (interpolated between the two snapshots) sets the **local
+  coverage** of the existing procedural cloud mask, which keeps breaking the cloud edges at ~6× `CloudShapeScale` at
+  every distance. `CloudCoverage` becomes a scale on the weather: 0.5 (default) = the weather as it is, 0 = no clouds,
+  1 = overcast; in between C is pushed toward 0 or 1 (`C · Coverage / 0.5` below 0.5, `1 − (1 − C)(1 − Coverage) / 0.5`
+  above). Where the local coverage exceeds 0.6 the mask is boosted up to 1.5×, so storm cores and fronts become
+  overcast. Prototype p29 (mean column opacity near the camera / from far): C 0.3 → 0.15 / 0.05, 0.5 → 0.35 / 0.36,
+  0.7 → 0.58 / 0.85, 1.0 → 0.95 / 1.0 (the far image is sharper, as was the case before with a constant coverage).
+  For a cloudier Earth-like look set `CloudCoverage` ~0.65. Same density function everywhere (raymarch, cloud shadow
+  cascades, surface shadows); `Weather 0` or a planet beyond `Weather.MaxPlanets`: the constant `CloudCoverage` as before.
+  Cost: two bilinear atlas reads per density sample inside the cloud layer.
+- Cloud shadow cascades follow the weather: every tile records the weather time it was generated at and is regenerated
+  when it is older than `CloudShadows.WeatherRefresh` (default one snapshot interval), through the same queue and budget
+  after the missing tiles. A large jump of the weather clock therefore re-lights the shadows progressively (tiles of the
+  old weather until regenerated). With a very fast clock (time-lapse) the refresh uses the whole `UpdateBudget` every frame.
+- Storm births (Step 29): extratropical cyclones are born on golden-ratio longitude lanes (plus a small jitter) instead of
+  random longitudes, so storms of one hemisphere no longer overlap (closest pair median 0.9 → 2.6 radii; < 1 radius
+  58 % → 0.3 %); the statistics of the cloud water are unchanged.
+- Debug views on the middle of the cloud layer, latitude lines every 30° (equator orange): `DebugMode 14` cloud water, `15` humidity, `16` wind (speed + arrows), `17` temperature.
   The temperature of model C is zonal (latitude + season); storms do not change it.
 
 ## Debug views and profiling
@@ -295,7 +312,11 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 5 — Step 29a: weather orientation** (in review) — westerlies / northern cyclones counter-clockwise seen from
+**Phase 5 — Step 29: clouds follow the weather** (in review) — the weather's cloud water sets the local cloud coverage
+(`CloudCoverage` 0.5 = the weather as it is), overcast storm cores, cloud shadow tiles refreshed by weather age
+(`CloudShadows.WeatherRefresh`), storm births on longitude lanes (no overlapping storms).
+
+**Phase 5 — Step 29a: weather orientation** (merged) — westerlies / northern cyclones counter-clockwise seen from
 above local +Z, like Earth (model evaluated mirrored for Unreal's left-handed frame).
 
 **Phase 5 — Step 28: weather debug views** (tested in UE) — `DebugMode 15 / 16 / 17` (humidity, wind, temperature),
@@ -428,7 +449,7 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 5 — Step 29 (weather drives the cloud coverage), Step 30 (profiling, Phase 5 checklist).
+Next: Phase 5 — Step 30 (profiling, Phase 5 checklist).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies

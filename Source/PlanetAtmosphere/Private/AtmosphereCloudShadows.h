@@ -34,6 +34,9 @@ struct FAtmosphereCloudShadowInputs
 	TConstArrayView<double> ScreenRadiiPx;
 	FAtmosphereSunLight Sun;
 	FPlanetAtmosphereNoiseTexturesRDG Noise;
+	/** Step 29: the weather atlas (the density reads the cloud water) and the weather time (age-based tile refresh). */
+	FAtmosphereWeatherAtlasParameters WeatherParams;
+	FAtmosphereWeatherTime WeatherTime;
 };
 
 /**
@@ -65,8 +68,10 @@ struct FAtmosphereCloudShadowInputs
  *    so a new region costs quality for a moment, never a hitch.
  *  - Validity of the CPU state relies on the passes being executed: the raymarch pass of the same graph always binds
  *    the atlas (never culled), and a new atlas is a cull root at creation (ConvertToExternalTexture).
- *  - Hook for Phase 6 (moving clouds): every tile records the frame it was generated in, so a maximum age can schedule
- *    refreshes through the same queue.
+ *  - Step 29 (the weather drives the clouds): every tile records the weather time it was generated at; tiles older than
+ *    r.PlanetAtmosphere.CloudShadows.WeatherRefresh game seconds (or generated at a later time: the clock went back) are
+ *    regenerated through the same queue, after the tiles that are missing (no sync work, no hitch). Weather switched on /
+ *    off for the planet or its weather parameters changed: both sets start over.
  */
 class FPlanetAtmosphereCloudShadows : public FRenderResource
 {
@@ -114,6 +119,7 @@ private:
 		TArray<int64> HeldTileY;
 		TArray<ETileState> State;
 		TArray<uint32> GeneratedFrame;
+		TArray<double> GeneratedWeatherTime;   // Step 29: weather time (game s) of the generation
 	};
 
 	struct FCascadeSet
@@ -139,6 +145,7 @@ private:
 		bool bBackActive = false;     // the back set is configured and being generated / crossfaded in
 		int32 CrossfadeFrame = 0;     // > 0: crossfading front -> back, weight CrossfadeFrame / (CrossfadeFrames + 1)
 		int32 CrossfadeFrames = 0;    // length of the current crossfade
+		FPlanetWeatherParameters Weather;   // Step 29: weather parameters the content was generated with
 	};
 
 	/** Blend = weight of the back set during a crossfade (0 = front only). */

@@ -67,6 +67,7 @@ struct FPAAtmosphere
 	float3 AxisX;
 	float3 AxisY;
 	float3 AxisZ;
+	int Index;               // in the atmosphere arrays (view order)
 };
 
 FPAAtmosphere PA_LoadAtmosphere(int Index)
@@ -89,6 +90,7 @@ FPAAtmosphere PA_LoadAtmosphere(int Index)
 	A.AxisX = AtmosphereAxisX[Index].xyz;
 	A.AxisY = AtmosphereAxisY[Index].xyz;
 	A.AxisZ = AtmosphereAxisZ[Index].xyz;
+	A.Index = Index;
 	return A;
 }
 
@@ -108,6 +110,12 @@ FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
 	Layer.Coverage = A.CloudCoverage;
 	Layer.ShapeScale = max(A.CloudShapeScale, 1.0);
 	Layer.Erosion = A.CloudErosion;
+	// Step 29: the planet's weather snapshots (AtmosphereWeatherInfo, written by AtmosphereWeather.cpp; -1 = none).
+	const float4 WeatherInfo = AtmosphereWeatherInfo[A.Index];
+	Layer.WeatherEnabled = WeatherInfo.x >= 0.0 ? 1 : 0;
+	Layer.WeatherRowA = WeatherInfo.y;
+	Layer.WeatherRowB = WeatherInfo.z;
+	Layer.WeatherBlend = WeatherInfo.w;
 	return Layer;
 }
 

@@ -181,6 +181,8 @@ namespace PlanetAtmosphere::CVars
 		int32 SurfaceMarchMaxSteps = 48; // maximum samples (long low-sun paths), [SurfaceMarchSteps, 128]
 		float SurfaceMarchMaxStep = 0.125f;  // longest step, in units of CloudShapeScale, [0, 4]; 0 = always SurfaceMarchSteps
 		float SurfaceMaxTexel = 0.0625f; // coarsest cascade texel used for the surface, in units of CloudShapeScale, [0, 16]
+		// Step 29
+		double WeatherRefreshSeconds = 600.0;   // tiles older than this weather time (game s) are regenerated; 0 = never
 	};
 	FCloudShadowSettings GetCloudShadowSettings();
 

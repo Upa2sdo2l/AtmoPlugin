@@ -150,7 +150,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "1000.0"))
 	double CloudTopRadius = 1020000.0;
 
-	/** Cloud coverage amount (0 = no clouds, 1 = full coverage) */
+	/**
+	 * Cloud coverage amount (0 = no clouds, 1 = full coverage). With planetary weather (r.PlanetAtmosphere.Weather 1,
+	 * Step 29) it scales the weather's local cloud water instead: 0.5 = the weather as it is, below = drier, above = more
+	 * overcast (0 and 1 still mean no clouds / overcast everywhere).
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CloudCoverage = 0.5f;
 

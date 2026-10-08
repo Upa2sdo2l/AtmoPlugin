@@ -68,6 +68,9 @@ namespace PlanetAtmosphere::Weather
 		FStormGPU Storms[MaxStorms];
 	};
 
+	/** True if both parameter sets give the same weather (field-wise; the planet radius is compared by the callers). */
+	bool SameParameters(const FPlanetWeatherParameters& A, const FPlanetWeatherParameters& B);
+
 	/** Hadley and Ferrel cell edges in degrees (Held-Hou scaling, Earth = 30 deg), as p26 cell_edges. */
 	void ComputeCellEdges(const FPlanetWeatherParameters& Params, double PlanetRadiusKm, double& OutHadleyDegrees, double& OutFerrelDegrees);
 

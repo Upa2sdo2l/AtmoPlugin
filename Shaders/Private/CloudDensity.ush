@@ -13,6 +13,7 @@
 // ============================================================================================
 
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereNoise.ush"
+#include "/Plugin/PlanetAtmosphere/Private/WeatherAtlas.ush"
 
 /** Everything the density function needs about one planet's cloud layer (planet-local, cm). */
 struct FPACloudLayer
@@ -23,7 +24,21 @@ struct FPACloudLayer
 	float Coverage;        // [0, 1]: 0 = clear sky, 1 = mostly overcast
 	float ShapeScale;      // cm, size of the base cloud features
 	float Erosion;         // [0, 1]: how much high-frequency noise erodes the cloud edges
+	// Phase 5 / Step 29: the planet's weather (AtmosphereWeatherInfo): the cloud water sets the local coverage.
+	int WeatherEnabled;    // 0 = procedural weather mask only (no weather for this planet)
+	float WeatherRowA;     // first atlas rows of the two snapshots around the weather time, interpolation weight
+	float WeatherRowB;
+	float WeatherBlend;
 };
+
+/**
+ * Step 29: local coverage from the weather's cloud water C and the planet's Coverage parameter: Coverage 0.5 = the weather
+ * as it is, 0 = no clouds, 1 = overcast; in between C is scaled toward 0 or toward 1.
+ */
+float PA_WeatherLocalCoverage(float CloudWater, float Coverage)
+{
+	return Coverage < 0.5 ? CloudWater * (Coverage / 0.5) : 1.0 - (1.0 - CloudWater) * ((1.0 - Coverage) / 0.5);
+}
 
 float PA_Remap(float Value, float OldLow, float OldHigh, float NewLow, float NewHigh)
 {
@@ -43,7 +58,8 @@ float PA_CloudHeightFraction(FPACloudLayer Layer, float Altitude)
  * Altitude       : |PosPlanetLocal| - PlanetRadius (cm).
  * Footprint      : size of one screen pixel at this sample (cm); fades noise octaves smaller than a pixel.
  *
- * Pipeline: height profile -> weather/coverage mask on the sphere -> base shape -> coverage remap -> erosion.
+ * Pipeline: height profile -> weather/coverage mask on the sphere (local coverage from the planet's weather, Step 29)
+ * -> base shape -> coverage remap -> erosion.
  */
 float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint)
 {
@@ -59,17 +75,36 @@ float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Al
 	// Weather / coverage: large-scale pattern on the sphere (direction only), ~6x the base feature size.
 	const float WeatherScale = Layer.ShapeScale * 6.0;
 	const float3 Direction = PosPlanetLocal / max(length(PosPlanetLocal), 1.0);
+
+	// Phase 5 / Step 29: with weather, the weather's cloud water (atlas, interpolated between the two snapshots) sets the
+	// LOCAL coverage of the mask below; the procedural noise keeps breaking the edges at ~6x the feature size at every
+	// distance (prototype p29: mean column opacity ~ C - 0.1 near the camera, sharper far away). Overcast boost: where the
+	// local coverage exceeds 0.6 the mask grows up to 1.5, so the base threshold below reaches ~0 and storm cores become
+	// overcast (column opacity ~0.95 at C = 1; the formula without it is capped near 0.7).
+	float LocalCoverage = Layer.Coverage;
+	float OvercastBoost = 1.0;
+	if (Layer.WeatherEnabled != 0)
+	{
+		const float CloudWater = saturate(lerp(
+			PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowA).x,
+			PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowB).x,
+			Layer.WeatherBlend));
+		LocalCoverage = PA_WeatherLocalCoverage(CloudWater, Layer.Coverage);
+		OvercastBoost = 1.0 + 0.5 * smoothstep(0.6, 1.0, LocalCoverage);
+	}
+
 	const float Weather = saturate(0.5 + 1.5 * PA_Fbm(Direction * (Layer.PlanetRadius / WeatherScale), 3, Footprint / WeatherScale));
 	// Threshold spans [1.1, -0.1] so that Coverage 0 gives exactly no clouds and Coverage 1 a full mask
 	// (Weather is clamped to [0, 1], the +-0.1 ramp must lie fully outside that range at both ends).
-	const float CoverageThreshold = 1.1 - 1.2 * Layer.Coverage;
-	const float CoverageMask = smoothstep(CoverageThreshold - 0.1, CoverageThreshold + 0.1, Weather);
+	const float CoverageThreshold = 1.1 - 1.2 * LocalCoverage;
+	const float CoverageMask = smoothstep(CoverageThreshold - 0.1, CoverageThreshold + 0.1, Weather) * OvercastBoost;
 	if (CoverageMask <= 0.0)
 	{
 		return 0.0; // exact: with mask 0 the base threshold below is 1, so the remap yields <= 0
 	}
 
-	// Base shape: inside covered regions the base noise still carves individual clouds.
+	// Base shape: inside covered regions the base noise still carves individual clouds. (Mask > 1 only with the overcast
+	// boost: the threshold 1 - 0.65 mask then goes below 0.35.)
 	const float Base = saturate(0.5 + 1.5 * PA_SampleBaseShapeNoise(PosPlanetLocal / Layer.ShapeScale, Footprint / Layer.ShapeScale));
 	float Shape = saturate(PA_Remap(Base * HeightProfile, lerp(1.0, 0.35, CoverageMask), 1.0, 0.0, 1.0));
 	if (Shape <= 0.0)
