@@ -189,6 +189,11 @@ over long times.
   tests), cyclones per hemisphere, cyclone radius (m), tropical cyclones per hemisphere, wind scale. Earth-like
   defaults. Earth-like bands also need an Earth-like size and rotation: the default 1000 km planet rotating in 24 h is
   a slow rotator for its size (Hadley cells reach 60°); use `PlanetRadius` 6,371,000 m or a faster rotation.
+- **Orientation**: the planet's local +Z is the north pole; prograde rotation, the westerlies and the northern
+  cyclones turn counter-clockwise seen from above +Z, as on Earth (Step 29a: Unreal's coordinates are left-handed, so
+  the right-handed model is evaluated at the mirrored direction (x, −y, z); before, the weather was a mirror image of
+  Earth's). The sun of the game should rise in the east, i.e. move clockwise around +Z seen from above; otherwise use
+  `bRetrogradeRotation`.
 - **Weather clock** (per world, game seconds): `AtmosphereWorldSubsystem` → `GetWeatherTime`, `SetWeatherTime`,
   `SetWeatherTimeScale`, `ClearWeatherTimeOverride`, `GetWeatherTimeScale` (Blueprint). Default = world time ×
   `Weather.TimeScale` (pauses with the game). Multiplayer / save games: set the authoritative time; the clock keeps
@@ -290,7 +295,10 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 5 — Step 28: weather debug views** (in review) — `DebugMode 15 / 16 / 17` (humidity, wind, temperature),
+**Phase 5 — Step 29a: weather orientation** (in review) — westerlies / northern cyclones counter-clockwise seen from
+above local +Z, like Earth (model evaluated mirrored for Unreal's left-handed frame).
+
+**Phase 5 — Step 28: weather debug views** (tested in UE) — `DebugMode 15 / 16 / 17` (humidity, wind, temperature),
 adaptive background build of the weather snapshots, storm winds without the jump at the 4-radius cut.
 
 **Phase 5 — Step 27: weather GPU state** (tested in UE: background face 0.13–0.16 ms, full rebuild ~1.6–1.9 ms once)
