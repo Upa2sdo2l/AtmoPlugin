@@ -106,10 +106,10 @@ struct FPACloudLightingContext
 	bool bCloudShadows;         // Step 23: this planet has cascades (primary planet) and they light its clouds
 };
 
-/** Light steps for a cloud sample at distance T (light-march LOD, see LightLODEnable). */
-int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float T)
+/** Light steps for a cloud sample at distance T out of FullSteps (light-march LOD, see LightLODEnable). */
+int PA_LightStepsLOD(int FullSteps, FPACloudLayer Layer, FPACloudLightingContext Light, float T)
 {
-	const int FullSteps = max(A.LightSteps, 1);
+	FullSteps = max(FullSteps, 1);
 	if (LightLODEnable == 0)
 	{
 		return FullSteps;
@@ -120,6 +120,12 @@ int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingConte
 	const float MinFootprint = max(LightLODMinFootprint * Layer.Thickness, FullFootprint * 1.01);
 	const float Detail = 1.0 - saturate(log2(max(PixelFootprint, 1.0) / FullFootprint) / log2(MinFootprint / FullFootprint));
 	return clamp((int)round(lerp((float)MinSteps, (float)FullSteps, Detail)), MinSteps, FullSteps);
+}
+
+/** Light steps of the full light march for a cloud sample at distance T (the planet's LightSteps after screen LOD). */
+int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float T)
+{
+	return PA_LightStepsLOD(A.LightSteps, Layer, Light, T);
 }
 
 // A sample whose contribution to the pixel (transmittance before it * its opacity) is below this
@@ -164,26 +170,29 @@ float PA_SampleCloudAlongRay(
  * Phase 4 / Step 23 (hybrid, AD-25): sunlight transmittance at P = short local march (CloudShadowLocalSteps samples over
  * at most CloudShadowLocalLength toward the sun: fine self-shadowing, cloud edges) x the cascades from the end of that
  * march on (long sun paths). Returns -1 if the cascades cannot serve P (outside every window, tile not generated yet).
- * The lookup comes first, so a fallback does not pay for the local march.
+ * The local march uses the same pixel-footprint LOD as the full light march (r.PlanetAtmosphere.LightLOD: self-shadow
+ * detail smaller than a pixel is invisible) and runs first: a sample already opaque toward the sun within the local
+ * march needs no cascade lookup (UE measurement: lookup-first + fixed steps cost more than the old march).
  */
 float PA_CloudSunTransmittanceHybrid(
-	FPAAtmosphere A, FPACloudLayer Layer, float3 P, float Altitude, float3 SunDirection, float Footprint,
+	FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float3 P, float Altitude, float T, float Footprint,
 	inout uint NumDensitySamples)
 {
-	const float LocalLength = PA_CloudSunMarchLength(A, P, Altitude, SunDirection, CloudShadowLocalLength);
-	const float3 Q = P + SunDirection * LocalLength;
+	const float LocalLength = PA_CloudSunMarchLength(A, P, Altitude, Light.SunDirection, CloudShadowLocalLength);
+	const float LocalOpticalDepth = PA_CloudSunOpticalDepth(
+		A, Layer, P, Light.SunDirection, Footprint, PA_LightStepsLOD(CloudShadowLocalSteps, Layer, Light, T), LocalLength,
+		NumDensitySamples);
+	if (LocalOpticalDepth > PA_LIGHT_MARCH_MAX_OPTICAL_DEPTH)
+	{
+		return exp(-LocalOpticalDepth);
+	}
+	const float3 Q = P + Light.SunDirection * LocalLength;
 	const float CascadeTransmittance = PA_CloudShadowTransmittance(
 		CloudShadowAtlas, PA_ToPlanetLocal(A, Q), A.PlanetRadius, A.CloudBottom, A.CloudTop);
 	if (CascadeTransmittance < 0.0)
 	{
 		return -1.0;
 	}
-	if (CascadeTransmittance <= 1e-6)
-	{
-		return 0.0;   // fully shadowed from farther away: the local march cannot change it
-	}
-	const float LocalOpticalDepth = PA_CloudSunOpticalDepth(
-		A, Layer, P, SunDirection, Footprint, CloudShadowLocalSteps, LocalLength, NumDensitySamples);
 	return exp(-LocalOpticalDepth) * CascadeTransmittance;
 }
 
@@ -235,7 +244,7 @@ float PA_IntegrateCloudStep(
 				float SunTransmittance = -1.0;
 				if (Light.bCloudShadows)
 				{
-					SunTransmittance = PA_CloudSunTransmittanceHybrid(A, Layer, P, Altitude, Light.SunDirection, Footprint, State.DensitySamples);
+					SunTransmittance = PA_CloudSunTransmittanceHybrid(A, Layer, Light, P, Altitude, T, Footprint, State.DensitySamples);
 					State.ShadowCascadeSamples += SunTransmittance >= 0.0 ? 1u : 0u;
 					State.ShadowFallbackSamples += SunTransmittance >= 0.0 ? 0u : 1u;
 				}
