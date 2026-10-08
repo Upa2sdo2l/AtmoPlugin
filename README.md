@@ -312,21 +312,27 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 5 — Step 29: clouds follow the weather** (in review) — the weather's cloud water sets the local cloud coverage
-(`CloudCoverage` 0.5 = the weather as it is), overcast storm cores, cloud shadow tiles refreshed by weather age
-(`CloudShadows.WeatherRefresh`), storm births on longitude lanes (no overlapping storms).
+**Phase 5 closed (Steps 26–30)** — planetary weather on the GPU: deterministic model C (climatology, storms, synoptic
+noise; pure function of seed, weather time and planet parameters), cube-sphere snapshots per planet with background
+build, wind / humidity / temperature / cloud water with debug views 14–17, a weather clock per world (Blueprint), the
+cloud water driving the local cloud coverage and the cloud shadow cascades refreshed by weather age. UE measurements
+(RTX 3050, Interleave 3): PlanetAtmosphere.Weather 0.13–0.16 ms per background face (~0.09 ms average), a full
+synchronous rebuild ~1.6–1.9 ms once; Raymarch in low orbit (user scene, Raymarch Steps 24) 2.77 ms with weather /
+2.2 ms with `Weather 0`; atlas 9.4 MB per planet at 256.
+- Step 27: weather GPU state, parameters, clock, `DebugMode 14`, verified on the CPU against the numpy prototype
+  (max |ΔC| 1.5e-5, identical storm lists).
+- Step 28: `DebugMode 15 / 16 / 17`, adaptive background build (no synchronous builds in time-lapse), storm winds
+  without the jump at the 4-radius cut.
+- Step 29a: orientation as on Earth in Unreal's left-handed frame. Step 29: clouds follow the weather, storm births on
+  longitude lanes, cloud shadows follow the weather.
 
-**Phase 5 — Step 29a: weather orientation** (merged) — westerlies / northern cyclones counter-clockwise seen from
-above local +Z, like Earth (model evaluated mirrored for Unreal's left-handed frame).
-
-**Phase 5 — Step 28: weather debug views** (tested in UE) — `DebugMode 15 / 16 / 17` (humidity, wind, temperature),
-adaptive background build of the weather snapshots, storm winds without the jump at the 4-radius cut.
-
-**Phase 5 — Step 27: weather GPU state** (tested in UE: background face 0.13–0.16 ms, full rebuild ~1.6–1.9 ms once)
-- Weather parameters on the component (Earth-like defaults), weather clock in the world subsystem (Blueprint)
-- Model C on the GPU: CPU storm sequence + time uniforms in double, shader model, cube-sphere snapshots on a global
-  time grid with interpolation and background build; `DebugMode 14`, `stat gpu` PlanetAtmosphere.Weather
-- Verified on the CPU against the numpy prototype (above); atlas sampling at 256: mean |ΔC| 0.001 vs the exact field
+**Visual target.** The two reference screenshots of the project description are the target of the whole project.
+Phase 5 delivers the architecture and the weather state; from orbit the clouds still show the fine procedural mask
+modulated by the weather, smooth weather zones without filaments, and grey-blue clouds. Weather-driven density,
+transport by the wind (filaments, spiral arms) and consistent cloud amounts across distances are Phase 6; multiple
+scattering, forward scattering, silver lining and the terminator are Phase 7. Each is checked on UE screenshots at
+views comparable to the references, never assumed. Ocean and continents belong to the separate planet system: the
+renderer does not depend on surface generation.
 
 **Phase 4 closed (Steps 21–25)** — cloud shadows: 3 sun-aligned cascades per view for the primary planet (Beer Shadow
 Map, progressive tile generation, two sets with background rebuild + crossfade), hybrid sun transmittance for the clouds,
@@ -449,7 +455,7 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 5 — Step 30 (profiling, Phase 5 checklist).
+Next: Phase 6 (advection, transported noise coordinates, weather-driven density) — separate plan, prototype first.
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies
