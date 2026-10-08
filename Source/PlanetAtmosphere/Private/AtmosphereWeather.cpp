@@ -109,23 +109,7 @@ namespace
 
 bool FPlanetAtmosphereWeather::SameWeather(const FSlot& Slot, const FAtmosphereVisibleInstance& Planet)
 {
-	const FPlanetWeatherParameters& A = Slot.Parameters;
-	const FPlanetWeatherParameters& B = Planet.Weather;
-	return Slot.RadiusKm == Planet.RadiiUU.Planet / 1.0e5
-		&& A.Seed == B.Seed
-		&& A.RotationPeriodHours == B.RotationPeriodHours
-		&& A.bRetrograde == B.bRetrograde
-		&& A.AxialTiltDegrees == B.AxialTiltDegrees
-		&& A.YearLengthDays == B.YearLengthDays
-		&& A.SeasonPhase == B.SeasonPhase
-		&& A.MeanTemperatureK == B.MeanTemperatureK
-		&& A.EquatorPoleDifferenceK == B.EquatorPoleDifferenceK
-		&& A.Humidity == B.Humidity
-		&& A.CycloneLifetimeDays == B.CycloneLifetimeDays
-		&& A.CyclonesPerHemisphere == B.CyclonesPerHemisphere
-		&& A.CycloneRadiusKm == B.CycloneRadiusKm
-		&& A.TropicalCyclonesPerHemisphere == B.TropicalCyclonesPerHemisphere
-		&& A.WindScale == B.WindScale;
+	return Slot.RadiusKm == Planet.RadiiUU.Planet / 1.0e5 && PlanetAtmosphere::Weather::SameParameters(Slot.Parameters, Planet.Weather);
 }
 
 void FPlanetAtmosphereWeather::ResetAtlas(int32 NewResolution, int32 NewCapacity)

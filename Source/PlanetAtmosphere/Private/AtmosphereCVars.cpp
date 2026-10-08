@@ -409,8 +409,9 @@ namespace
 		TEXT("r.PlanetAtmosphere.Weather"),
 		1,
 		TEXT("Planetary weather (Phase 5, model C): cloud water / humidity / wind on a cube-sphere per planet, computed on the GPU\n")
-		TEXT("from the planet's weather parameters and the weather clock (snapshots, interpolated). Step 27: visible only in\n")
-		TEXT("r.PlanetAtmosphere.DebugMode 14 (drives the clouds from Step 29). 1 = on (default), 0 = off (no weather passes, atlas freed)."),
+		TEXT("from the planet's weather parameters and the weather clock (snapshots, interpolated). The cloud water sets the local cloud\n")
+		TEXT("coverage (Step 29; CloudCoverage 0.5 = the weather as it is); debug views: r.PlanetAtmosphere.DebugMode 14-17.\n")
+		TEXT("1 = on (default), 0 = off (the procedural cloud mask as before Phase 5; no weather passes, atlas freed)."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereWeatherTimeScale(
@@ -451,6 +452,13 @@ namespace
 		TEXT("r.PlanetAtmosphere.Weather.FacesPerFrame"),
 		1,
 		TEXT("Cube faces of the next weather snapshot computed per frame and planet (background build). Clamped to [1, 6]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsWeatherRefresh(
+		TEXT("r.PlanetAtmosphere.CloudShadows.WeatherRefresh"),
+		600.0f,
+		TEXT("Step 29: cascade tiles generated more than this many game seconds of weather time ago are regenerated (the clouds follow\n")
+		TEXT("the weather), after the missing tiles and within UpdateBudget. 600 = one weather snapshot interval. 0 = never. Clamped to [0, 86400]."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLODMinLightSteps(
@@ -645,6 +653,7 @@ namespace PlanetAtmosphere::CVars
 		Settings.SurfaceMarchMaxSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxSteps.GetValueOnAnyThread(false), Settings.SurfaceMarchSteps, 128);
 		Settings.SurfaceMarchMaxStep = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxStep.GetValueOnAnyThread(false), 0.0f, 4.0f);
 		Settings.SurfaceMaxTexel = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel.GetValueOnAnyThread(false), 0.0f, 16.0f);
+		Settings.WeatherRefreshSeconds = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereCloudShadowsWeatherRefresh.GetValueOnAnyThread(false)), 0.0, 86400.0);
 		return Settings;
 	}
 

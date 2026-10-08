@@ -2,6 +2,7 @@
 
 #include "AtmosphereCloudShadows.h"
 #include "AtmosphereCVars.h"
+#include "AtmosphereWeatherModel.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 #include "RenderingThread.h"
@@ -82,6 +83,7 @@ namespace
 			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 			Parameters->NoiseSource = static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource());
 			Parameters->NoiseFootprintScale = PlanetAtmosphere::CVars::GetNoiseFootprintScale();
+			Parameters->WeatherParams = Inputs.WeatherParams;
 
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
@@ -243,9 +245,11 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		InstanceParameters.AtmosphereData3[Index].X, static_cast<float>(Settings.MinExtentCm));
 	ContentKey[2] = FVector4f(
 		static_cast<float>(static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource())), PlanetAtmosphere::CVars::GetNoiseFootprintScale(),
-		static_cast<float>(Settings.GenerationSteps), 0.0f);
+		static_cast<float>(Settings.GenerationSteps),
+		InstanceParameters.AtmosphereWeatherInfo[Index].X >= 0.0f ? 1.0f : 0.0f);   // Step 29: the planet has weather
 	const bool bSamePlanet = Entry.bHasPlanet && Entry.PlanetId == Planet.PlanetId;
-	if (!bSamePlanet || FMemory::Memcmp(Entry.ContentKey, ContentKey, sizeof(ContentKey)) != 0)
+	const bool bSameWeather = PlanetAtmosphere::Weather::SameParameters(Entry.Weather, Planet.Weather);
+	if (!bSamePlanet || !bSameWeather || FMemory::Memcmp(Entry.ContentKey, ContentKey, sizeof(ContentKey)) != 0)
 	{
 		if (!bSamePlanet)
 		{
@@ -264,6 +268,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		Entry.CrossfadeFrame = 0;
 		Entry.bHasPlanet = true;
 		Entry.PlanetId = Planet.PlanetId;
+		Entry.Weather = Planet.Weather;
 		FMemory::Memcpy(Entry.ContentKey, ContentKey, sizeof(ContentKey));
 	}
 
@@ -306,6 +311,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 			C.HeldTileY.Init(TNumericLimits<int64>::Max(), TilesPerCascade);
 			C.State.Init(ETileState::Invalid, TilesPerCascade);
 			C.GeneratedFrame.Init(0, TilesPerCascade);
+			C.GeneratedWeatherTime.Init(0.0, TilesPerCascade);
 			ClearMask |= 1 << Slot;
 		}
 		// A first configuration or a level change should be rare (repeated lines with a static camera = the cascades never
@@ -421,15 +427,21 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 	}
 
 	// ---- Generation queue: the front set first (its new tiles are what the image misses), then the back set; within a
-	// set nearest to the window centre first, round-robin over the cascades ----
+	// set nearest to the window centre first, round-robin over the cascades. Step 29: valid tiles generated with a weather
+	// state older than WeatherRefresh follow after all missing tiles of both sets (same budget). ----
 	struct FCandidate
 	{
 		int32 Tile;
 		int64 Distance2;
 	};
+	const bool bWeatherRefresh = Inputs.WeatherTime.bValid && Settings.WeatherRefreshSeconds > 0.0
+		&& InstanceParameters.AtmosphereWeatherInfo[Index].X >= 0.0f;
+	const double WeatherNow = Inputs.WeatherTime.Seconds;
+	constexpr int64 RefreshPriorityOffset = int64(1) << 50;   // after every missing tile (distances are far smaller)
 	TArray<FCandidate> Candidates[NumSlots];
-	int32 NumPending[NumSlots] = {};
+	int32 NumPending[NumSlots] = {};   // missing tiles only (the back set is complete when they are all generated)
 	int32 Next[NumSlots] = {};
+	int32 NumRefresh = 0;
 	for (int32 Slot = 0; Slot < NumSlots; ++Slot)
 	{
 		if (!bSlotActive[Slot])
@@ -439,33 +451,42 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		const FCascade& C = Entry.Cascades[Slot];
 		for (int32 Tile = 0; Tile < TilesPerCascade; ++Tile)
 		{
+			const int64 DX = C.HeldTileX[Tile] - CenterTileX[Slot];
+			const int64 DY = C.HeldTileY[Tile] - CenterTileY[Slot];
 			if (C.State[Tile] != ETileState::Valid)
 			{
-				const int64 DX = C.HeldTileX[Tile] - CenterTileX[Slot];
-				const int64 DY = C.HeldTileY[Tile] - CenterTileY[Slot];
 				Candidates[Slot].Add({ Tile, DX * DX + DY * DY });
+				++NumPending[Slot];
+			}
+			else if (bWeatherRefresh && FMath::Abs(WeatherNow - C.GeneratedWeatherTime[Tile]) > Settings.WeatherRefreshSeconds)
+			{
+				Candidates[Slot].Add({ Tile, RefreshPriorityOffset + DX * DX + DY * DY });
+				++NumRefresh;
 			}
 		}
 		Candidates[Slot].Sort([](const FCandidate& A, const FCandidate& B) { return A.Distance2 < B.Distance2; });
-		NumPending[Slot] = Candidates[Slot].Num();
 	}
 
+	// Missing tiles of both sets (front, then back) before any weather refresh: a refresh never delays the back set.
 	TArray<FVector4f> GenerateTiles;
 	const uint32 FirstCascade = Entry.RoundRobin++;
-	for (const int32 SetIndex : { Entry.FrontSet, BackSet })
+	for (int32 Pass = 0; Pass < 4; ++Pass)
 	{
+		const bool bRefreshPass = Pass >= 2;
+		const int32 SetIndex = (Pass % 2) == 0 ? Entry.FrontSet : BackSet;
 		while (GenerateTiles.Num() < Settings.UpdateBudgetTiles)
 		{
 			bool bAny = false;
 			for (int32 Offset = 0; Offset < NumCascades && GenerateTiles.Num() < Settings.UpdateBudgetTiles; ++Offset)
 			{
 				const int32 Slot = SetIndex * NumCascades + static_cast<int32>((FirstCascade + static_cast<uint32>(Offset)) % NumCascades);
-				if (Next[Slot] < Candidates[Slot].Num())
+				if (Next[Slot] < (bRefreshPass ? Candidates[Slot].Num() : NumPending[Slot]))
 				{
 					FCascade& C = Entry.Cascades[Slot];
 					const int32 Tile = Candidates[Slot][Next[Slot]++].Tile;
 					C.State[Tile] = ETileState::Valid;
 					C.GeneratedFrame[Tile] = FrameNumber;
+					C.GeneratedWeatherTime[Tile] = WeatherNow;
 					GenerateTiles.Add(FVector4f(static_cast<float>(C.HeldTileX[Tile]), static_cast<float>(C.HeldTileY[Tile]),
 						static_cast<float>(Slot), 1.0f));
 					bAny = true;
@@ -556,15 +577,15 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 			Atlas, GenerateTiles, TEXT("Generate"));
 
 		UE_LOG(LogPlanetAtmosphere, Verbose,
-			TEXT("Cloud shadows of view %u, frame %u: generated %d tiles, invalidated %d tiles + slot mask %d, pending front %d / %d / %d, ")
-			TEXT("back %d / %d / %d (budget %d), front set %d texel %.1f m, crossfade %.2f"),
-			ViewKey, FrameNumber, GenerateTiles.Num(), InvalidateTiles.Num(), ClearMask,
-			NumPending[Entry.FrontSet * NumCascades] - Next[Entry.FrontSet * NumCascades],
-			NumPending[Entry.FrontSet * NumCascades + 1] - Next[Entry.FrontSet * NumCascades + 1],
-			NumPending[Entry.FrontSet * NumCascades + 2] - Next[Entry.FrontSet * NumCascades + 2],
-			NumPending[BackSet * NumCascades] - Next[BackSet * NumCascades],
-			NumPending[BackSet * NumCascades + 1] - Next[BackSet * NumCascades + 1],
-			NumPending[BackSet * NumCascades + 2] - Next[BackSet * NumCascades + 2],
+			TEXT("Cloud shadows of view %u, frame %u: generated %d tiles, invalidated %d tiles + slot mask %d, weather refresh due %d, ")
+			TEXT("pending front %d / %d / %d, back %d / %d / %d (budget %d), front set %d texel %.1f m, crossfade %.2f"),
+			ViewKey, FrameNumber, GenerateTiles.Num(), InvalidateTiles.Num(), ClearMask, NumRefresh,
+			FMath::Max(0, NumPending[Entry.FrontSet * NumCascades] - Next[Entry.FrontSet * NumCascades]),
+			FMath::Max(0, NumPending[Entry.FrontSet * NumCascades + 1] - Next[Entry.FrontSet * NumCascades + 1]),
+			FMath::Max(0, NumPending[Entry.FrontSet * NumCascades + 2] - Next[Entry.FrontSet * NumCascades + 2]),
+			FMath::Max(0, NumPending[BackSet * NumCascades] - Next[BackSet * NumCascades]),
+			FMath::Max(0, NumPending[BackSet * NumCascades + 1] - Next[BackSet * NumCascades + 1]),
+			FMath::Max(0, NumPending[BackSet * NumCascades + 2] - Next[BackSet * NumCascades + 2]),
 			Settings.UpdateBudgetTiles, Entry.FrontSet, Entry.Cascades[Entry.FrontSet * NumCascades].TexelSize * 1e-2, Blend);
 	}
 

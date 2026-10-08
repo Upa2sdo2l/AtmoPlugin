@@ -1,0 +1,24 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Planetary weather (Phase 5): the weather atlas and the sampling of one snapshot. Included by CloudDensity.ush (Step 29:
+// the cloud water drives the cloud coverage) and WeatherCommon.ush. Layout: see WeatherCommon.ush. No per-planet data here
+// (the planet's snapshot rows come from AtmosphereWeatherInfo through FPACloudLayer / PA_SampleWeather).
+
+#include "/Plugin/PlanetAtmosphere/Private/WeatherModel.ush"
+
+Texture2D<float4> WeatherAtlas;            // the transmittance LUT pool when there is no weather (never sampled then)
+SamplerState WeatherSampler;               // bilinear, clamp
+int WeatherResolution;                     // texels per face side
+float4 WeatherAtlasSizeAndInvSize;         // xy = atlas size (texels), zw = 1 / size
+
+/** One snapshot: RowBase = first atlas row of the snapshot (texels). Bilinear inside the face (clamped to it). */
+float4 PA_SampleWeatherSnapshot(float3 Direction, float RowBase)
+{
+	const FPAWeatherFaceCoord Coord = PA_WeatherFaceCoord(Direction);
+	const float Res = (float)WeatherResolution;
+	const float2 FaceTexel = clamp((float2(Coord.A, Coord.B) + 1.0) * (0.5 * Res), 0.5, Res - 0.5);
+	const float2 UV = (float2((float)Coord.Face * Res, RowBase) + FaceTexel) * WeatherAtlasSizeAndInvSize.zw;
+	return WeatherAtlas.SampleLevel(WeatherSampler, UV, 0);
+}

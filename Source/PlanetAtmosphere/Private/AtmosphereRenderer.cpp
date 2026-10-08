@@ -400,11 +400,12 @@ namespace PlanetAtmosphere
 			int32 WeatherResolution = 0;
 			const FRDGTextureRef WeatherAtlas = Weather::Get().Update(
 				GraphBuilder, GlobalShaderMap, View.Family->FrameNumber, WeatherInputs, Parameters->AtmosphereParams, WeatherResolution);
-			Parameters->WeatherAtlas = WeatherAtlas ? WeatherAtlas : Luts.Transmittance;
-			Parameters->WeatherSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-			Parameters->WeatherResolution = FMath::Max(WeatherResolution, 1);
+			FAtmosphereWeatherAtlasParameters& WeatherParams = Parameters->WeatherParams;
+			WeatherParams.WeatherAtlas = WeatherAtlas ? WeatherAtlas : Luts.Transmittance;
+			WeatherParams.WeatherSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			WeatherParams.WeatherResolution = FMath::Max(WeatherResolution, 1);
 			const FIntPoint WeatherExtent = WeatherAtlas ? WeatherAtlas->Desc.Extent : FIntPoint(1, 1);
-			Parameters->WeatherAtlasSizeAndInvSize = FVector4f(
+			WeatherParams.WeatherAtlasSizeAndInvSize = FVector4f(
 				static_cast<float>(WeatherExtent.X), static_cast<float>(WeatherExtent.Y),
 				1.0f / static_cast<float>(FMath::Max(WeatherExtent.X, 1)), 1.0f / static_cast<float>(FMath::Max(WeatherExtent.Y, 1)));
 		}
@@ -419,6 +420,8 @@ namespace PlanetAtmosphere
 			ShadowInputs.ScreenRadiiPx = ScreenRadiiPx;
 			ShadowInputs.Sun = Sun;
 			ShadowInputs.Noise = NoiseTextures;
+			ShadowInputs.WeatherParams = Parameters->WeatherParams;
+			ShadowInputs.WeatherTime = WeatherTime;
 			const FRDGTextureRef CloudShadowAtlas = CloudShadows::Get().Update(
 				GraphBuilder, GlobalShaderMap, View, Parameters->AtmosphereParams, ShadowInputs, Parameters->CloudShadowParams);
 			Parameters->CloudShadowAtlas = CloudShadowAtlas ? CloudShadowAtlas : Luts.Transmittance;
