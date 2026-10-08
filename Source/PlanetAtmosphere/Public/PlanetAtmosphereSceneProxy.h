@@ -65,6 +65,7 @@ public:
 	const int32 RaymarchSteps;
 	const float CloudSkyAmbientScale;
 	const FPlanetAtmosphereScattering ScatteringUU;
+	const FPlanetWeatherParameters Weather;
 
 private:
 	/** Shared (non-UObject) registry; null if the world has no subsystem (e.g. preview worlds). */

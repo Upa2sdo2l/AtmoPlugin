@@ -18,6 +18,7 @@ FPlanetAtmosphereSceneProxy::FPlanetAtmosphereSceneProxy(const UPlanetAtmosphere
 	, RaymarchSteps(FMath::Clamp(InComponent->RaymarchSteps, 16, 256))
 	, CloudSkyAmbientScale(FMath::Clamp(InComponent->CloudSkyAmbientScale, 0.0f, 100.0f))
 	, ScatteringUU(InComponent->GetValidatedScatteringUU())
+	, Weather(InComponent->GetValidatedWeatherParameters())
 {
 	// Grab a shared reference to the plain-C++ registry.
 	// After this point the proxy never touches any UObject.
@@ -83,6 +84,7 @@ FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() co
 	Instance.RaymarchSteps = RaymarchSteps;
 	Instance.CloudSkyAmbientScale = CloudSkyAmbientScale;
 	Instance.ScatteringUU = ScatteringUU;
+	Instance.Weather = Weather;
 	return Instance;
 }
 

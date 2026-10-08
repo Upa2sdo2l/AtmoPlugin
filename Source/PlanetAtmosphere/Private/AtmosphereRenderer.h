@@ -15,8 +15,8 @@ namespace PlanetAtmosphere
 	/**
 	 * Render thread. Adds the PlanetAtmosphere pass for one view according to r.PlanetAtmosphere.DebugMode:
 	 *   0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = MS LUT,
-	 *   8 = Temporal Weight, 9-11 = Shadow Cascade 0-2
-	 *       -> LUT cache (Steps 13, 14, 16) + cloud shadow cascades (Phase 4) + FAtmosphereCloudRaymarchCS
+	 *   8 = Temporal Weight, 9-11 = Shadow Cascade 0-2, 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow, 14 = Weather Coverage
+	 *       -> LUT cache (Steps 13, 14, 16) + weather snapshots (Phase 5) + cloud shadow cascades (Phase 4) + FAtmosphereCloudRaymarchCS
 	 *          + temporal (Steps 18, 19) + composite (Step 17)
 	 *   1 = Atmosphere Bounds -> FAtmosphereBoundsDebugCS
 	 *
@@ -26,12 +26,13 @@ namespace PlanetAtmosphere
 	 *
 	 * Instances are sorted near -> far in place and truncated to r.PlanetAtmosphere.MaxVisible.
 	 * Only POD copies are used, nothing references scene proxies or UObjects.
-	 * Sun: copy gathered on the game thread (FPlanetAtmosphereViewExtension::BeginRenderViewFamily).
+	 * Sun and weather time: copies gathered on the game thread (FPlanetAtmosphereViewExtension::BeginRenderViewFamily).
 	 */
 	FScreenPassTexture AddAtmospherePasses(
 		FRDGBuilder& GraphBuilder,
 		const FSceneView& View,
 		const FPostProcessMaterialInputs& Inputs,
 		TArray<FAtmosphereVisibleInstance>& Instances,
-		const FAtmosphereSunLight& Sun);
+		const FAtmosphereSunLight& Sun,
+		const FAtmosphereWeatherTime& WeatherTime);
 }

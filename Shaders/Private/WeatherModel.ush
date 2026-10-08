@@ -1,0 +1,473 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// ============================================================================================
+//  Planetary weather, model C (Phase 5 / Step 27, decision AD-30; prototype p26.py)
+//
+//  GPU half of a PURE FUNCTION of (direction on the planet, weather time, planet parameters): no integration, no
+//  history -> the same inputs give the same weather on every machine (future multiplayer), no drift over long times.
+//  Everything that depends only on the time (storm list, noise anchors, wave phases, thermal equator) is computed on the
+//  CPU in double (AtmosphereWeatherModel.cpp) and arrives here as FPAWeatherInputs + the storm arrays.
+//
+//    climatology (zonal mean: Hadley / Ferrel / polar cells, trades, westerlies, ascent, humidity; seasonal)
+//  + transported synoptic noise (900 km and 2800 km fBm carried by the zonal wind, re-anchored every 24 h)
+//  + planetary waves on the storm tracks
+//  + ITCZ convective clusters (700 km fBm drifting westward, organised by easterly waves, meandering band)
+//  + storm objects (extratropical cyclones: one spiral arm, core, cold / warm fronts, subsidence ring, Rankine wind;
+//    tropical cyclones: eye, three arms)
+//  -> effective relative humidity -> cloud water / coverage C = smoothstep((RHe - 0.33) / (0.92 - 0.33)).
+//
+//  Units: km, game hours, m/s. Planet-local frame: +Z = rotation axis (north), longitude = atan2(y, x).
+//
+//  Portability: written in the common subset of HLSL and C++ (no swizzles beyond .x/.y/.z/.w, no out / inout, no
+//  intrinsics without a C++ twin), so that the Step 27 verification harness compiles THIS file on the CPU and compares
+//  it with the numpy prototype. Keep it that way.
+// ============================================================================================
+
+#define PA_WEATHER_MAX_STORMS 64   // = PlanetAtmosphere::Weather::MaxStorms
+
+static const float PA_W_PI = 3.14159265;
+static const float PA_W_KMH = 3.6;            // km/h per m/s
+static const float PA_W_COVER_LO = 0.33;      // RHe -> cloud water ramp
+static const float PA_W_COVER_HI = 0.92;
+static const uint PA_W_N2_SEED_OFFSET = 5000015u;   // 5 x 1000003: seed offset of the 2800 km noise
+
+#ifndef PA_WEATHER_GENERATE
+#define PA_WEATHER_GENERATE 0   // 1 in WeatherGenerate.usf: storm parameters + PA_EvaluateWeather; readers only need the mapping
+#endif
+
+#if PA_WEATHER_GENERATE
+// Storms of the snapshot (FAtmosphereWeatherGenerateCS parameters, filled from FSnapshotInputs::Storms).
+float4 WeatherStorm0[PA_WEATHER_MAX_STORMS];   // centre xyz (unit, planet local), radius km
+float4 WeatherStorm1[PA_WEATHER_MAX_STORMS];   // local east xyz at the centre, intensity 0..1
+float4 WeatherStorm2[PA_WEATHER_MAX_STORMS];   // rotation sense, kind (0 = extratropical, 1 = tropical), front hemisphere, front maturity
+float4 WeatherStorm3[PA_WEATHER_MAX_STORMS];   // max wind m/s, spiral phase rad, cos of the influence radius (4 R), unused
+int NumWeatherStorms;
+#endif
+
+/** Time / planet uniforms of one snapshot. Mirrors PlanetAtmosphere::Weather::FSnapshotInputs. */
+struct FPAWeatherInputs
+{
+	float RadiusKm;
+	float Sign;              // +1 prograde, -1 retrograde
+	float WindScale;
+	float Humidity;
+	float HadleyDegrees;
+	float FerrelDegrees;
+	float ThermalEquator;    // radians
+	uint NoiseSeed0;
+	uint NoiseSeed1;
+	float NoiseAge0;         // hours since the anchor
+	float NoiseAge1;
+	float NoiseWeight0;
+	float NoiseWeight1;
+	uint ItczSeed0;
+	uint ItczSeed1;
+	float ItczWeight0;
+	float ItczWeight1;
+	float ItczDriftAngle;
+	float ItczWavePhase7;
+	float ItczWavePhase11;
+	float StormTrackWavePhase;
+	float MeanderPhase;
+};
+
+struct FPAWeatherSample
+{
+	float Cover;     // cloud water / coverage, 0..1
+	float Humidity;  // effective relative humidity, 0..1
+	float WindEast;  // m/s
+	float WindNorth; // m/s
+};
+
+// ---- deterministic integer hash (= p26 hash_u32) ----------------------------------------------
+
+uint PA_WeatherHashMix(uint H, uint V)
+{
+	H = (H ^ V) * 0x85EBCA6Bu;
+	H = H ^ (H >> 13);
+	H = H * 0xC2B2AE35u;
+	H = H ^ (H >> 16);
+	return H;
+}
+
+/** p26 hash01(x, y, z, seed) * 2 - 1. */
+float PA_WeatherLatticeValue(int X, int Y, int Z, uint Seed)
+{
+	uint H = 0x9E3779B9u;
+	H = PA_WeatherHashMix(H, asuint(X));
+	H = PA_WeatherHashMix(H, asuint(Y));
+	H = PA_WeatherHashMix(H, asuint(Z));
+	H = PA_WeatherHashMix(H, Seed);
+	return (float)H * (1.0 / 4294967296.0) * 2.0 - 1.0;
+}
+
+// ---- 3D value noise, fBm (= p26 value_noise / fbm) ------------------------------------------
+
+float PA_WeatherValueNoise(float3 P, uint Seed)
+{
+	const float3 Cell = floor(P);
+	const int IX = (int)Cell.x;
+	const int IY = (int)Cell.y;
+	const int IZ = (int)Cell.z;
+	const float3 F = P - Cell;
+	const float3 U = F * F * (3.0 - 2.0 * F);
+	float Sum = 0.0;
+	for (int DZ = 0; DZ < 2; ++DZ)
+	{
+		for (int DY = 0; DY < 2; ++DY)
+		{
+			for (int DX = 0; DX < 2; ++DX)
+			{
+				const float H = PA_WeatherLatticeValue(IX + DX, IY + DY, IZ + DZ, Seed);
+				const float WX = DX != 0 ? U.x : 1.0 - U.x;
+				const float WY = DY != 0 ? U.y : 1.0 - U.y;
+				const float WZ = DZ != 0 ? U.z : 1.0 - U.z;
+				Sum += H * (WX * WY * WZ);
+			}
+		}
+	}
+	return Sum;
+}
+
+/** 4 octaves, normalised (p26 fbm(P, seed, 4)). */
+float PA_WeatherFbm(float3 P, uint Seed)
+{
+	float Sum = 0.0;
+	float Amplitude = 0.5;
+	float Frequency = 1.0;
+	float Norm = 0.0;
+	for (int Octave = 0; Octave < 4; ++Octave)
+	{
+		Sum += Amplitude * PA_WeatherValueNoise(P * Frequency + 17.0 * (float)Octave, Seed + 101u * (uint)Octave);
+		Norm += Amplitude;
+		Amplitude *= 0.5;
+		Frequency *= 2.0;
+	}
+	return Sum / Norm;
+}
+
+// ---- geometry ----------------------------------------------------------------------------------
+
+float3 PA_WeatherRotZ(float3 P, float Angle)
+{
+	const float C = cos(Angle);
+	const float S = sin(Angle);
+	return float3(C * P.x - S * P.y, S * P.x + C * P.y, P.z);
+}
+
+float PA_WeatherGauss(float X, float Centre, float Width)
+{
+	const float D = (X - Centre) / Width;
+	return exp(-D * D);
+}
+
+/**
+ * Cube-sphere storage (equi-angular): face 0..5 = +X, -X, +Y, -Y, +Z, -Z; A, B in [-1, 1] along the face axes U, V
+ * (+X: U = +Y, V = +Z; -X: -Y, +Z; +Y: -X, +Z; -Y: +X, +Z; +Z: +Y, -X; -Z: +Y, +X).
+ */
+float3 PA_WeatherFaceDirection(int Face, float A, float B)
+{
+	const float X = tan(A * PA_W_PI * 0.25);
+	const float Y = tan(B * PA_W_PI * 0.25);
+	float3 D = float3(-Y, X, 1.0);
+	if (Face == 0)
+	{
+		D = float3(1.0, X, Y);
+	}
+	else if (Face == 1)
+	{
+		D = float3(-1.0, -X, Y);
+	}
+	else if (Face == 2)
+	{
+		D = float3(-X, 1.0, Y);
+	}
+	else if (Face == 3)
+	{
+		D = float3(X, -1.0, Y);
+	}
+	else if (Face == 5)
+	{
+		D = float3(Y, X, -1.0);
+	}
+	return normalize(D);
+}
+
+struct FPAWeatherFaceCoord
+{
+	int Face;
+	float A;   // [-1, 1]
+	float B;
+};
+
+/** Inverse of PA_WeatherFaceDirection (Direction need not be normalised). */
+FPAWeatherFaceCoord PA_WeatherFaceCoord(float3 Direction)
+{
+	const float AX = abs(Direction.x);
+	const float AY = abs(Direction.y);
+	const float AZ = abs(Direction.z);
+	FPAWeatherFaceCoord Coord;
+	float U = 0.0;
+	float V = 0.0;
+	float Major = 1.0;
+	if (AX >= AY && AX >= AZ)
+	{
+		Major = AX;
+		Coord.Face = Direction.x > 0.0 ? 0 : 1;
+		U = Direction.x > 0.0 ? Direction.y : -Direction.y;
+		V = Direction.z;
+	}
+	else if (AY >= AZ)
+	{
+		Major = AY;
+		Coord.Face = Direction.y > 0.0 ? 2 : 3;
+		U = Direction.y > 0.0 ? -Direction.x : Direction.x;
+		V = Direction.z;
+	}
+	else
+	{
+		Major = AZ;
+		Coord.Face = Direction.z > 0.0 ? 4 : 5;
+		U = Direction.y;
+		V = Direction.z > 0.0 ? -Direction.x : Direction.x;
+	}
+	Major = max(Major, 1e-20);
+	Coord.A = atan(U / Major) * (4.0 / PA_W_PI);
+	Coord.B = atan(V / Major) * (4.0 / PA_W_PI);
+	return Coord;
+}
+
+// ---- climatology (zonal mean, seasonal; = p26 climatology) -------------------------------------
+
+struct FPAWeatherClimate
+{
+	float WindEast;    // m/s
+	float WindNorth;   // m/s
+	float Ascent;      // ascent index w
+	float Humidity;    // RH baseline
+	float Psi;         // latitude relative to the thermal equator, degrees
+};
+
+FPAWeatherClimate PA_WeatherClimatology(float Latitude, FPAWeatherInputs In)
+{
+	const float H = In.HadleyDegrees;
+	const float F = In.FerrelDegrees;
+	const float Psi = (Latitude - In.ThermalEquator) * (180.0 / PA_W_PI);
+	const float X = abs(Psi);
+	const float Hemi = Psi >= 0.0 ? 1.0 : -1.0;
+	const float Polar01 = clamp((X - F) / (90.0 - F), 0.0, 1.0);
+
+	float Zonal = 0.0;
+	float Meridional = 0.0;
+	if (X < H)
+	{
+		Zonal = -7.0 * sin(PA_W_PI * X / H);                // trades
+		Meridional = -1.5 * sin(PA_W_PI * X / H);
+	}
+	else if (X < F)
+	{
+		Zonal = 15.0 * sin(PA_W_PI * (X - H) / (F - H));    // westerlies
+		Meridional = 1.0 * sin(PA_W_PI * (X - H) / (F - H));
+	}
+	else
+	{
+		Zonal = -4.0 * sin(PA_W_PI * Polar01);               // polar easterlies
+		Meridional = -0.8 * sin(PA_W_PI * Polar01);
+	}
+
+	FPAWeatherClimate Climate;
+	Climate.WindEast = In.Sign * In.WindScale * Zonal;
+	Climate.WindNorth = In.WindScale * Hemi * Meridional;
+	Climate.Ascent = 0.45 * PA_WeatherGauss(X, 0.0, 4.5) - 0.6 * PA_WeatherGauss(X, H, 10.0)
+		+ 0.55 * PA_WeatherGauss(X, F - 6.0, 11.0) - 0.3 * PA_WeatherGauss(X, 90.0, 15.0);
+	Climate.Humidity = In.Humidity + 0.22 * Climate.Ascent;
+	Climate.Psi = Psi;
+	return Climate;
+}
+
+/** Zonal temperature (K): mean + difference x (1/3 - sin^2(lat - 0.8 thermal equator)). */
+float PA_WeatherTemperature(float Latitude, float ThermalEquator, float MeanK, float EquatorPoleK)
+{
+	const float S = sin(Latitude - 0.8 * ThermalEquator);
+	return MeanK + EquatorPoleK * (1.0 / 3.0 - S * S);
+}
+
+// ---- transported synoptic noise (= p26 transported_noise) ------------------------------------
+
+float PA_WeatherNoiseAnchor(float3 P, float CosLat, float WindEast, float AgeHours, float RadiusKm, float Frequency, uint Seed)
+{
+	// The air at P came from upstream: rotate back by the zonal displacement since the anchor.
+	const float DeltaLongitude = WindEast * PA_W_KMH * AgeHours / (RadiusKm * CosLat);
+	return PA_WeatherFbm(PA_WeatherRotZ(P, -DeltaLongitude) * Frequency, Seed);
+}
+
+float PA_WeatherTransportedNoise(float3 P, float Latitude, float WindEast, FPAWeatherInputs In, float ScaleKm, uint SeedOffset)
+{
+	const float Frequency = In.RadiusKm / ScaleKm;
+	const float CosLat = max(cos(Latitude), 0.05);
+	float Sum = 0.0;
+	float Weights2 = 0.0;
+	if (In.NoiseWeight0 > 0.0)
+	{
+		Sum += In.NoiseWeight0 * PA_WeatherNoiseAnchor(P, CosLat, WindEast, In.NoiseAge0, In.RadiusKm, Frequency, In.NoiseSeed0 + SeedOffset);
+		Weights2 += In.NoiseWeight0 * In.NoiseWeight0;
+	}
+	if (In.NoiseWeight1 > 0.0)
+	{
+		Sum += In.NoiseWeight1 * PA_WeatherNoiseAnchor(P, CosLat, WindEast, In.NoiseAge1, In.RadiusKm, Frequency, In.NoiseSeed1 + SeedOffset);
+		Weights2 += In.NoiseWeight1 * In.NoiseWeight1;
+	}
+	return Sum / sqrt(max(Weights2, 1e-9));
+}
+
+// ---- ITCZ convective clusters (= p26 itcz_clusters) --------------------------------------------
+
+float PA_WeatherItczClusters(float3 P, FPAWeatherInputs In)
+{
+	// Same drifting frame for both anchors (westward 7 m/s; the angle is reduced modulo 2 pi on the CPU).
+	const float3 Q = PA_WeatherRotZ(P, In.ItczDriftAngle);
+	const float Frequency = In.RadiusKm / 700.0;
+	float Sum = 0.0;
+	float Weights2 = 0.0;
+	if (In.ItczWeight0 > 0.0)
+	{
+		Sum += In.ItczWeight0 * PA_WeatherFbm(Q * Frequency, In.ItczSeed0);
+		Weights2 += In.ItczWeight0 * In.ItczWeight0;
+	}
+	if (In.ItczWeight1 > 0.0)
+	{
+		Sum += In.ItczWeight1 * PA_WeatherFbm(Q * Frequency, In.ItczSeed1);
+		Weights2 += In.ItczWeight1 * In.ItczWeight1;
+	}
+	const float N = Sum / sqrt(max(Weights2, 1e-9));
+	// Easterly waves (wavenumbers 7 and 11, drifting with the clusters) organise them into travelling groups.
+	const float LonQ = atan2(Q.y, Q.x);
+	const float Waves = 0.5 + 0.25 * cos(7.0 * LonQ + In.ItczWavePhase7) + 0.25 * cos(11.0 * LonQ + In.ItczWavePhase11);
+	const float C = clamp((N + 0.45 * (Waves - 0.5) + 0.2) / 0.55, 0.0, 1.0);
+	return C * C * (3.0 - 2.0 * C);
+}
+
+#if PA_WEATHER_GENERATE
+// ---- storms (= p26 storm_fields) ----------------------------------------------------------------
+
+struct FPAWeatherStormField
+{
+	float Humidity;    // RH perturbation
+	float WindEast;    // m/s
+	float WindNorth;   // m/s
+};
+
+/** One front of an extratropical cyclone: a band from the centre along Angle, bent back against the drift. */
+float PA_WeatherFront(float X, float Y, float Angle, float Length, float Width, float Sense, float Radius)
+{
+	const float DX = cos(Angle);
+	const float DY = sin(Angle);
+	const float Along = X * DX + Y * DY;
+	const float Across = -X * DY + Y * DX;
+	const float Bend = -Sense * 0.35 * Along * Along / Length;
+	const float D = (Across - Bend) / Width;
+	return exp(-D * D) * clamp(Along / (0.3 * Radius), 0.0, 1.0) * clamp(1.0 - Along / Length, 0.0, 1.0);
+}
+
+FPAWeatherStormField PA_WeatherStorms(float3 P, float RadiusKm)
+{
+	FPAWeatherStormField Field;
+	Field.Humidity = 0.0;
+	Field.WindEast = 0.0;
+	Field.WindNorth = 0.0;
+	for (int Index = 0; Index < NumWeatherStorms && Index < PA_WEATHER_MAX_STORMS; ++Index)
+	{
+		const float4 S0 = WeatherStorm0[Index];
+		const float4 S3 = WeatherStorm3[Index];
+		const float3 Centre = float3(S0.x, S0.y, S0.z);
+		if (dot(P, Centre) <= S3.z)
+		{
+			continue;   // farther than 4 radii
+		}
+		const float4 S1 = WeatherStorm1[Index];
+		const float4 S2 = WeatherStorm2[Index];
+		const float3 East = float3(S1.x, S1.y, S1.z);
+		const float3 North = cross(Centre, East);
+		const float X = dot(P, East) * RadiusKm;
+		const float Y = dot(P, North) * RadiusKm;
+		const float R = sqrt(X * X + Y * Y) + 1e-6;
+		const float Theta = atan2(Y, X);
+		const float Radius = S0.w;
+		const float Intensity = S1.w;
+		const float Sense = S2.x;
+		const bool bTropical = S2.y > 0.5;
+
+		// Spiral cloud bands rotating with the vortex (log spiral), dense core, eye for tropical storms.
+		const float Arms = bTropical ? 3.0 : 1.0;
+		const float Pitch = bTropical ? 3.0 : 1.4;
+		const float Arm = cos(Arms * (Sense * Theta + Pitch * log(R / (0.3 * Radius))) - S3.y);
+		const float RR = R / Radius;
+		const float RCore = R / (0.15 * Radius);
+		const float Bands = pow(clamp(Arm, 0.0, 1.0), bTropical ? 1.5 : 0.8) * exp(-RR * RR) * (1.0 - exp(-RCore * RCore));
+		const float CoreScale = R / ((bTropical ? 0.3 : 0.4) * Radius);
+		float Core = exp(-CoreScale * CoreScale);
+		if (bTropical)
+		{
+			const float REye = R / (0.06 * Radius);
+			Core = Core * (1.0 - exp(-REye * REye));
+		}
+		const float RRing = (R - 1.7 * Radius) / (0.5 * Radius);
+		const float Ring = exp(-RRing * RRing);   // subsidence around the storm
+
+		// Comma tail: cold front toward the equator (turned east), warm front shorter toward the east / pole; they
+		// mature with the storm.
+		float Front = 0.0;
+		if (!bTropical)
+		{
+			const float Hemi = S2.z;
+			Front = 0.26 * PA_WeatherFront(X, Y, -Hemi * 70.0 * (PA_W_PI / 180.0), 2.8 * Radius, 0.2 * Radius, Sense, Radius)
+				+ 0.16 * PA_WeatherFront(X, Y, Hemi * 20.0 * (PA_W_PI / 180.0), 1.4 * Radius, 0.22 * Radius, Sense, Radius);
+			Front = Front * S2.w;
+		}
+		Field.Humidity += Intensity * (0.30 * Core + 0.32 * Bands - 0.08 * Ring) + Intensity * Front;
+
+		// Tangential wind (modified Rankine vortex).
+		const float RMax = 0.35 * Radius;
+		const float Speed = Intensity * S3.x * (R < RMax ? R / RMax : pow(RMax / R, 0.6));
+		Field.WindEast += Sense * Speed * (-Y / R);
+		Field.WindNorth += Sense * Speed * (X / R);
+	}
+	return Field;
+}
+
+// ---- the weather state (= p26 weather) ---------------------------------------------------------
+
+/** P: unit direction, planet local. */
+FPAWeatherSample PA_EvaluateWeather(float3 P, FPAWeatherInputs In)
+{
+	const float Latitude = asin(clamp(P.z, -1.0, 1.0));
+	const float Longitude = atan2(P.y, P.x);
+	const FPAWeatherClimate Climate = PA_WeatherClimatology(Latitude, In);
+	const float X = abs(Climate.Psi);
+
+	const float N = PA_WeatherTransportedNoise(P, Latitude, Climate.WindEast, In, 900.0, 0u);
+	const float N2 = PA_WeatherTransportedNoise(P, Latitude, Climate.WindEast, In, 2800.0, PA_W_N2_SEED_OFFSET);
+
+	// Planetary waves on the storm tracks (eastward), ITCZ clusters along a meandering band of varying width.
+	const float WaveStormTrack = 0.10 * cos(5.0 * Longitude + In.StormTrackWavePhase)
+		* PA_WeatherGauss(X, 0.5 * (In.HadleyDegrees + In.FerrelDegrees), 12.0);
+	const float Clusters = PA_WeatherItczClusters(P, In);
+	const float Meander = 4.0 * sin(2.0 * Longitude + In.MeanderPhase) + 2.5 * N2;
+	const float Width = 6.0 * (1.0 + 0.35 * N);
+	const float WaveItcz = (0.5 * Clusters - 0.1) * PA_WeatherGauss(Climate.Psi, Meander, Width);
+
+	const FPAWeatherStormField Storms = PA_WeatherStorms(P, In.RadiusKm);
+	const float EffectiveHumidity = Climate.Humidity + 0.12 * N + 0.08 * N2 + WaveStormTrack + WaveItcz + Storms.Humidity;
+	float Cover = clamp((EffectiveHumidity - PA_W_COVER_LO) / (PA_W_COVER_HI - PA_W_COVER_LO), 0.0, 1.0);
+	Cover = Cover * Cover * (3.0 - 2.0 * Cover);
+
+	FPAWeatherSample Sample;
+	Sample.Cover = Cover;
+	Sample.Humidity = clamp(EffectiveHumidity, 0.0, 1.0);
+	Sample.WindEast = Climate.WindEast + Storms.WindEast;
+	Sample.WindNorth = Climate.WindNorth + Storms.WindNorth;
+	return Sample;
+}
+#endif // PA_WEATHER_GENERATE

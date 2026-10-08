@@ -33,7 +33,7 @@ public:
 	//~ Begin ISceneViewExtension Interface
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
-	/** Game thread: picks the sun (Directional Light) and sends a copy to the render thread. */
+	/** Game thread: picks the sun (Directional Light), reads the weather clock and sends copies to the render thread. */
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;
 	virtual void SubscribeToPostProcessingPass(EPostProcessingPass Pass, const FSceneView& InView, FPostProcessingPassDelegateArray& InOutPassCallbacks, bool bIsPassEnabled) override;
 	//~ End ISceneViewExtension Interface
@@ -46,4 +46,5 @@ private:
 
 	/** Render thread only: written by the command enqueued in BeginRenderViewFamily, read by the pass. */
 	FAtmosphereSunLight SunLight_RenderThread;
+	FAtmosphereWeatherTime WeatherTime_RenderThread;
 };

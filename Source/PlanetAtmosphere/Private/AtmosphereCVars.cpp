@@ -29,7 +29,9 @@ namespace
 		TEXT("   white = lit column, dark blue = shadowed, magenta checker = not generated yet, red ring = sub-camera point; red square = no cascades)\n")
 		TEXT(" 12 = Cloud Shadow Usage (lit cloud samples of the primary planet: green = lit through the cascades, red = full light march fallback;\n")
 		TEXT("   pixels without such samples show the surface shadow source: green = cascades, blue = march through the layer, red = march, tiles not generated yet)\n")
-		TEXT(" 13 = Surface Cloud Shadow (cloud transmittance of the sun path on the placeholder surface: white = lit, black = shadowed; dark blue = no direct sun)"),
+		TEXT(" 13 = Surface Cloud Shadow (cloud transmittance of the sun path on the placeholder surface: white = lit, black = shadowed; dark blue = no direct sun)\n")
+		TEXT(" 14 = Weather Coverage (Phase 5: weather cloud water on the middle of the cloud layer, dark blue = 0 .. white = 1, latitude lines\n")
+		TEXT("   every 30 deg (equator orange); magenta = no weather for this planet (r.PlanetAtmosphere.Weather 0 / beyond Weather.MaxPlanets))"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -397,6 +399,56 @@ namespace
 		TEXT("march. Clamped to [0, 16]."),
 		ECVF_RenderThreadSafe);
 
+	// ---- Weather (Phase 5 / Step 27) ----
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereWeather(
+		TEXT("r.PlanetAtmosphere.Weather"),
+		1,
+		TEXT("Planetary weather (Phase 5, model C): cloud water / humidity / wind on a cube-sphere per planet, computed on the GPU\n")
+		TEXT("from the planet's weather parameters and the weather clock (snapshots, interpolated). Step 27: visible only in\n")
+		TEXT("r.PlanetAtmosphere.DebugMode 14 (drives the clouds from Step 29). 1 = on (default), 0 = off (no weather passes, atlas freed)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereWeatherTimeScale(
+		TEXT("r.PlanetAtmosphere.Weather.TimeScale"),
+		4.0f,
+		TEXT("Default weather clock: game seconds of weather per world second (4 = one 24 h planet day in 6 real hours; 0 = frozen).\n")
+		TEXT("Overridden by AtmosphereWorldSubsystem SetWeatherTimeScale. Changing it jumps the weather time (world time x scale)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereWeatherTimeOffsetHours(
+		TEXT("r.PlanetAtmosphere.Weather.TimeOffsetHours"),
+		0.0f,
+		TEXT("Game hours added to the weather clock (testing: jump forward / backward in the weather; the snapshots are rebuilt at once)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereWeatherResolution(
+		TEXT("r.PlanetAtmosphere.Weather.Resolution"),
+		256,
+		TEXT("Texels per cube-face side of the weather fields (6 faces per planet; 256 = ~39 km per texel on an Earth-size planet).\n")
+		TEXT("Memory per planet: 6 x Res^2 x 3 snapshots x 8 bytes (256: 9.4 MB). Rounded down to a multiple of 8, clamped to [64, 512]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereWeatherMaxPlanets(
+		TEXT("r.PlanetAtmosphere.Weather.MaxPlanets"),
+		4,
+		TEXT("Planets with weather per view (nearest first; the others get none). The shared atlas grows to the number of planets\n")
+		TEXT("actually seen in a frame by all views (editor + PIE), up to 2 x this. Clamped to [1, 8]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereWeatherSnapshotInterval(
+		TEXT("r.PlanetAtmosphere.Weather.SnapshotInterval"),
+		600.0f,
+		TEXT("Game seconds between two weather snapshots (global time grid). The image interpolates between the two snapshots around\n")
+		TEXT("the weather time while the next one is built in the background. Clamped to [10, 86400]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereWeatherFacesPerFrame(
+		TEXT("r.PlanetAtmosphere.Weather.FacesPerFrame"),
+		1,
+		TEXT("Cube faces of the next weather snapshot computed per frame and planet (background build). Clamped to [1, 6]."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLODMinLightSteps(
 		TEXT("r.PlanetAtmosphere.LOD.MinLightSteps"),
 		2,
@@ -428,6 +480,7 @@ namespace PlanetAtmosphere::CVars
 		case 11: return EDebugMode::ShadowCascade2;
 		case 12: return EDebugMode::CloudShadowUsage;
 		case 13: return EDebugMode::SurfaceCloudShadow;
+		case 14: return EDebugMode::WeatherCoverage;
 		default: return EDebugMode::FinalClouds;
 		}
 	}
@@ -586,5 +639,26 @@ namespace PlanetAtmosphere::CVars
 		Settings.SurfaceMarchMaxStep = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxStep.GetValueOnAnyThread(false), 0.0f, 4.0f);
 		Settings.SurfaceMaxTexel = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel.GetValueOnAnyThread(false), 0.0f, 16.0f);
 		return Settings;
+	}
+
+	FWeatherSettings GetWeatherSettings()
+	{
+		FWeatherSettings Settings;
+		Settings.bEnabled = CVarPlanetAtmosphereWeather.GetValueOnAnyThread(false) != 0;
+		Settings.Resolution = FMath::Clamp(CVarPlanetAtmosphereWeatherResolution.GetValueOnAnyThread(false) / 8 * 8, 64, 512);
+		Settings.MaxPlanets = FMath::Clamp(CVarPlanetAtmosphereWeatherMaxPlanets.GetValueOnAnyThread(false), 1, 8);
+		Settings.SnapshotIntervalSeconds = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereWeatherSnapshotInterval.GetValueOnAnyThread(false)), 10.0, 86400.0);
+		Settings.FacesPerFrame = FMath::Clamp(CVarPlanetAtmosphereWeatherFacesPerFrame.GetValueOnAnyThread(false), 1, 6);
+		return Settings;
+	}
+
+	double GetWeatherTimeScale()
+	{
+		return FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereWeatherTimeScale.GetValueOnAnyThread(false)), 0.0, 1.0e6);
+	}
+
+	double GetWeatherTimeOffsetHours()
+	{
+		return static_cast<double>(CVarPlanetAtmosphereWeatherTimeOffsetHours.GetValueOnAnyThread(false));
 	}
 }

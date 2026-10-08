@@ -9,6 +9,7 @@
 #include "AtmosphereLutCache.h"
 #include "AtmosphereTemporal.h"
 #include "AtmosphereCloudShadows.h"
+#include "AtmosphereWeather.h"
 
 DEFINE_LOG_CATEGORY(LogPlanetAtmosphere);
 
@@ -36,6 +37,8 @@ void FPlanetAtmosphereModule::ShutdownModule()
 	PlanetAtmosphere::Temporal::ReleaseHistory_GameThread();
 	// Cloud shadow cascades of all views (Phase 4): same lifecycle.
 	PlanetAtmosphere::CloudShadows::Release_GameThread();
+	// Weather atlas (Phase 5): same lifecycle.
+	PlanetAtmosphere::Weather::Release_GameThread();
 }
 
 IMPLEMENT_MODULE(FPlanetAtmosphereModule, PlanetAtmosphere)

@@ -90,6 +90,27 @@ FPlanetAtmosphereScattering UPlanetAtmosphereComponent::GetValidatedScatteringUU
 	return S;
 }
 
+FPlanetWeatherParameters UPlanetAtmosphereComponent::GetValidatedWeatherParameters() const
+{
+	// Same ranges as the UPROPERTY clamps; model units (hours, days, kelvin, km).
+	FPlanetWeatherParameters W;
+	W.Seed = WeatherSeed;
+	W.RotationPeriodHours = FMath::Clamp(static_cast<double>(RotationPeriodHours), 1.0, 2400.0);
+	W.bRetrograde = bRetrogradeRotation;
+	W.AxialTiltDegrees = FMath::Clamp(static_cast<double>(AxialTilt), 0.0, 90.0);
+	W.YearLengthDays = FMath::Max(static_cast<double>(YearLengthDays), 1.0);
+	W.SeasonPhase = FMath::Clamp(static_cast<double>(SeasonPhase), 0.0, 1.0);
+	W.MeanTemperatureK = FMath::Clamp(static_cast<double>(MeanTemperature), -250.0, 500.0) + 273.15;
+	W.EquatorPoleDifferenceK = FMath::Clamp(static_cast<double>(EquatorPoleTemperatureDifference), 0.0, 200.0);
+	W.Humidity = FMath::Clamp(static_cast<double>(MeanHumidity), 0.0, 1.0);
+	W.CycloneLifetimeDays = FMath::Clamp(static_cast<double>(CycloneLifetimeDays), 0.5, 30.0);
+	W.CyclonesPerHemisphere = FMath::Clamp(static_cast<double>(CyclonesPerHemisphere), 0.0, 12.0);
+	W.CycloneRadiusKm = FMath::Clamp(CycloneRadius, 50000.0, 5000000.0) / 1000.0;
+	W.TropicalCyclonesPerHemisphere = FMath::Clamp(static_cast<double>(TropicalCyclonesPerHemisphere), 0.0, 4.0);
+	W.WindScale = FMath::Clamp(static_cast<double>(WindScale), 0.0, 5.0);
+	return W;
+}
+
 FBoxSphereBounds UPlanetAtmosphereComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
 	// Bounds = atmosphere top sphere, in Unreal Units (cm), centered on the component.

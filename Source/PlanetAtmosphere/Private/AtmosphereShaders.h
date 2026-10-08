@@ -53,6 +53,9 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereSurface, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	// x = slot of this atmosphere in the LUT pools (Step 16, AtmosphereLutCache.h), yzw unused
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereLutInfo, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// Weather (Phase 5 / Step 27, AtmosphereWeather.h): x = planet slot in the weather atlas (-1 = no weather), y / z = first
+	// atlas row of the two snapshots around the weather time, w = interpolation weight of the second
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereWeatherInfo, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 END_SHADER_PARAMETER_STRUCT()
 
 /** Cloud shadow cascades (Phase 4). Must match PA_SHADOW_CASCADES (Shaders/Private/CloudShadowCommon.ush). */
@@ -192,6 +195,59 @@ public:
 		SHADER_PARAMETER(float, CloudShadowSurfaceMaxStep)
 		SHADER_PARAMETER(int32, CloudShadowSurfaceJitter)
 		SHADER_PARAMETER(float, CloudShadowSurfaceMaxTexel)
+		// Weather (Phase 5 / Step 27, WeatherCommon.ush): the weather atlas, per planet AtmosphereWeatherInfo. Without weather
+		// this frame the transmittance LUT pool is bound (never sampled: AtmosphereWeatherInfo.x = -1 everywhere).
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, WeatherAtlas)
+		SHADER_PARAMETER_SAMPLER(SamplerState, WeatherSampler)
+		SHADER_PARAMETER(int32, WeatherResolution)
+		SHADER_PARAMETER(FVector4f, WeatherAtlasSizeAndInvSize)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/** Storms per weather snapshot. Must match PA_WEATHER_MAX_STORMS (WeatherModel.ush) and PlanetAtmosphere::Weather::MaxStorms. */
+#define PLANET_ATMOSPHERE_WEATHER_MAX_STORMS 64
+
+/**
+ * Weather snapshot generation (Phase 5 / Step 27): model C (WeatherModel.ush) at the texel centres of up to 6 cube faces of
+ * one planet at one time. Shaders/Private/WeatherGenerate.usf, entry WeatherCS. Dispatch: (Res / 8, Res / 8, faces) groups.
+ * Uniforms from PlanetAtmosphere::Weather::FSnapshotInputs (AtmosphereWeatherModel.h), scheduled by AtmosphereWeather.cpp.
+ */
+class FAtmosphereWeatherGenerateCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereWeatherGenerateCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereWeatherGenerateCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutWeatherAtlas)
+		SHADER_PARAMETER(int32, WeatherResolution)
+		SHADER_PARAMETER(int32, WeatherRowBase)
+		// x = cube face written by dispatch slice z
+		SHADER_PARAMETER_ARRAY(FVector4f, WeatherFaces, [6])
+		// radius km, rotation sign, wind scale, mean humidity
+		SHADER_PARAMETER(FVector4f, WeatherPlanet)
+		// Hadley edge deg, Ferrel edge deg, thermal equator rad, unused
+		SHADER_PARAMETER(FVector4f, WeatherCells)
+		// transported noise: anchor ages (h) 0 / 1, crossfade weights 0 / 1
+		SHADER_PARAMETER(FVector4f, WeatherNoise)
+		// ITCZ clusters: anchor weights 0 / 1, drift angle (rad), unused
+		SHADER_PARAMETER(FVector4f, WeatherItcz)
+		// easterly wave phases (wavenumber 7, 11), storm-track wave phase, ITCZ meander phase (rad)
+		SHADER_PARAMETER(FVector4f, WeatherPhases)
+		// uint32 bit patterns of the anchor seeds
+		SHADER_PARAMETER(int32, WeatherNoiseSeed0)
+		SHADER_PARAMETER(int32, WeatherNoiseSeed1)
+		SHADER_PARAMETER(int32, WeatherItczSeed0)
+		SHADER_PARAMETER(int32, WeatherItczSeed1)
+		// Storms (see WeatherModel.ush)
+		SHADER_PARAMETER(int32, NumWeatherStorms)
+		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm0, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
+		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm1, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
+		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm2, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
+		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm3, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
 	END_SHADER_PARAMETER_STRUCT()
 };
 

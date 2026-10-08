@@ -2,6 +2,7 @@
 
 #include "PlanetAtmosphereViewExtension.h"
 #include "AtmosphereProxyRegistry.h"
+#include "AtmosphereWorldSubsystem.h"
 #include "AtmosphereRenderer.h"
 #include "AtmosphereCVars.h"
 #include "PlanetAtmosphereTypes.h"
@@ -93,13 +94,27 @@ void FPlanetAtmosphereViewExtension::BeginRenderViewFamily(FSceneViewFamily& InV
 	// Game thread: read the sun from UObjects here, hand a plain copy to the render thread.
 	// The command captures a strong reference, so the extension outlives the command even if the
 	// world subsystem releases it in the meantime. Commands execute in order, before this family renders.
-	const FAtmosphereSunLight Sun = FindSunLight_GameThread(GetWorld());
+	UWorld* ViewWorld = GetWorld();
+	const FAtmosphereSunLight Sun = FindSunLight_GameThread(ViewWorld);
+
+	// Phase 5 / Step 27: the world's weather clock (one value for every view of this world in this frame).
+	FAtmosphereWeatherTime WeatherTime;
+	if (ViewWorld)
+	{
+		if (const UAtmosphereWorldSubsystem* Subsystem = ViewWorld->GetSubsystem<UAtmosphereWorldSubsystem>())
+		{
+			WeatherTime.Seconds = Subsystem->GetWeatherTime();
+			WeatherTime.bValid = true;
+		}
+	}
+
 	TSharedRef<FPlanetAtmosphereViewExtension, ESPMode::ThreadSafe> Self =
 		StaticCastSharedRef<FPlanetAtmosphereViewExtension>(AsShared());
 
-	ENQUEUE_RENDER_COMMAND(PlanetAtmosphereUpdateSun)([Self, Sun](FRHICommandListImmediate&)
+	ENQUEUE_RENDER_COMMAND(PlanetAtmosphereUpdateSun)([Self, Sun, WeatherTime](FRHICommandListImmediate&)
 	{
 		Self->SunLight_RenderThread = Sun;
+		Self->WeatherTime_RenderThread = WeatherTime;
 	});
 }
 
@@ -152,5 +167,5 @@ FScreenPassTexture FPlanetAtmosphereViewExtension::PostProcessBeforeDOF_RenderTh
 	UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("ViewExtension: %d of %d atmosphere(s) pass plugin frustum culling"),
 		VisibleInstances.Num(), RegisteredCount);
 
-	return PlanetAtmosphere::AddAtmospherePasses(GraphBuilder, View, Inputs, VisibleInstances, SunLight_RenderThread);
+	return PlanetAtmosphere::AddAtmospherePasses(GraphBuilder, View, Inputs, VisibleInstances, SunLight_RenderThread, WeatherTime_RenderThread);
 }
