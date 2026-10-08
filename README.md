@@ -92,7 +92,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | CVar | Default | Meaning |
 |---|---|---|
 | `r.PlanetAtmosphere.Enable` | 1 | Master switch (0 = nothing is dispatched) |
-| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 8 = Temporal Weight, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2, 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow, 14 = Weather Coverage |
+| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 8 = Temporal Weight, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2, 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow, 14 / 15 / 16 / 17 = Weather Coverage / Humidity / Wind / Temperature |
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
@@ -149,7 +149,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.Weather.Resolution` | 256 | Texels per cube-face side (64..512): ~39 km per texel on an Earth-size planet; 9.4 MB per planet at 256 |
 | `r.PlanetAtmosphere.Weather.MaxPlanets` | 4 | Planets with weather per view, nearest first (1..8); the shared atlas grows to the number seen in a frame by all views (editor + PIE), up to 2 × this |
 | `r.PlanetAtmosphere.Weather.SnapshotInterval` | 600 | Game seconds between weather snapshots (10..86400); the image interpolates between two |
-| `r.PlanetAtmosphere.Weather.FacesPerFrame` | 1 | Cube faces of the next snapshot built per frame and planet in the background (1..6) |
+| `r.PlanetAtmosphere.Weather.FacesPerFrame` | 1 | Cube faces of the next snapshot built per frame and planet in the background (1..6); more automatically when the weather time runs so fast that the snapshot would not be ready in time (Step 28) |
 
 ## Clouds through the atmosphere (Step 15)
 
@@ -199,8 +199,13 @@ over long times.
   6 × Res² × 3 snapshots per planet; log `Weather: atlas …` on creation. GPU stat **PlanetAtmosphere.Weather**.
 - **Verification** (Step 27): the shader model file and the CPU storm code, compiled on the CPU, match the numpy
   prototype to 1.5e-5 in cloud water (5 parameter sets × 7 times incl. negative and 10-year times; identical storm lists).
-- Step 27 does not change the clouds yet: `DebugMode 14` shows the cloud water on the middle of the cloud layer
-  (dark blue 0 → white 1, latitude lines every 30°, equator orange). Clouds follow the weather from Step 29.
+- Step 28: when the weather time runs fast (time-lapse, tests), the faces still missing of the next snapshot are
+  spread over the frames left before it is needed (estimated from the previous frame's time step), so it never has to
+  be built synchronously as long as a snapshot lasts at least one frame (faster than that: increase `SnapshotInterval`).
+  Storm winds fade out between 2.5 and 4 storm radii (before: a circular jump of up to ~10 m/s at the 4-radius cut).
+- The clouds do not follow the weather yet (Step 29). Debug views on the middle of the cloud layer, latitude lines every
+  30° (equator orange): `DebugMode 14` cloud water, `15` humidity, `16` wind (speed + arrows), `17` temperature.
+  The temperature of model C is zonal (latitude + season); storms do not change it.
 
 ## Debug views and profiling
 
@@ -218,6 +223,9 @@ over long times.
 | 12 | Cloud Shadow Usage: lit cloud samples of the primary planet over the darkened image — green = sunlight through the cascades, red = full light march (outside the cascade windows, or a tile not generated yet). Pixels without such samples show the surface: green = cascades, blue = march through the layer (texel too coarse, other planets; blend band at a window edge in between), red = march because the tile is not generated yet |
 | 13 | Surface Cloud Shadow: cloud transmittance of the sun path at the visible surface point (white = lit, black = shadowed), shown in front of the clouds; dark blue = surface without direct sun (night side, or `CloudShadows.Surface 0`) |
 | 14 | Weather Coverage (Phase 5): the weather cloud water of the nearest planet on the sphere in the middle of its cloud layer, unlit (dark blue = 0 → white = 1), latitude lines every 30° (equator orange); magenta checker = no weather for this planet (`Weather 0`, beyond `Weather.MaxPlanets`) |
+| 15 | Weather Humidity: effective relative humidity (brown 0 → tan 0.4 → pale green 0.6 → blue 0.8 → deep blue 1) |
+| 16 | Weather Wind: speed (dark blue 0 → teal 10 → yellow-green 20 → orange 30 → red 40 m/s) + white arrows downwind on 5° cells, length ∝ speed up to 25 m/s, dot below 1 m/s |
+| 17 | Weather Temperature: zonal temperature (blue −40 °C → light blue −10 → white 0 → yellow 15 → red 35 °C), isotherms every 10 °C, 0 °C black |
 | 9 / 10 / 11 | Shadow Cascade 0 / 1 / 2: final image + the cascade of the primary planet in the top-left corner (+V up): white = column lit, dark blue = column shadowed (exp(−optical depth of the cloud shell)), magenta checker = tile not generated yet, red ring = sub-camera point; red square = no cascades this frame |
 
 - GPU: `stat gpu` → **PlanetAtmosphere.Raymarch** (noise bake + raymarch / debug pass of a view; called
@@ -282,7 +290,10 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 5 — Step 27: weather GPU state** (in review)
+**Phase 5 — Step 28: weather debug views** (in review) — `DebugMode 15 / 16 / 17` (humidity, wind, temperature),
+adaptive background build of the weather snapshots, storm winds without the jump at the 4-radius cut.
+
+**Phase 5 — Step 27: weather GPU state** (tested in UE: background face 0.13–0.16 ms, full rebuild ~1.6–1.9 ms once)
 - Weather parameters on the component (Earth-like defaults), weather clock in the world subsystem (Blueprint)
 - Model C on the GPU: CPU storm sequence + time uniforms in double, shader model, cube-sphere snapshots on a global
   time grid with interpolation and background build; `DebugMode 14`, `stat gpu` PlanetAtmosphere.Weather
@@ -409,7 +420,7 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 5 — Step 28 (debug views Wind / Humidity / Temperature), Step 29 (weather drives the cloud coverage).
+Next: Phase 5 — Step 29 (weather drives the cloud coverage), Step 30 (profiling, Phase 5 checklist).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies

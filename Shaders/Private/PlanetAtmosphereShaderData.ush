@@ -45,6 +45,8 @@ float4 AtmosphereLutInfo[PA_MAX_ATMOSPHERES];        // x = slot of this atmosph
 // Weather (Phase 5 / Step 27; WeatherCommon.ush): x = planet slot in the weather atlas (-1 = no weather), y / z = first atlas
 // row of the two snapshots around the weather time, w = interpolation weight of the second.
 float4 AtmosphereWeatherInfo[PA_MAX_ATMOSPHERES];
+// Weather climate (Step 28): x = mean temperature K, y = equator - pole difference K, z = thermal equator (rad) now.
+float4 AtmosphereWeatherClimate[PA_MAX_ATMOSPHERES];
 
 struct FPAAtmosphere
 {

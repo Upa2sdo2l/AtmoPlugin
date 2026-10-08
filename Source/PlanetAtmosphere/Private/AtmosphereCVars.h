@@ -28,6 +28,9 @@ namespace PlanetAtmosphere::CVars
 		CloudShadowUsage = 12,   // Step 23: lit samples served by the cascades (green) / the fallback light march (red); Step 24: + surface
 		SurfaceCloudShadow = 13, // Step 24: cloud transmittance of the sun path on the placeholder surface
 		WeatherCoverage = 14,    // Phase 5 / Step 27: weather cloud water (coverage) on the cloud layer sphere
+		WeatherHumidity = 15,    // Step 28: effective relative humidity
+		WeatherWind = 16,        // Step 28: wind speed + direction arrows
+		WeatherTemperature = 17, // Step 28: zonal temperature + isotherms
 	};
 
 	/** Values of r.PlanetAtmosphere.StepDistribution. */

@@ -428,9 +428,11 @@ FPAWeatherStormField PA_WeatherStorms(float3 P, float RadiusKm)
 		}
 		Field.Humidity += Intensity * (0.30 * Core + 0.32 * Bands - 0.08 * Ring) + Intensity * Front;
 
-		// Tangential wind (modified Rankine vortex).
+		// Tangential wind (modified Rankine vortex), faded out between 2.5 and 4 radii (Step 28): the storm is only evaluated
+		// within 4 radii, where the Rankine tail still has ~23 % of its peak -> a circular jump of up to ~10 m/s without it.
 		const float RMax = 0.35 * Radius;
-		const float Speed = Intensity * S3.x * (R < RMax ? R / RMax : pow(RMax / R, 0.6));
+		const float Fade = clamp((4.0 * Radius - R) / (1.5 * Radius), 0.0, 1.0);
+		const float Speed = Intensity * S3.x * (R < RMax ? R / RMax : pow(RMax / R, 0.6)) * (Fade * Fade * (3.0 - 2.0 * Fade));
 		Field.WindEast += Sense * Speed * (-Y / R);
 		Field.WindNorth += Sense * Speed * (X / R);
 	}

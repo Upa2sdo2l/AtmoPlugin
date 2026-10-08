@@ -56,6 +56,9 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	// Weather (Phase 5 / Step 27, AtmosphereWeather.h): x = planet slot in the weather atlas (-1 = no weather), y / z = first
 	// atlas row of the two snapshots around the weather time, w = interpolation weight of the second
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereWeatherInfo, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// Weather climate (Step 28): x = mean temperature K, y = equator - pole difference K, z = thermal equator (rad) at the
+	// current weather time, w unused (zonal temperature for DebugMode 17)
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereWeatherClimate, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 END_SHADER_PARAMETER_STRUCT()
 
 /** Cloud shadow cascades (Phase 4). Must match PA_SHADOW_CASCADES (Shaders/Private/CloudShadowCommon.ush). */

@@ -152,6 +152,7 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 	for (int32 Index = 0; Index < PLANET_ATMOSPHERE_MAX_VISIBLE; ++Index)
 	{
 		InOutParameters.AtmosphereWeatherInfo[Index] = FVector4f(-1.0f, 0.0f, 0.0f, 0.0f);
+		InOutParameters.AtmosphereWeatherClimate[Index] = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
 	}
 
 	const PlanetAtmosphere::CVars::FWeatherSettings Settings = PlanetAtmosphere::CVars::GetWeatherSettings();
@@ -313,6 +314,19 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 			FSlot& Slot = Slots[SlotIndex];
 			Slot.LastUsedFrame = FrameNumber;
 
+			// Step 28: weather seconds per frame, measured once per frame (the first view of the frame) against the previous
+			// frame this planet was rendered in; unknown (0) after a gap of more than 4 frames or when the time went back.
+			if (!Slot.bHasRateSample || Slot.RateSampleFrame != FrameNumber)
+			{
+				const uint32 FramesSince = FrameNumber - Slot.RateSampleFrame;
+				Slot.TimePerFrame = (Slot.bHasRateSample && FramesSince > 0 && FramesSince <= 4 && Inputs.Time.Seconds > Slot.RateSampleTime)
+					? (Inputs.Time.Seconds - Slot.RateSampleTime) / static_cast<double>(FramesSince)
+					: 0.0;
+				Slot.bHasRateSample = true;
+				Slot.RateSampleTime = Inputs.Time.Seconds;
+				Slot.RateSampleFrame = FrameNumber;
+			}
+
 			int32 SnapshotRow[2] = {0, 0};
 			for (int32 Step = 0; Step < NumSnapshots; ++Step)
 			{
@@ -337,15 +351,35 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 				else if (Missing != 0)
 				{
 					// Background: FacesPerFrame faces per frame and planet (once per frame, whatever the number of views).
+					// Step 28: when the weather time moves fast, the faces still missing are spread over the frames left until
+					// k + 2 is displayed (one frame of margin for frame-time jitter), so it is complete in time and never built
+					// synchronously; nothing is built ahead when a new snapshot is needed every frame (it would be wasted).
 					if (Slot.bBackgroundDone && Slot.LastBackgroundFrame == FrameNumber)
 					{
 						Missing = 0;
 					}
 					else
 					{
+						int32 Budget = Settings.FacesPerFrame;
+						if (Slot.TimePerFrame > Interval)
+						{
+							Budget = 0;
+						}
+						else if (Slot.TimePerFrame > 0.0)
+						{
+							int32 MissingCount = 0;
+							for (int32 Face = 0; Face < NumFaces; ++Face)
+							{
+								MissingCount += (Missing & (1u << Face)) ? 1 : 0;
+							}
+							const double Remaining = static_cast<double>(K + 1) * Interval - Inputs.Time.Seconds;
+							const double FramesToDisplay = FMath::Min(FMath::CeilToDouble(Remaining / Slot.TimePerFrame), 1.0e6);
+							const int32 FramesLeft = FMath::Max(1, static_cast<int32>(FramesToDisplay) - 1);
+							Budget = FMath::Max(Budget, FMath::DivideAndRoundUp(MissingCount, FramesLeft));
+						}
 						uint8 Limited = 0;
 						int32 Count = 0;
-						for (int32 Face = 0; Face < NumFaces && Count < Settings.FacesPerFrame; ++Face)
+						for (int32 Face = 0; Face < NumFaces && Count < Budget; ++Face)
 						{
 							if (Missing & (1u << Face))
 							{
@@ -369,6 +403,12 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 
 			InOutParameters.AtmosphereWeatherInfo[Index] = FVector4f(
 				static_cast<float>(SlotIndex), static_cast<float>(SnapshotRow[0]), static_cast<float>(SnapshotRow[1]), Blend);
+			// Step 28: zonal temperature inputs for DebugMode 17 (thermal equator at the current weather time, double on the CPU).
+			InOutParameters.AtmosphereWeatherClimate[Index] = FVector4f(
+				static_cast<float>(Slot.Parameters.MeanTemperatureK),
+				static_cast<float>(Slot.Parameters.EquatorPoleDifferenceK),
+				static_cast<float>(0.6 * SubsolarLatitude(Slot.Parameters, Inputs.Time.Seconds / 3600.0)),
+				0.0f);
 		}
 	}
 
