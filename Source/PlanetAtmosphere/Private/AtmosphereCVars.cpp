@@ -24,7 +24,9 @@ namespace
 		TEXT(" 5 = Atmosphere Only (final image without clouds)\n")
 		TEXT(" 6 = Transmittance LUT (final image + the LUT atlas at 2x in the top-left corner, one 256 x 64 block per planet)\n")
 		TEXT(" 7 = Multiple-Scattering LUT (final image + the MS LUT atlas at 4x in the top-left corner, one 64 x 32 block per planet, x25)\n")
-		TEXT(" 8 = Temporal Weight (weight of the current frame in the temporal accumulation: green = history, red = current frame only / history rejected)"),
+		TEXT(" 8 = Temporal Weight (weight of the current frame in the temporal accumulation: green = history, red = current frame only / history rejected)\n")
+		TEXT(" 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2 (final image + the cloud shadow cascade of the primary planet in the top-left corner:\n")
+		TEXT("   white = lit column, dark blue = shadowed, magenta checker = not generated yet, red ring = sub-camera point; red square = no cascades)"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -265,6 +267,46 @@ namespace
 		TEXT("Fraction of the planet's Raymarch Steps used at minimum detail (at least 4 steps). Clamped to [0.05, 1]."),
 		ECVF_RenderThreadSafe);
 
+	// ---- Cloud shadow cascades (Phase 4 / Step 22) ----
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadows(
+		TEXT("r.PlanetAtmosphere.CloudShadows"),
+		1,
+		TEXT("Cloud shadow cascades of the primary planet of each view (Phase 4): 3 sun-aligned Beer shadow maps around the\n")
+		TEXT("sub-camera point, generated progressively and kept across frames. Step 22: generated and shown in debug modes 9-11\n")
+		TEXT("only (the image does not use them yet). 1 = on (default), 0 = off (nothing is generated)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsResolution(
+		TEXT("r.PlanetAtmosphere.CloudShadows.Resolution"),
+		512,
+		TEXT("Texels per cascade side; the atlas is Res x 3 Res RGBA16F (512: 6 MB per view). Rounded down to a multiple of 32,\n")
+		TEXT("clamped to [128, 1024]. A change regenerates every cascade."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsGenerationSteps(
+		TEXT("r.PlanetAtmosphere.CloudShadows.GenerationSteps"),
+		32,
+		TEXT("Density samples per cascade texel along the sun through the cloud shell (Step 21 prototype: 16 -> +0.4 pt error).\n")
+		TEXT("Clamped to [8, 128]. A change regenerates every cascade."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsUpdateBudget(
+		TEXT("r.PlanetAtmosphere.CloudShadows.UpdateBudget"),
+		32,
+		TEXT("Tiles of 32 x 32 cascade texels generated per view and frame (the GPU cost of the cascades, stat gpu ->\n")
+		TEXT("PlanetAtmosphere.CloudShadows). New tiles first near the camera, round-robin over the 3 cascades. A full set of\n")
+		TEXT("3 cascades at 512 = 768 tiles. Measured on an RTX 3050 (frame peaks): 8 -> 0.11 ms, 16 -> 0.14 ms, 32 -> 0.23 ms;\n")
+		TEXT("32 (default) fills all 3 cascades in 24 frames. 0 = no generation (the cascades stay as they are). Clamped to [0, 768]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsMinExtent(
+		TEXT("r.PlanetAtmosphere.CloudShadows.MinExtent"),
+		8.0f,
+		TEXT("Half-size of cascade 0 near the cloud layer, in km. Higher up it grows with the camera height above the clouds\n")
+		TEXT("in powers of two; cascade i = cascade 0 x 4^i. Clamped to [1, 1000]."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLODMinLightSteps(
 		TEXT("r.PlanetAtmosphere.LOD.MinLightSteps"),
 		2,
@@ -291,6 +333,9 @@ namespace PlanetAtmosphere::CVars
 		case 6:  return EDebugMode::TransmittanceLut;
 		case 7:  return EDebugMode::MultipleScatteringLut;
 		case 8:  return EDebugMode::TemporalWeight;
+		case 9:  return EDebugMode::ShadowCascade0;
+		case 10: return EDebugMode::ShadowCascade1;
+		case 11: return EDebugMode::ShadowCascade2;
 		default: return EDebugMode::FinalClouds;
 		}
 	}
@@ -426,6 +471,17 @@ namespace PlanetAtmosphere::CVars
 		Settings.FullDetailRadiusPx = FMath::Max(Settings.MinDetailRadiusPx * 1.01f, CVarPlanetAtmosphereLODFullDetailRadius.GetValueOnAnyThread(false));
 		Settings.MinStepFraction = FMath::Clamp(CVarPlanetAtmosphereLODMinStepFraction.GetValueOnAnyThread(false), 0.05f, 1.0f);
 		Settings.MinLightSteps = FMath::Clamp(CVarPlanetAtmosphereLODMinLightSteps.GetValueOnAnyThread(false), 1, 16);
+		return Settings;
+	}
+
+	FCloudShadowSettings GetCloudShadowSettings()
+	{
+		FCloudShadowSettings Settings;
+		Settings.bEnabled = CVarPlanetAtmosphereCloudShadows.GetValueOnAnyThread(false) != 0;
+		Settings.Resolution = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsResolution.GetValueOnAnyThread(false) / 32 * 32, 128, 1024);
+		Settings.GenerationSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsGenerationSteps.GetValueOnAnyThread(false), 8, 128);
+		Settings.UpdateBudgetTiles = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsUpdateBudget.GetValueOnAnyThread(false), 0, 768);
+		Settings.MinExtentCm = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereCloudShadowsMinExtent.GetValueOnAnyThread(false)), 1.0, 1000.0) * 1.0e5;
 		return Settings;
 	}
 }

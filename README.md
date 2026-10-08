@@ -85,7 +85,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | CVar | Default | Meaning |
 |---|---|---|
 | `r.PlanetAtmosphere.Enable` | 1 | Master switch (0 = nothing is dispatched) |
-| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT |
+| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 8 = Temporal Weight, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2 |
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
@@ -120,6 +120,11 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.LOD.MinDetailRadius` | 50 | Radius at and below which minimum detail is used (log2 interpolation in between) |
 | `r.PlanetAtmosphere.LOD.MinStepFraction` | 0.25 | Fraction of Raymarch Steps at minimum detail (at least 4) |
 | `r.PlanetAtmosphere.LOD.MinLightSteps` | 2 | Light-march steps at minimum detail |
+| `r.PlanetAtmosphere.CloudShadows` | 1 | Cloud shadow cascades of the primary planet (Phase 4). Step 22: generated and shown in debug modes 9–11 only |
+| `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 3 Res RGBA16F, 6 MB per view at 512 |
+| `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |
+| `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 32 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades: RTX 3050 frame peaks 8 → 0.11 ms, 16 → 0.14 ms, 32 → 0.23 ms; 32 fills all cascades in 24 frames |
+| `r.PlanetAtmosphere.CloudShadows.MinExtent` | 8 | Half-size of cascade 0 near the cloud layer, km; grows with the camera height in powers of two; cascade i = × 4^i |
 
 ## Clouds through the atmosphere (Step 15)
 
@@ -157,10 +162,12 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 | 6 | Transmittance LUT: final image + the LUT atlas at 2× in the top-left corner (one 256 × 64 block per planet, nearest planet on top; x = view zenith angle, y = altitude) |
 | 7 | Multiple-Scattering LUT: final image + the MS LUT atlas at 4× in the top-left corner, ×25 (one 64 × 32 block per planet; x = sun zenith from below the horizon (left) to overhead (right), y = altitude, ground at the top) |
 | 8 | Temporal Weight: 1 / accumulated sample weight over the darkened image (green = long history, red = little history: rejected, just started; with interleaving pixels far from this frame's samples stay greener) |
+| 9 / 10 / 11 | Shadow Cascade 0 / 1 / 2: final image + the cascade of the primary planet in the top-left corner (+V up): white = column lit, dark blue = column shadowed (exp(−optical depth of the cloud shell)), magenta checker = tile not generated yet, red ring = sub-camera point; red square = no cascades this frame |
 
 - GPU: `stat gpu` → **PlanetAtmosphere.Raymarch** (noise bake + raymarch / debug pass of a view; called
   **PlanetAtmosphere** before Step 17), **PlanetAtmosphere.Temporal** (Step 18), **PlanetAtmosphere.Composite** (Step 17: applying the result to the scene),
-  **PlanetAtmosphere.TransmittanceLut** (Step 13) and **PlanetAtmosphere.MultipleScatteringLut** (Step 14); total = sum. `ProfileGPU` shows the individual passes.
+  **PlanetAtmosphere.TransmittanceLut** (Step 13), **PlanetAtmosphere.MultipleScatteringLut** (Step 14) and
+  **PlanetAtmosphere.CloudShadows** (Phase 4: cascade generation, only on frames with work); total = sum. `ProfileGPU` shows the individual passes.
   Since Step 16 the two LUT stats appear only on frames where a LUT is rebuilt (first frame, a parameter edit, a new planet).
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT).
 - Per-frame log: `log LogPlanetAtmosphere Verbose` (incl. LUT cache rebuilds); screen radius and LOD steps per atmosphere: `log LogPlanetAtmosphere VeryVerbose`.
@@ -184,13 +191,38 @@ for its values (first use, a parameter edit, a new planet, or more than 32 disti
 recently used slot is reused). A static scene therefore renders without any LUT pass. The cache does not notice a
 shader recompile (`recompileshaders`): toggle `r.PlanetAtmosphere.Atmosphere.LutCache 0` → `1` or edit any parameter.
 
+## Cloud shadow cascades (Phase 4)
+
+Per view, 3 cloud shadow cascades of the **primary planet** (the one largest on screen; the camera inside an atmosphere
+wins; the previous one is kept until another is 1.25× larger, since a switch regenerates the cascades). Each cascade is a sun-aligned orthographic grid in the planet-local frame, a window of Res × Res texels around
+the point under the camera, snapped to 32-texel tiles (no shimmering), stored toroidally in one Res × 3 Res RGBA16F atlas
+(Beer Shadow Map: front and back of the cloud matter along the texel's ray through the cloud shell, optical depth of the
+shell, valid flag). Half-size of cascade 0 = `MinExtent` × 2^k, the first power of two above the camera height over the
+clouds (at most what lets cascade 2 cover the whole planet); cascade i = × 4^i. Tiles are generated progressively (`UpdateBudget` per frame, nearest to the camera first,
+round-robin over the cascades) and kept across frames: a static camera costs nothing, a moving one only the tiles that
+enter the window. A change of planet, sun direction (> 0.25° in the planet frame), extent level, resolution, cloud
+parameters or noise settings regenerates the cascades; tiles not generated yet are marked invalid (the light march is
+used there from Step 23 on, so new regions never cause a hitch). Planet rotation is not considered until Phase 6.
+Log: `Cloud shadows of view N: atlas …` on creation; per frame (Verbose) generated / invalidated / pending tiles.
+
 ## Single source of truth for cloud density
 
 `Shaders/Private/CloudDensity.ush` is the only place where the cloud density formula exists.
-Raymarch, debug views and (later) cloud shadows call `PA_SampleCloudDensity()` / `PA_CloudHeightFraction()`
+Raymarch, debug views and the cloud shadow cascades call `PA_SampleCloudDensity()` / `PA_CloudHeightFraction()`
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 4 — Step 22: cloud shadow cascades — generation, storage, update queue, debug views**
+- Cascades as described above; the image does not use them yet (Step 23: short local march + cascade for the rest of
+  the sun path, decision from the Step 21 prototype)
+- `DebugMode 9 / 10 / 11`, `stat gpu` → PlanetAtmosphere.CloudShadows, CVars `r.PlanetAtmosphere.CloudShadows.*`
+- Fix (Step 19 interleave): with N > 1 the step jitter is evaluated on the block coordinate. On the traced pixels
+  (stride N) the interleaved gradient noise aliased into persistent screen-space stripes on clouds and crawling
+  patterns on far clouds at 3×3
+
+**Phase 4 — Step 21: prototype** (CPU): the current 6-step light march is too bright at low sun (21 km cap, coarse far
+steps); cascades alone are too coarse from orbit; chosen: 1 km local march + Beer-shadow-map cascades (mean error 8.5 → 3.4–4.1 %)
 
 **Phase 3 — Step 20: Phase 3 closed** (measurements below, checklist in the project docs)
 
@@ -270,8 +302,8 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 4 — cloud shadows (3 cascades, temporal update), replacing most of the per-sample light march.
-Step 16 part 3 (cheaper cloud/atmosphere coupling) is deferred until Phase 3 is measured.
+Next: Step 23 — the raymarch uses the cascades (`CloudShadows.LocalMarchSteps`, A/B switch, fallback march).
+Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies
 
