@@ -12,6 +12,8 @@ namespace PlanetAtmosphere::Weather
 		constexpr double Pi = 3.14159265358979323846;
 		constexpr double TwoPi = 2.0 * Pi;
 		constexpr double KmhPerMps = 3.6;
+		/** (sqrt(5) - 1) / 2: step of the storm birth-longitude lanes (Step 29). */
+		constexpr double GoldenRatio = 0.6180339887498948482;
 		constexpr double EarthRadiusKm = 6371.0;
 		constexpr double EarthOmega = TwoPi / (24.0 * 3600.0);
 
@@ -100,7 +102,15 @@ namespace PlanetAtmosphere::Weather
 						}
 						const double Lat0Deg = FMath::Min(0.5 * (Hadley + Ferrel) + 3.0, 62.0) + (Hash01(Seed, H2, K, 3) - 0.5) * 16.0;
 						const double Lat0 = FMath::DegreesToRadians(Lat0Deg) * HemiD + 0.5 * Therm;
-						const double Lon0 = Hash01(Seed, H2, K, 4) * TwoPi;
+						// Step 29: birth longitudes on golden-ratio lanes, compensated for the mean drift per spawn interval, so
+						// the CURRENT positions of the storms alive at any time form a low-discrepancy sequence (no overlapping
+						// storms; closest pair at Earth defaults: median 0.9 -> 2.6 radii), plus a small hash jitter. A pure
+						// function of K: no dependence on other storms, deterministic for any time.
+						const double LaneLatitude = FMath::DegreesToRadians(FMath::Min(0.5 * (Hadley + Ferrel) + 3.0, 62.0));
+						const double MeanDrift = Sign * Params.WindScale * 12.0 * KmhPerMps * Dt / (PlanetRadiusKm * FMath::Cos(LaneLatitude));
+						const double Lane = static_cast<double>(K) * (GoldenRatio + MeanDrift / TwoPi) + (Hemi < 0 ? 0.5 : 0.0)
+							+ 0.04 * (Hash01(Seed, H2, K, 9) - 0.5);
+						const double Lon0 = (Lane - FMath::FloorToDouble(Lane)) * TwoPi;
 						const double EastDrift = Sign * Params.WindScale * 12.0 * (0.8 + 0.4 * Hash01(Seed, H2, K, 5));   // m/s
 						const double PolewardDrift = 2.0 * HemiD;                                                          // m/s
 						double Lat = Lat0 + PolewardDrift * KmhPerMps * Age / PlanetRadiusKm;
