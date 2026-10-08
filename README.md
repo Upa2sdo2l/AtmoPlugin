@@ -85,7 +85,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | CVar | Default | Meaning |
 |---|---|---|
 | `r.PlanetAtmosphere.Enable` | 1 | Master switch (0 = nothing is dispatched) |
-| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 8 = Temporal Weight, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2, 12 = Cloud Shadow Usage |
+| `r.PlanetAtmosphere.DebugMode` | 0 | 0 = Final, 1 = Atmosphere Bounds, 2 = Density, 3 = Cloud Height, 4 = Ray Steps, 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 8 = Temporal Weight, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2, 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow |
 | `r.PlanetAtmosphere.DebugIntensity` | 1.0 | Brightness of the Atmosphere Bounds overlay |
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
@@ -124,6 +124,11 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudShadows.Lighting` | 1 | Sunlight on the primary planet's clouds = short local march × cascades (Step 23); 0 = the full light march everywhere (A/B) |
 | `r.PlanetAtmosphere.CloudShadows.LocalMarchSteps` | 3 | Samples of the local march toward the sun (1 = fast, 2 = compromise, 3 = default, up to 8); reduced for distant samples by `r.PlanetAtmosphere.LightLOD` |
 | `r.PlanetAtmosphere.CloudShadows.LocalMarchLength` | 1.0 | Length of the local march, km (0.1..20) |
+| `r.PlanetAtmosphere.CloudShadows.Surface` | 1 | Cloud shadows on the direct sunlight of the placeholder surface (Step 24); 0 = off (A/B). Scene geometry is not shadowed |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps` | 12 | Minimum samples of the march from a surface point through the cloud layer toward the sun, where the cascades are too coarse (from high up / orbit) and on planets without cascades (1..64; prototype worst-case error 8 → 7.4, 12 → 3.5, 16 → 2.4) |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep` | 0.125 | Longest step of that march, × `CloudShapeScale` (1 km at 8 km): long low-sun paths get more steps, otherwise the shadows turn into too-bright "ladders" (sun 8°: 12 fixed steps 9.5, ≤ 1 km steps 0.8). 0 = always `SurfaceMarchSteps` |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps` | 48 | Upper limit of those steps |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel` | 0.0625 | Coarsest cascade texel used on the surface, × the planet's `CloudShapeScale` (1/16 = 500 m at 8 km); coarser → march. 0 = always march |
 | `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 3 Res RGBA16F, 6 MB per view at 512 |
 | `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |
 | `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 32 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades: RTX 3050 frame peaks 8 → 0.11 ms, 16 → 0.14 ms, 32 → 0.23 ms; 32 fills all cascades in 24 frames |
@@ -165,7 +170,8 @@ intensity (lux) are used; the result is pre-exposed like the rest of the scene.
 | 6 | Transmittance LUT: final image + the LUT atlas at 2× in the top-left corner (one 256 × 64 block per planet, nearest planet on top; x = view zenith angle, y = altitude) |
 | 7 | Multiple-Scattering LUT: final image + the MS LUT atlas at 4× in the top-left corner, ×25 (one 64 × 32 block per planet; x = sun zenith from below the horizon (left) to overhead (right), y = altitude, ground at the top) |
 | 8 | Temporal Weight: 1 / accumulated sample weight over the darkened image (green = long history, red = little history: rejected, just started; with interleaving pixels far from this frame's samples stay greener) |
-| 12 | Cloud Shadow Usage: lit cloud samples of the primary planet over the darkened image — green = sunlight through the cascades, red = full light march (outside the cascade windows, or a tile not generated yet) |
+| 12 | Cloud Shadow Usage: lit cloud samples of the primary planet over the darkened image — green = sunlight through the cascades, red = full light march (outside the cascade windows, or a tile not generated yet). Pixels without such samples show the surface: green = cascades, blue = march through the layer (texel too coarse, other planets; blend band at a window edge in between), red = march because the tile is not generated yet |
+| 13 | Surface Cloud Shadow: cloud transmittance of the sun path at the visible surface point (white = lit, black = shadowed), shown in front of the clouds; dark blue = surface without direct sun (night side, or `CloudShadows.Surface 0`) |
 | 9 / 10 / 11 | Shadow Cascade 0 / 1 / 2: final image + the cascade of the primary planet in the top-left corner (+V up): white = column lit, dark blue = column shadowed (exp(−optical depth of the cloud shell)), magenta checker = tile not generated yet, red ring = sub-camera point; red square = no cascades this frame |
 
 - GPU: `stat gpu` → **PlanetAtmosphere.Raymarch** (noise bake + raymarch / debug pass of a view; called
@@ -209,6 +215,13 @@ parameters or noise settings regenerates the cascades; tiles not generated yet a
 used there, so new regions never cause a hitch). Planet rotation is not considered until Phase 6.
 Log: `Cloud shadows of view N: atlas …` on creation; per frame (Verbose) generated / invalidated / pending tiles.
 
+Surface (Step 24): the direct sunlight of the placeholder surface is multiplied by the cloud transmittance of its sun
+path. Primary planet: the cascades where the texel of the cascade holding the point is at most `SurfaceMaxTexel` ×
+`CloudShapeScale`; elsewhere (camera high up, orbit) a march through the whole layer crossing with steps of at most
+`SurfaceMarchMaxStep` (`SurfaceMarchSteps`..`SurfaceMarchMaxSteps` samples, jittered per pixel and frame) — coarse cascade texels blur the shadows more than the march errs (prototype: texel 2 km → 6.5, 8 km →
+22 vs ~2 for the march). The last tile of the last usable window blends into the march (no hard ring). Other planets
+and tiles not generated yet: the march. Only direct sunlight; sky light under clouds and shadows in the air → Phase 7.
+
 ## Single source of truth for cloud density
 
 `Shaders/Private/CloudDensity.ush` is the only place where the cloud density formula exists.
@@ -216,6 +229,17 @@ Raymarch, debug views and the cloud shadow cascades call `PA_SampleCloudDensity(
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 4 — Step 24: cloud shadows on the planet surface**
+- Placeholder surface: direct sun × cloud transmittance; cascades near the camera, a march through the cloud layer where
+  their texels are too coarse (from about 60 km up with the defaults) and on other planets, blended at the switch
+- Prototype p24/p24b (12 scenes, ground → 2000 km, pixel-averaged): cascades only 0.5–27 (mean |ΔT| × 100), chosen
+  rule with 12 steps 0.5–3.5
+- `r.PlanetAtmosphere.CloudShadows.Surface` (A/B), `.SurfaceMarchSteps`, `.SurfaceMarchMaxStep`, `.SurfaceMarchMaxSteps`,
+  `.SurfaceMaxTexel`, `DebugMode 12` (surface colours) and `13`
+- UE test (RTX 3050): Raymarch in orbit 1.54 (off) / 1.74 / 1.82 / 1.97 ms at 8 / 12 / 16 steps; near the clouds 1.25 →
+  1.30 ms. Fix after the test: at low sun the fixed 12 steps (4–7 km each) left "ladder" shadows that were too bright →
+  steps of at most 1 km (12..48) + per-pixel jitter
 
 **Phase 4 — Step 23: the cascades light the clouds**
 - Sunlight on every lit cloud sample of the primary planet = local march (3 quadratic samples over 1 km toward the sun) ×
@@ -313,7 +337,7 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Step 24 — cloud shadows on the procedural planet surface.
+Next: Step 25 — stability (camera jumps, sun changes, planet rotation), multi-planet policy, profiling, Phase 4 checklist.
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies
