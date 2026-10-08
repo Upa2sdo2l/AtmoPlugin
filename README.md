@@ -122,7 +122,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.LOD.MinLightSteps` | 2 | Light-march steps at minimum detail |
 | `r.PlanetAtmosphere.CloudShadows` | 1 | Cloud shadow cascades of the primary planet (Phase 4): generated, kept across frames, shown in debug modes 9–11 |
 | `r.PlanetAtmosphere.CloudShadows.Lighting` | 1 | Sunlight on the primary planet's clouds = short local march × cascades (Step 23); 0 = the full light march everywhere (A/B) |
-| `r.PlanetAtmosphere.CloudShadows.LocalMarchSteps` | 3 | Samples of the local march toward the sun (1 = fast, 2 = compromise, 3 = default, up to 8) |
+| `r.PlanetAtmosphere.CloudShadows.LocalMarchSteps` | 3 | Samples of the local march toward the sun (1 = fast, 2 = compromise, 3 = default, up to 8); reduced for distant samples by `r.PlanetAtmosphere.LightLOD` |
 | `r.PlanetAtmosphere.CloudShadows.LocalMarchLength` | 1.0 | Length of the local march, km (0.1..20) |
 | `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 3 Res RGBA16F, 6 MB per view at 512 |
 | `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |

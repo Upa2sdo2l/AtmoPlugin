@@ -320,7 +320,8 @@ namespace
 		TEXT("r.PlanetAtmosphere.CloudShadows.LocalMarchSteps"),
 		3,
 		TEXT("Samples of the short local march from each cloud sample toward the sun (fine self-shadowing, cloud edges).\n")
-		TEXT("1 = fast, 2 = compromise, 3 = default, 4+ = higher quality. Clamped to [1, 8]."),
+		TEXT("1 = fast, 2 = compromise, 3 = default, 4+ = higher quality. Clamped to [1, 8]. Reduced for distant samples by\n")
+		TEXT("r.PlanetAtmosphere.LightLOD like the full light march (down to LightLOD.MinLightSteps)."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsLocalMarchLength(
