@@ -458,8 +458,9 @@ bool PA_WindArrow(int Index, float3 Direction, float PixelDeg)
 	const float CentreLat = CentreLatDeg / ToDeg;
 	const float CentreLon = CentreLonDeg / ToDeg;
 	const float3 Centre = float3(cos(CentreLat) * cos(CentreLon), cos(CentreLat) * sin(CentreLon), sin(CentreLat));
-	const float3 East = float3(-sin(CentreLon), cos(CentreLon), 0.0);
-	const float3 North = cross(Centre, East);
+	const FPAWeatherBasis Basis = PA_WeatherEastNorth(Centre);   // the atlas wind basis (Step 29a)
+	const float3 East = Basis.East;
+	const float3 North = Basis.North;
 	const float2 Offset = float2(dot(Direction, East), dot(Direction, North)) * ToDeg;   // degrees of arc from the centre
 
 	const float2 Wind = PA_SampleWeather(Index, Centre).zw;

@@ -64,7 +64,7 @@ void WeatherCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	const float A = ((float)DispatchThreadId.x + 0.5) / (float)Res * 2.0 - 1.0;
 	const float B = ((float)DispatchThreadId.y + 0.5) / (float)Res * 2.0 - 1.0;
 
-	const FPAWeatherSample Weather = PA_EvaluateWeather(PA_WeatherFaceDirection(Face, A, B), PA_LoadWeatherInputs());
+	const FPAWeatherSample Weather = PA_EvaluateWeatherForPlanet(PA_WeatherFaceDirection(Face, A, B), PA_LoadWeatherInputs());
 	OutWeatherAtlas[int2(Face * Res + (int)DispatchThreadId.x, WeatherRowBase + (int)DispatchThreadId.y)] =
 		float4(Weather.Cover, Weather.Humidity, Weather.WindEast, Weather.WindNorth);
 }

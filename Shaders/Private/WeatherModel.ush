@@ -33,6 +33,30 @@ static const float PA_W_COVER_LO = 0.33;      // RHe -> cloud water ramp
 static const float PA_W_COVER_HI = 0.92;
 static const uint PA_W_N2_SEED_OFFSET = 5000015u;   // 5 x 1000003: seed offset of the 2800 km noise
 
+// ---- handedness (Step 29a) ---------------------------------------------------------------------
+// The model above is written in a RIGHT-handed frame (east = from +X toward +Y, longitude = atan2(y, x)). Unreal shows its
+// coordinates LEFT-handed, so evaluated directly the weather looked like a mirror image of Earth: seen from above the
+// planet's local +Z, the westerlies and the northern cyclones turned clockwise. The plugin therefore evaluates the model at
+// the mirrored direction (x, -y, z) (PA_EvaluateWeatherForPlanet) and every consumer uses PA_WeatherEastNorth: then local
+// +Z is the north pole as on Earth (prograde = counter-clockwise seen from above +Z, like the westerlies and the northern
+// cyclones). Pure relabelling: same determinism, same cost; temperature (zonal) and the storm sequence are unchanged.
+
+struct FPAWeatherBasis
+{
+	float3 East;    // toward the east (the prograde direction), unit
+	float3 North;   // toward local +Z along the surface, unit
+};
+
+/** Planet-local unit vectors toward the east and the north at Direction (unit, planet local). The atlas wind basis. */
+FPAWeatherBasis PA_WeatherEastNorth(float3 Direction)
+{
+	const float Horizontal = sqrt(Direction.x * Direction.x + Direction.y * Direction.y);
+	FPAWeatherBasis Basis;
+	Basis.East = Horizontal > 1e-6 ? float3(Direction.y / Horizontal, -Direction.x / Horizontal, 0.0) : float3(0.0, -1.0, 0.0);
+	Basis.North = cross(Basis.East, Direction);
+	return Basis;
+}
+
 #ifndef PA_WEATHER_GENERATE
 #define PA_WEATHER_GENERATE 0   // 1 in WeatherGenerate.usf: storm parameters + PA_EvaluateWeather; readers only need the mapping
 #endif
@@ -471,5 +495,13 @@ FPAWeatherSample PA_EvaluateWeather(float3 P, FPAWeatherInputs In)
 	Sample.WindEast = Climate.WindEast + Storms.WindEast;
 	Sample.WindNorth = Climate.WindNorth + Storms.WindNorth;
 	return Sample;
+}
+/**
+ * The weather at Direction (unit, planet local, Unreal frame): the model at the mirrored direction (see "handedness").
+ * WindEast / WindNorth are components along PA_WeatherEastNorth(Direction).
+ */
+FPAWeatherSample PA_EvaluateWeatherForPlanet(float3 Direction, FPAWeatherInputs In)
+{
+	return PA_EvaluateWeather(float3(Direction.x, -Direction.y, Direction.z), In);
 }
 #endif // PA_WEATHER_GENERATE

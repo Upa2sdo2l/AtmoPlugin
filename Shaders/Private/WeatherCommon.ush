@@ -6,7 +6,8 @@
 // C++ counterpart: FPlanetAtmosphereWeather (AtmosphereWeather.h); per-planet data AtmosphereWeatherInfo
 // (PlanetAtmosphereShaderData.ush). Step 27 reads it only in the debug view 14; Step 29 drives the cloud coverage with it.
 //
-// Atlas layout: RGBA16F (cloud water / coverage, effective humidity, wind east m/s, wind north m/s), one equi-angular
+// Atlas layout: RGBA16F (cloud water / coverage, effective humidity, wind east m/s, wind north m/s; east / north =
+// PA_WeatherEastNorth, i.e. local +Z is the north pole and east is counter-clockwise seen from above it), one equi-angular
 // cube-sphere (PA_WeatherFaceCoord, WeatherModel.ush) per snapshot: face f at columns [f Res, (f + 1) Res), snapshot ring
 // entry r of planet slot s at rows [(3 s + r) Res, (3 s + r + 1) Res). Three snapshots per planet on a global time grid:
 // the two around the weather time (interpolated here) and the next one, built in the background.
