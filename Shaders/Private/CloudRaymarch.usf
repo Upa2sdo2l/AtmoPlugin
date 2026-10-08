@@ -2,7 +2,7 @@
 
 // Cloud + atmosphere raymarch (r.PlanetAtmosphere.DebugMode 0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps,
 // 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2,
-// 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow, 14 = Weather Coverage).
+// 12 = Cloud Shadow Usage, 13 = Surface Cloud Shadow, 14-17 = Weather Coverage / Humidity / Wind / Temperature).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -46,7 +46,7 @@ RWTexture2D<float4> OutLuminance;      // rgb = pre-exposed luminance added in f
 RWTexture2D<float4> OutTransmittance;  // rgb = transmittance applied to the scene color
 
 int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT,
-                             // 9-11 = shadow cascade 0-2, 12 = cloud shadow usage, 13 = surface cloud shadow, 14 = weather coverage
+                             // 9-11 = shadow cascade 0-2, 12 = cloud shadow usage, 13 = surface cloud shadow, 14-17 = weather views
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -419,13 +419,76 @@ float3 PA_HeightColor(float H)
 	return float3(saturate(2.0 * H - 1.0), 1.0 - abs(2.0 * H - 1.0), saturate(1.0 - 2.0 * H));
 }
 
+/** Piecewise-linear colour ramp through 5 stops (X0 < X1 < X2 < X3 < X4), clamped at both ends. */
+float3 PA_Ramp5(float X, float X0, float X1, float X2, float X3, float X4, float3 C0, float3 C1, float3 C2, float3 C3, float3 C4)
+{
+	if (X <= X1)
+	{
+		return lerp(C0, C1, saturate((X - X0) / (X1 - X0)));
+	}
+	if (X <= X2)
+	{
+		return lerp(C1, C2, (X - X1) / (X2 - X1));
+	}
+	if (X <= X3)
+	{
+		return lerp(C2, C3, (X - X2) / (X3 - X2));
+	}
+	return lerp(C3, C4, saturate((X - X3) / (X4 - X3)));
+}
+
 /**
- * DebugMode 14 (Phase 5 / Step 27): the weather cloud water of the nearest planet on the sphere in the middle of its cloud
- * layer (unlit): dark blue = 0 .. white = 1; latitude lines every 30 deg (equator orange, poles' lines grey); magenta
- * checker = this planet has no weather this frame. Returns false where the ray misses every such sphere (or scene geometry
- * is closer): the caller then shows the darkened image.
+ * DebugMode 16 (Step 28): is Direction (planet local, unit) on the arrow of its 5-degree cell? Cells: latitude bands of
+ * 5 deg, each split into round(72 cos(band latitude)) longitude cells (about square). The arrow is centred on the cell
+ * centre, points downwind (wind sampled at the centre), half length 0.45 x cell x clamp(speed / 25 m/s, 0.4, 1), thin
+ * shaft and a triangular head over its last 45 % (at least 4 shaft widths); a dot where the wind is below 1 m/s.
+ * PixelDeg keeps the lines at least a pixel wide.
  */
-bool PA_WeatherCoverageView(FPAPixelRay Ray, out float3 Luminance)
+bool PA_WindArrow(int Index, float3 Direction, float PixelDeg)
+{
+	const float CellDeg = 5.0;
+	const float ToDeg = 180.0 / PA_PI;
+	const float LatitudeDeg = asin(clamp(Direction.z, -1.0, 1.0)) * ToDeg;
+	const float LongitudeDeg = atan2(Direction.y, Direction.x) * ToDeg;
+	const float CentreLatDeg = -90.0 + (floor((LatitudeDeg + 90.0) / CellDeg) + 0.5) * CellDeg;
+	const float NumCells = max(1.0, round(360.0 / CellDeg * cos(CentreLatDeg / ToDeg)));
+	const float CellLonDeg = 360.0 / NumCells;
+	const float CentreLonDeg = -180.0 + (floor((LongitudeDeg + 180.0) / CellLonDeg) + 0.5) * CellLonDeg;
+
+	const float CentreLat = CentreLatDeg / ToDeg;
+	const float CentreLon = CentreLonDeg / ToDeg;
+	const float3 Centre = float3(cos(CentreLat) * cos(CentreLon), cos(CentreLat) * sin(CentreLon), sin(CentreLat));
+	const float3 East = float3(-sin(CentreLon), cos(CentreLon), 0.0);
+	const float3 North = cross(Centre, East);
+	const float2 Offset = float2(dot(Direction, East), dot(Direction, North)) * ToDeg;   // degrees of arc from the centre
+
+	const float2 Wind = PA_SampleWeather(Index, Centre).zw;
+	const float Speed = length(Wind);
+	const float Width = max(0.025 * CellDeg, 0.5 * PixelDeg);   // shaft half width (UE test: with 0.05 the head was hidden)
+	if (Speed < 1.0)
+	{
+		return length(Offset) < 3.0 * Width;
+	}
+	const float2 Downwind = Wind / Speed;
+	const float HalfLength = 0.45 * CellDeg * clamp(Speed / 25.0, 0.4, 1.0);
+	const float Along = dot(Offset, Downwind);
+	const float Across = abs(Offset.x * Downwind.y - Offset.y * Downwind.x);
+	const float HeadLength = max(0.45 * HalfLength, 4.0 * Width);
+	const bool bShaft = Along >= -HalfLength && Along <= HalfLength - HeadLength && Across <= Width;
+	const bool bHead = Along >= HalfLength - HeadLength && Along <= HalfLength && Across <= (HalfLength - Along) * 0.55 + 0.5 * Width;
+	return bShaft || bHead;
+}
+
+/**
+ * Weather debug views (Phase 5): the weather of the nearest planet on the sphere in the middle of its cloud layer, unlit.
+ *  14 (Step 27) cloud water: dark blue = 0 .. white = 1
+ *  15 (Step 28) effective relative humidity: brown 0, tan 0.4, pale green 0.6, blue 0.8, deep blue 1
+ *  16 (Step 28) wind speed: dark blue 0, teal 10, yellow-green 20, orange 30, red 40 m/s + white arrows downwind (PA_WindArrow)
+ *  17 (Step 28) zonal temperature: blue -40 C, light blue -10, white 0, yellow 15, red 35 C; isotherms every 10 C (0 C black)
+ * Latitude lines every 30 deg (equator orange); magenta checker = this planet has no weather this frame. Returns false
+ * where the ray misses every such sphere (or scene geometry is closer): the caller then shows the darkened image.
+ */
+bool PA_WeatherDebugView(FPAPixelRay Ray, int Mode, out float3 Luminance)
 {
 	Luminance = 0.0;
 	for (int Index = 0; Index < NumAtmospheres && Index < PA_MAX_ATMOSPHERES; ++Index)
@@ -444,20 +507,52 @@ bool PA_WeatherCoverageView(FPAPixelRay Ray, out float3 Luminance)
 		}
 		const float3 Local = PA_ToPlanetLocal(A, A.CameraRel + Ray.Dir * T);
 		const float3 Direction = normalize(Local);
+		const float Latitude = asin(clamp(Direction.z, -1.0, 1.0));
+		const float LatitudeDeg = Latitude * (180.0 / PA_PI);
+		const float PixelDeg = Ray.FootprintPerUnitDistance * T / max(A.PlanetRadius + MidAltitude, 1.0) * (180.0 / PA_PI);
 		if (PA_HasWeather(Index))
 		{
-			const float Cover = saturate(PA_SampleWeather(Index, Direction).x);
-			Luminance = lerp(float3(0.02, 0.04, 0.15), float3(1.0, 1.0, 1.0), Cover);
+			const float4 Weather = PA_SampleWeather(Index, Direction);
+			if (Mode == 15)
+			{
+				Luminance = PA_Ramp5(Weather.y, 0.0, 0.4, 0.6, 0.8, 1.0,
+					float3(0.45, 0.28, 0.10), float3(0.85, 0.75, 0.50), float3(0.75, 0.90, 0.75), float3(0.30, 0.60, 0.90), float3(0.05, 0.15, 0.60));
+			}
+			else if (Mode == 16)
+			{
+				Luminance = PA_Ramp5(length(Weather.zw), 0.0, 10.0, 20.0, 30.0, 40.0,
+					float3(0.02, 0.04, 0.15), float3(0.0, 0.45, 0.50), float3(0.60, 0.75, 0.10), float3(0.95, 0.50, 0.05), float3(0.80, 0.05, 0.05));
+				if (PA_WindArrow(Index, Direction, PixelDeg))
+				{
+					Luminance = 1.0;
+				}
+			}
+			else if (Mode == 17)
+			{
+				const float4 Climate = AtmosphereWeatherClimate[Index];
+				const float CelsiusTemperature = PA_WeatherTemperature(Latitude, Climate.z, Climate.x, Climate.y) - 273.15;
+				Luminance = PA_Ramp5(CelsiusTemperature, -40.0, -10.0, 0.0, 15.0, 35.0,
+					float3(0.10, 0.20, 0.80), float3(0.50, 0.75, 1.00), float3(0.95, 0.95, 0.95), float3(1.00, 0.85, 0.40), float3(0.80, 0.10, 0.05));
+				// Isotherms: |T - nearest multiple of 10| below the temperature change across one pixel.
+				const float KelvinPerDegree = abs(Climate.y * sin(2.0 * (Latitude - 0.8 * Climate.z))) * (PA_PI / 180.0);
+				const float Isotherm = round(CelsiusTemperature / 10.0);
+				if (abs(CelsiusTemperature - 10.0 * Isotherm) < max(KelvinPerDegree * PixelDeg, 0.02))
+				{
+					Luminance = abs(Isotherm) < 0.5 ? 0.0 : 0.25;
+				}
+			}
+			else
+			{
+				Luminance = lerp(float3(0.02, 0.04, 0.15), float3(1.0, 1.0, 1.0), saturate(Weather.x));
+			}
 		}
 		else
 		{
-			const float2 Cell = floor(float2(atan2(Direction.y, Direction.x), asin(clamp(Direction.z, -1.0, 1.0))) * (36.0 / PA_PI));
+			const float2 Cell = floor(float2(atan2(Direction.y, Direction.x), Latitude) * (36.0 / PA_PI));
 			Luminance = fmod(abs(Cell.x + Cell.y), 2.0) > 0.5 ? float3(1.0, 0.0, 1.0) : float3(0.25, 0.0, 0.25);
 		}
 
 		// Latitude lines every 30 deg, about one pixel wide at any distance.
-		const float LatitudeDeg = asin(clamp(Direction.z, -1.0, 1.0)) * (180.0 / PA_PI);
-		const float PixelDeg = Ray.FootprintPerUnitDistance * T / max(A.PlanetRadius + MidAltitude, 1.0) * (180.0 / PA_PI);
 		const float LineDistance = abs(LatitudeDeg - 30.0 * round(LatitudeDeg / 30.0));
 		if (LineDistance < max(PixelDeg, 0.05))
 		{
@@ -486,11 +581,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	const uint2 OutputTexel = Factor == 1 ? Ray.Pixel : Block;
 
-	// Weather Coverage view (Step 27): no march, the weather atlas only (never temporally accumulated: Factor = 1).
-	if (DebugMode == 14)
+	// Weather views (Steps 27-28): no march, the weather atlas only (never temporally accumulated: Factor = 1).
+	if (DebugMode >= 14 && DebugMode <= 17)
 	{
 		float3 WeatherLuminance;
-		const bool bWeatherHit = PA_WeatherCoverageView(Ray, WeatherLuminance);
+		const bool bWeatherHit = PA_WeatherDebugView(Ray, DebugMode, WeatherLuminance);
 		OutLuminance[OutputTexel] = float4(WeatherLuminance, -1.0);
 		OutTransmittance[OutputTexel] = float4(bWeatherHit ? 0.0 : 0.25, bWeatherHit ? 0.0 : 0.25, bWeatherHit ? 0.0 : 0.25, (float)PA_REPROJ_NO_PLANET);
 		return;

@@ -249,6 +249,7 @@ namespace PlanetAtmosphere
 					OutParameters.AtmosphereSurface[Index] = Zero;
 					OutParameters.AtmosphereLutInfo[Index] = Zero;
 					OutParameters.AtmosphereWeatherInfo[Index] = NoWeather;
+					OutParameters.AtmosphereWeatherClimate[Index] = Zero;
 					continue;
 				}
 
@@ -309,6 +310,7 @@ namespace PlanetAtmosphere
 				OutParameters.AtmosphereLutInfo[Index] = Zero;
 				// Weather slot: assigned by the weather (Step 27) for the raymarch pass; none otherwise.
 				OutParameters.AtmosphereWeatherInfo[Index] = NoWeather;
+				OutParameters.AtmosphereWeatherClimate[Index] = Zero;
 			}
 		}
 	}

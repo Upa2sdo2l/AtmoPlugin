@@ -31,7 +31,11 @@ namespace
 		TEXT("   pixels without such samples show the surface shadow source: green = cascades, blue = march through the layer, red = march, tiles not generated yet)\n")
 		TEXT(" 13 = Surface Cloud Shadow (cloud transmittance of the sun path on the placeholder surface: white = lit, black = shadowed; dark blue = no direct sun)\n")
 		TEXT(" 14 = Weather Coverage (Phase 5: weather cloud water on the middle of the cloud layer, dark blue = 0 .. white = 1, latitude lines\n")
-		TEXT("   every 30 deg (equator orange); magenta = no weather for this planet (r.PlanetAtmosphere.Weather 0 / beyond Weather.MaxPlanets))"),
+		TEXT("   every 30 deg (equator orange); magenta = no weather for this planet (r.PlanetAtmosphere.Weather 0 / beyond Weather.MaxPlanets))\n")
+		TEXT(" 15 = Weather Humidity (effective relative humidity: brown = dry, tan, pale green, blue = saturated)\n")
+		TEXT(" 16 = Weather Wind (speed: dark blue 0, teal 10, yellow-green 20, orange 30, red 40+ m/s; white arrows downwind every 5 deg,\n")
+		TEXT("   length ~ speed up to 25 m/s)\n")
+		TEXT(" 17 = Weather Temperature (zonal: blue -40 C, light blue -10, white 0, yellow 15, red 35 C; isotherms every 10 C, 0 C black)"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -481,6 +485,9 @@ namespace PlanetAtmosphere::CVars
 		case 12: return EDebugMode::CloudShadowUsage;
 		case 13: return EDebugMode::SurfaceCloudShadow;
 		case 14: return EDebugMode::WeatherCoverage;
+		case 15: return EDebugMode::WeatherHumidity;
+		case 16: return EDebugMode::WeatherWind;
+		case 17: return EDebugMode::WeatherTemperature;
 		default: return EDebugMode::FinalClouds;
 		}
 	}

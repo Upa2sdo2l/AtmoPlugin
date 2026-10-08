@@ -35,7 +35,9 @@ struct FAtmosphereWeatherInputs
  *  - Model C (prototype p26) is a pure function of (direction, weather time, planet weather parameters, radius). It is
  *    evaluated into SNAPSHOTS on a global time grid t_k = k x r.PlanetAtmosphere.Weather.SnapshotInterval: the image
  *    interpolates between the snapshots k and k + 1 around the weather time while k + 2 is built in the background,
- *    r.PlanetAtmosphere.Weather.FacesPerFrame cube faces per frame and planet. No lag and no client-specific state: two
+ *    r.PlanetAtmosphere.Weather.FacesPerFrame cube faces per frame and planet, more when the weather time moves so fast
+ *    that k + 2 would not be complete in time (Step 28: remaining faces spread over the frames left, estimated from the
+ *    time step of the previous frame; nothing ahead when a new snapshot is needed every frame). No lag and no client-specific state: two
  *    machines with the same weather time show the same weather. A snapshot needed for display that is not complete
  *    (first frame, time jump, new planet, changed parameters, a time scale faster than the background build) is built
  *    synchronously in that frame.
@@ -95,6 +97,11 @@ private:
 		uint32 LastUsedFrame = 0;
 		uint32 LastBackgroundFrame = 0;
 		bool bBackgroundDone = false;   // background faces already built in LastBackgroundFrame
+		// Step 28: weather seconds per frame (from the previous frame this planet was rendered in), for the background budget.
+		bool bHasRateSample = false;
+		double RateSampleTime = 0.0;
+		uint32 RateSampleFrame = 0;
+		double TimePerFrame = 0.0;
 		FSnapshot Snapshots[PlanetAtmosphere::Weather::NumSnapshots];
 	};
 
