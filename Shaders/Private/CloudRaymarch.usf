@@ -90,7 +90,9 @@ int CloudShadowLocalSteps;      // r.PlanetAtmosphere.CloudShadows.LocalMarchSte
 float CloudShadowLocalLength;   // r.PlanetAtmosphere.CloudShadows.LocalMarchLength (cm)
 // Step 24: cloud shadows on the placeholder surface (PA_SurfaceCloudShadow).
 int CloudShadowSurface;            // r.PlanetAtmosphere.CloudShadows.Surface: 1 = on, 0 = no cloud shadows on the surface
-int CloudShadowSurfaceSteps;       // r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps
+int CloudShadowSurfaceSteps;       // r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps (minimum)
+int CloudShadowSurfaceMaxSteps;    // r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps (>= SurfaceSteps)
+float CloudShadowSurfaceMaxStep;   // r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep, in units of the planet's CloudShapeScale
 float CloudShadowSurfaceMaxTexel;  // r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel, in units of the planet's CloudShapeScale
 
 // Lighting inputs that are constant along one view ray.
@@ -211,13 +213,13 @@ float PA_CloudSunTransmittanceHybrid(
  * Phase 4 / Step 24 (AD-27): cloud transmittance of the sun path from the surface point P (planet-relative, world axes,
  * altitude 0) at view distance T. Primary planet: the cascades where their texel is at most CloudShadowSurfaceMaxTexel x
  * the shape scale, the march through the whole layer crossing elsewhere, blended over the last tile of the last usable
- * window (PA_CloudShadowSurfaceTransmittance); other planets and texels not generated yet: the march. The march has a
- * fixed CloudShadowSurfaceSteps (no pixel-footprint LOD: from orbit it is what keeps the shadows sharp).
+ * window (PA_CloudShadowSurfaceTransmittance); other planets and texels not generated yet: the march, steps of at most
+ * CloudShadowSurfaceMaxStep x the shape scale (CloudShadowSurfaceSteps..CloudShadowSurfaceMaxSteps), jittered per pixel.
  * Prototype p24b (pixel-averaged mean |dT| x 100, 12 scenes from the ground to 2000 km): cascades only 0.5-27,
  * this rule with 12 steps 0.5-3.5.
  */
 float PA_SurfaceCloudShadow(FPAAtmosphere A, FPACloudLayer Layer, int Index, float3 P, float T, FPAPixelRay Ray, float3 Sun,
-	inout FPACloudMarchState State)
+	float Jitter, inout FPACloudMarchState State)
 {
 	State.SurfaceShadowMarchWeight = 1.0;
 	State.SurfaceShadowMissing = 0u;
@@ -240,7 +242,8 @@ float PA_SurfaceCloudShadow(FPAAtmosphere A, FPACloudLayer Layer, int Index, flo
 		return CascadeTransmittance;
 	}
 	const float MarchTransmittance = exp(-PA_CloudLayerCrossingOpticalDepth(
-		A, Layer, P, 0.0, Sun, T * Ray.FootprintPerUnitDistance, CloudShadowSurfaceSteps, State.DensitySamples));
+		A, Layer, P, 0.0, Sun, T * Ray.FootprintPerUnitDistance, CloudShadowSurfaceSteps, CloudShadowSurfaceMaxSteps,
+		CloudShadowSurfaceMaxStep * Layer.ShapeScale, Jitter, State.DensitySamples));
 	return MarchWeight >= 1.0 ? MarchTransmittance : lerp(CascadeTransmittance, MarchTransmittance, MarchWeight);
 }
 
@@ -617,7 +620,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				if (SunCos > 0.0 && CloudShadowSurface != 0 && bDrawClouds
 					&& (max(SurfaceVisibility.r, max(SurfaceVisibility.g, SurfaceVisibility.b)) > PA_MIN_LIGHTING_CONTRIBUTION || DebugMode == 13))
 				{
-					State.SurfaceCloudShadow = PA_SurfaceCloudShadow(A, Layer, Index, SurfaceP, SurfaceT, Ray, Light.SunDirection, State);
+					State.SurfaceCloudShadow = PA_SurfaceCloudShadow(A, Layer, Index, SurfaceP, SurfaceT, Ray, Light.SunDirection, Jitter, State);
 					SunAtSurface *= State.SurfaceCloudShadow;
 				}
 				SurfaceRadiance += SunAtSurface * saturate(SunCos);

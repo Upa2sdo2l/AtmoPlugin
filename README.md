@@ -125,7 +125,9 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudShadows.LocalMarchSteps` | 3 | Samples of the local march toward the sun (1 = fast, 2 = compromise, 3 = default, up to 8); reduced for distant samples by `r.PlanetAtmosphere.LightLOD` |
 | `r.PlanetAtmosphere.CloudShadows.LocalMarchLength` | 1.0 | Length of the local march, km (0.1..20) |
 | `r.PlanetAtmosphere.CloudShadows.Surface` | 1 | Cloud shadows on the direct sunlight of the placeholder surface (Step 24); 0 = off (A/B). Scene geometry is not shadowed |
-| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps` | 12 | Samples of the march from a surface point through the cloud layer toward the sun, where the cascades are too coarse (from high up / orbit) and on planets without cascades (1..64; prototype worst-case error 8 → 7.4, 12 → 3.5, 16 → 2.4) |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps` | 12 | Minimum samples of the march from a surface point through the cloud layer toward the sun, where the cascades are too coarse (from high up / orbit) and on planets without cascades (1..64; prototype worst-case error 8 → 7.4, 12 → 3.5, 16 → 2.4) |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep` | 0.125 | Longest step of that march, × `CloudShapeScale` (1 km at 8 km): long low-sun paths get more steps, otherwise the shadows turn into too-bright "ladders" (sun 8°: 12 fixed steps 9.5, ≤ 1 km steps 0.8). 0 = always `SurfaceMarchSteps` |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps` | 48 | Upper limit of those steps |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel` | 0.0625 | Coarsest cascade texel used on the surface, × the planet's `CloudShapeScale` (1/16 = 500 m at 8 km); coarser → march. 0 = always march |
 | `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 3 Res RGBA16F, 6 MB per view at 512 |
 | `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |
@@ -215,8 +217,8 @@ Log: `Cloud shadows of view N: atlas …` on creation; per frame (Verbose) gener
 
 Surface (Step 24): the direct sunlight of the placeholder surface is multiplied by the cloud transmittance of its sun
 path. Primary planet: the cascades where the texel of the cascade holding the point is at most `SurfaceMaxTexel` ×
-`CloudShapeScale`; elsewhere (camera high up, orbit) a march of `SurfaceMarchSteps` uniform samples through the whole
-layer crossing — coarse cascade texels blur the shadows more than the march errs (prototype: texel 2 km → 6.5, 8 km →
+`CloudShapeScale`; elsewhere (camera high up, orbit) a march through the whole layer crossing with steps of at most
+`SurfaceMarchMaxStep` (`SurfaceMarchSteps`..`SurfaceMarchMaxSteps` samples, jittered per pixel and frame) — coarse cascade texels blur the shadows more than the march errs (prototype: texel 2 km → 6.5, 8 km →
 22 vs ~2 for the march). The last tile of the last usable window blends into the march (no hard ring). Other planets
 and tiles not generated yet: the march. Only direct sunlight; sky light under clouds and shadows in the air → Phase 7.
 
@@ -233,8 +235,11 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
   their texels are too coarse (from about 60 km up with the defaults) and on other planets, blended at the switch
 - Prototype p24/p24b (12 scenes, ground → 2000 km, pixel-averaged): cascades only 0.5–27 (mean |ΔT| × 100), chosen
   rule with 12 steps 0.5–3.5
-- `r.PlanetAtmosphere.CloudShadows.Surface` (A/B), `.SurfaceMarchSteps`, `.SurfaceMaxTexel`, `DebugMode 12` (surface
-  colours) and `13`
+- `r.PlanetAtmosphere.CloudShadows.Surface` (A/B), `.SurfaceMarchSteps`, `.SurfaceMarchMaxStep`, `.SurfaceMarchMaxSteps`,
+  `.SurfaceMaxTexel`, `DebugMode 12` (surface colours) and `13`
+- UE test (RTX 3050): Raymarch in orbit 1.54 (off) / 1.74 / 1.82 / 1.97 ms at 8 / 12 / 16 steps; near the clouds 1.25 →
+  1.30 ms. Fix after the test: at low sun the fixed 12 steps (4–7 km each) left "ladder" shadows that were too bright →
+  steps of at most 1 km (12..48) + per-pixel jitter
 
 **Phase 4 — Step 23: the cascades light the clouds**
 - Sunlight on every lit cloud sample of the primary planet = local march (3 quadratic samples over 1 km toward the sun) ×

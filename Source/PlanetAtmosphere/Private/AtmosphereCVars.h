@@ -169,7 +169,9 @@ namespace PlanetAtmosphere::CVars
 		double LocalMarchLengthCm = 1.0e5;   // its length (cm), from the CVar in km
 		// Step 24
 		bool bSurface = true;            // cloud shadows on the placeholder surface
-		int32 SurfaceMarchSteps = 12;    // samples of the march through the cloud layer from a surface point, [1, 64]
+		int32 SurfaceMarchSteps = 12;    // minimum samples of the march through the cloud layer from a surface point, [1, 64]
+		int32 SurfaceMarchMaxSteps = 48; // maximum samples (long low-sun paths), [SurfaceMarchSteps, 128]
+		float SurfaceMarchMaxStep = 0.125f;  // longest step, in units of CloudShapeScale, [0, 4]; 0 = always SurfaceMarchSteps
 		float SurfaceMaxTexel = 0.0625f; // coarsest cascade texel used for the surface, in units of CloudShapeScale, [0, 16]
 	};
 	FCloudShadowSettings GetCloudShadowSettings();

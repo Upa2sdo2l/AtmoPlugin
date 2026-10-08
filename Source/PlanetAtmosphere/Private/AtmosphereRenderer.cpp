@@ -404,6 +404,9 @@ namespace PlanetAtmosphere
 			// Step 24: cloud shadows on the placeholder surface. Works without cascades too (then the march everywhere).
 			Parameters->CloudShadowSurface = ShadowSettings.bSurface ? 1 : 0;
 			Parameters->CloudShadowSurfaceSteps = ShadowSettings.SurfaceMarchSteps;
+			// MaxStep 0 = fixed SurfaceMarchSteps: the max step count is then the min one.
+			Parameters->CloudShadowSurfaceMaxSteps = ShadowSettings.SurfaceMarchMaxStep > 0.0f ? ShadowSettings.SurfaceMarchMaxSteps : ShadowSettings.SurfaceMarchSteps;
+			Parameters->CloudShadowSurfaceMaxStep = ShadowSettings.SurfaceMarchMaxStep;
 			Parameters->CloudShadowSurfaceMaxTexel = ShadowSettings.SurfaceMaxTexel;
 		}
 

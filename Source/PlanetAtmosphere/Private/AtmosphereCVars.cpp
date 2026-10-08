@@ -344,9 +344,25 @@ namespace
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsSurfaceMarchSteps(
 		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps"),
 		12,
-		TEXT("Samples of the march from a surface point through the whole cloud layer toward the sun (uniform; used where the\n")
-		TEXT("cascades are too coarse, e.g. from orbit, and for planets without cascades). Step 24 prototype (mean error x 100,\n")
-		TEXT("worst scene): 8 -> 7.4, 12 -> 3.5 (default), 16 -> 2.4. Clamped to [1, 64]."),
+		TEXT("Minimum samples of the march from a surface point through the whole cloud layer toward the sun (uniform, jittered;\n")
+		TEXT("used where the cascades are too coarse, e.g. from orbit, and for planets without cascades). Long low-sun paths get\n")
+		TEXT("more (SurfaceMarchMaxStep / SurfaceMarchMaxSteps). Step 24 prototype (mean error x 100, worst scene): 8 -> 7.4,\n")
+		TEXT("12 -> 3.5 (default), 16 -> 2.4. Clamped to [1, 64]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxStep(
+		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep"),
+		0.125f,
+		TEXT("Longest step of the surface march, in units of the planet's CloudShapeScale (0.125 = 1 km at the default 8 km):\n")
+		TEXT("steps = path through the layer / this, within [SurfaceMarchSteps, SurfaceMarchMaxSteps]. Longer steps at low sun\n")
+		TEXT("make \"ladder\" shadows that are too bright (prototype, sun 8 deg: 12 fixed steps 9.5, 1 km steps 0.8). 0 = always\n")
+		TEXT("SurfaceMarchSteps. Clamped to [0, 4]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxSteps(
+		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps"),
+		48,
+		TEXT("Most samples of the surface march (long low-sun paths). Clamped to [SurfaceMarchSteps, 128]."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel(
@@ -539,6 +555,8 @@ namespace PlanetAtmosphere::CVars
 		Settings.LocalMarchLengthCm = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereCloudShadowsLocalMarchLength.GetValueOnAnyThread(false)), 0.1, 20.0) * 1.0e5;
 		Settings.bSurface = CVarPlanetAtmosphereCloudShadowsSurface.GetValueOnAnyThread(false) != 0;
 		Settings.SurfaceMarchSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchSteps.GetValueOnAnyThread(false), 1, 64);
+		Settings.SurfaceMarchMaxSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxSteps.GetValueOnAnyThread(false), Settings.SurfaceMarchSteps, 128);
+		Settings.SurfaceMarchMaxStep = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxStep.GetValueOnAnyThread(false), 0.0f, 4.0f);
 		Settings.SurfaceMaxTexel = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel.GetValueOnAnyThread(false), 0.0f, 16.0f);
 		return Settings;
 	}
