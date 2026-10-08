@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 // Cloud + atmosphere raymarch (r.PlanetAtmosphere.DebugMode 0 = Final, 2 = Density, 3 = Cloud Height, 4 = Ray Steps,
-// 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2).
+// 5 = Atmosphere Only, 6 = Transmittance LUT, 7 = Multiple-Scattering LUT, 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2,
+// 12 = Cloud Shadow Usage).
 //
 // For every visible atmosphere (sorted near -> far on the CPU):
 //   1. intersect the ray with the cloud shell -> up to two segments (camera below / inside / above the layer),
@@ -10,7 +11,9 @@
 //      per-pixel jitter inside each step, optional empty-space skipping (Phase 2 / Step 9);
 //   3. density comes ONLY from PA_SampleCloudDensity() (CloudDensity.ush, AD-1);
 //   4. Beer-Lambert transmittance, energy-conserving integration over each step;
-//   5. lighting (CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient;
+//   5. lighting (CloudLighting.ush): sun * phase * light-march transmittance * planet shadow + ambient; since Phase 4 /
+//      Step 23 the light march of the primary planet's clouds is a short local march + the cloud shadow cascades
+//      (CloudShadowCommon.ush), with the full light march as the fallback where no cascade texel is available;
 //   6. atmosphere (AtmosphereScattering.ush, Steps 13-14) along the whole ray inside the atmosphere, split at the
 //      clouds' contribution-weighted mean depth (Step 15): the part in front of the clouds attenuates them and adds
 //      haze (aerial perspective), the part behind is seen through them; then the placeholder surface.
@@ -40,7 +43,7 @@ RWTexture2D<float4> OutLuminance;      // rgb = pre-exposed luminance added in f
 RWTexture2D<float4> OutTransmittance;  // rgb = transmittance applied to the scene color
 
 int DebugMode;               // 0 = final, 2 = density, 3 = cloud height, 4 = ray steps, 5 = atmosphere only, 6 = transmittance LUT, 7 = MS LUT,
-                             // 9-11 = shadow cascade 0-2
+                             // 9-11 = shadow cascade 0-2, 12 = cloud shadow usage
 int bDrawPlanetSurface;      // debug placeholder surface for planets without scene geometry
 
 // Lighting (Step 7). Illuminance in lux (the Directional Light intensity x color x temperature).
@@ -78,8 +81,11 @@ int bAtmosphereEnabled;      // r.PlanetAtmosphere.Atmosphere
 int AtmosphereSteps;         // r.PlanetAtmosphere.Atmosphere.Steps
 float CloudSkyAmbientScaleMultiplier;   // r.PlanetAtmosphere.CloudSkyAmbientScale (global x per-planet CloudSkyAmbientScale)
 
-// Cloud shadow cascades (Phase 4, CloudShadowCommon.ush). Step 22: read only by the debug views 9-11.
+// Cloud shadow cascades (Phase 4, CloudShadowCommon.ush). Step 23: lighting of the primary planet's clouds.
 Texture2D<float4> CloudShadowAtlas;
+int CloudShadowLighting;        // r.PlanetAtmosphere.CloudShadows.Lighting: 1 = local march + cascades, 0 = full light march
+int CloudShadowLocalSteps;      // r.PlanetAtmosphere.CloudShadows.LocalMarchSteps
+float CloudShadowLocalLength;   // r.PlanetAtmosphere.CloudShadows.LocalMarchLength (cm)
 
 // Lighting inputs that are constant along one view ray.
 struct FPACloudLightingContext
@@ -97,12 +103,13 @@ struct FPACloudLightingContext
 	float SkyAmbientScale;      // temporary compensation for the missing in-cloud multiple scattering (until Phase 7)
 	int PlanetIndex;
 	FPAScattering Scattering;
+	bool bCloudShadows;         // Step 23: this planet has cascades (primary planet) and they light its clouds
 };
 
-/** Light steps for a cloud sample at distance T (light-march LOD, see LightLODEnable). */
-int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float T)
+/** Light steps for a cloud sample at distance T out of FullSteps (light-march LOD, see LightLODEnable). */
+int PA_LightStepsLOD(int FullSteps, FPACloudLayer Layer, FPACloudLightingContext Light, float T)
 {
-	const int FullSteps = max(A.LightSteps, 1);
+	FullSteps = max(FullSteps, 1);
 	if (LightLODEnable == 0)
 	{
 		return FullSteps;
@@ -113,6 +120,12 @@ int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingConte
 	const float MinFootprint = max(LightLODMinFootprint * Layer.Thickness, FullFootprint * 1.01);
 	const float Detail = 1.0 - saturate(log2(max(PixelFootprint, 1.0) / FullFootprint) / log2(MinFootprint / FullFootprint));
 	return clamp((int)round(lerp((float)MinSteps, (float)FullSteps, Detail)), MinSteps, FullSteps);
+}
+
+/** Light steps of the full light march for a cloud sample at distance T (the planet's LightSteps after screen LOD). */
+int PA_GetLightSteps(FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float T)
+{
+	return PA_LightStepsLOD(A.LightSteps, Layer, Light, T);
 }
 
 // A sample whose contribution to the pixel (transmittance before it * its opacity) is below this
@@ -137,6 +150,8 @@ struct FPACloudMarchState
 	float DepthSum;          // sum of distance * contribution weight, current planet only (Step 15 atmosphere split)
 	float DepthWeight;       // sum of contribution weights, current planet only
 	uint DensitySamples;     // PA_SampleCloudDensity() calls: primary + empty-space probes + light march (Ray Steps view)
+	uint ShadowCascadeSamples;    // lit samples lit through the cascades (Cloud Shadow Usage view)
+	uint ShadowFallbackSamples;   // lit samples of the primary planet that needed the full light march
 };
 
 /** Cloud density at distance T along the ray (one density call). Outputs the planet-relative position and altitude. */
@@ -149,6 +164,37 @@ float PA_SampleCloudAlongRay(
 	const float Footprint = T * Ray.FootprintPerUnitDistance;
 	State.DensitySamples += 1u;
 	return PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, Footprint);
+}
+
+/**
+ * Phase 4 / Step 23 (hybrid, AD-25): sunlight transmittance at P = short local march (CloudShadowLocalSteps samples over
+ * at most CloudShadowLocalLength toward the sun: fine self-shadowing, cloud edges) x the cascades from the end of that
+ * march on (long sun paths). Returns -1 if the cascades cannot serve P (outside every window, tile not generated yet).
+ * The lookup comes first (4 texel loads, no density samples), so a fallback sample does not pay for the local march
+ * and a sample shadowed from farther away skips it. The local march uses the same pixel-footprint LOD as the full light
+ * march (r.PlanetAtmosphere.LightLOD: self-shadow detail smaller than a pixel is invisible; UE measurement: with fixed
+ * steps the hybrid cost more in orbit than the old LOD'd march).
+ */
+float PA_CloudSunTransmittanceHybrid(
+	FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float3 P, float Altitude, float T, float Footprint,
+	inout uint NumDensitySamples)
+{
+	const float LocalLength = PA_CloudSunMarchLength(A, P, Altitude, Light.SunDirection, CloudShadowLocalLength);
+	const float3 Q = P + Light.SunDirection * LocalLength;
+	const float CascadeTransmittance = PA_CloudShadowTransmittance(
+		CloudShadowAtlas, PA_ToPlanetLocal(A, Q), A.PlanetRadius, A.CloudBottom, A.CloudTop);
+	if (CascadeTransmittance < 0.0)
+	{
+		return -1.0;
+	}
+	if (CascadeTransmittance <= 1e-6)
+	{
+		return 0.0;   // fully shadowed from farther away: the local march cannot change it
+	}
+	const float LocalOpticalDepth = PA_CloudSunOpticalDepth(
+		A, Layer, P, Light.SunDirection, Footprint, PA_LightStepsLOD(CloudShadowLocalSteps, Layer, Light, T), LocalLength,
+		NumDensitySamples);
+	return exp(-LocalOpticalDepth) * CascadeTransmittance;
 }
 
 /** Integrates one step: sample at T representing the step width Dt. Returns the density of the sample. */
@@ -196,7 +242,17 @@ float PA_IntegrateCloudStep(
 			if (max(SunVisibility.r, max(SunVisibility.g, SunVisibility.b)) > 1e-4)
 			{
 				const float Footprint = T * Ray.FootprintPerUnitDistance;
-				const float SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, PA_GetLightSteps(A, Layer, Light, T), State.DensitySamples);
+				float SunTransmittance = -1.0;
+				if (Light.bCloudShadows)
+				{
+					SunTransmittance = PA_CloudSunTransmittanceHybrid(A, Layer, Light, P, Altitude, T, Footprint, State.DensitySamples);
+					State.ShadowCascadeSamples += SunTransmittance >= 0.0 ? 1u : 0u;
+					State.ShadowFallbackSamples += SunTransmittance >= 0.0 ? 0u : 1u;
+				}
+				if (SunTransmittance < 0.0)
+				{
+					SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, PA_GetLightSteps(A, Layer, Light, T), State.DensitySamples);
+				}
 				Radiance += Light.SunIlluminance * SunVisibility * (Light.Phase * SunTransmittance);
 			}
 		}
@@ -323,6 +379,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	State.DepthSum = 0.0;
 	State.DepthWeight = 0.0;
 	State.DensitySamples = 0u;
+	State.ShadowCascadeSamples = 0u;
+	State.ShadowFallbackSamples = 0u;
 
 	FPACloudLightingContext Light;
 	Light.SunDirection = SunDirection;
@@ -336,6 +394,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Light.SkyAmbientScale = 0.0;
 	Light.PlanetIndex = 0;
 	Light.Scattering = (FPAScattering)0;
+	Light.bCloudShadows = false;
 
 	// Same jitter for every planet of this pixel; animated jitter changes every frame (StateFrameIndex).
 	// Interleaved (N > 1): the noise is evaluated on the BLOCK coordinate. Evaluated at the traced pixel it is sampled on a
@@ -399,6 +458,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		// Without a Directional Light there is no sky: the neutral fallback ambient (AmbientIlluminance) stays.
 		Light.bSkyAmbient = bAtmosphereEnabled != 0 && bMultipleScattering != 0 && Light.bHasSun;
 		Light.SkyAmbientScale = A.CloudSkyAmbientScale * CloudSkyAmbientScaleMultiplier;
+		Light.bCloudShadows = CloudShadowLighting != 0 && Index == CloudShadowPlanet;
 
 		// Radiance of this planet's clouds is collected separately, so the atmosphere in front of them can attenuate it.
 		const float3 AccumBeforeClouds = State.Accum;
@@ -573,6 +633,20 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 				const uint Row = (uint)PA_GetLutSlot((int)LutBlock) * PA_TRANSMITTANCE_LUT_HEIGHT + LutTexel.y % PA_TRANSMITTANCE_LUT_HEIGHT;
 				Transmittance = 0.0;
 				Luminance = TransmittanceLutAtlas.Load(int3(LutTexel.x, Row, 0)).rgb;
+			}
+		}
+		// Cloud Shadow Usage (Phase 4 / Step 23): which lit cloud samples of the primary planet got their sunlight from the
+		// cascades (green) and which needed the full light march (red: outside the windows / tile not generated yet), over
+		// the darkened image. Pixels without lit samples of the primary planet keep the darkened image.
+		if (DebugMode == 12)
+		{
+			const float Total = (float)(State.ShadowCascadeSamples + State.ShadowFallbackSamples);
+			Luminance *= 0.25;
+			Transmittance *= 0.25;
+			if (Total > 0.0)
+			{
+				const float Cascade = (float)State.ShadowCascadeSamples / Total;
+				Luminance += float3(1.0 - Cascade, Cascade, 0.0) * 0.5;
 			}
 		}
 		// Shadow cascade 0 / 1 / 2 (Phase 4 / Step 22): the cascade window in the top-left corner, north = +V, centred on

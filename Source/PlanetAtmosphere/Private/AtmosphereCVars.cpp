@@ -26,7 +26,8 @@ namespace
 		TEXT(" 7 = Multiple-Scattering LUT (final image + the MS LUT atlas at 4x in the top-left corner, one 64 x 32 block per planet, x25)\n")
 		TEXT(" 8 = Temporal Weight (weight of the current frame in the temporal accumulation: green = history, red = current frame only / history rejected)\n")
 		TEXT(" 9 / 10 / 11 = Shadow Cascade 0 / 1 / 2 (final image + the cloud shadow cascade of the primary planet in the top-left corner:\n")
-		TEXT("   white = lit column, dark blue = shadowed, magenta checker = not generated yet, red ring = sub-camera point; red square = no cascades)"),
+		TEXT("   white = lit column, dark blue = shadowed, magenta checker = not generated yet, red ring = sub-camera point; red square = no cascades)\n")
+		TEXT(" 12 = Cloud Shadow Usage (lit cloud samples of the primary planet: green = lit through the cascades, red = full light march fallback)"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereDebugIntensity(
@@ -307,6 +308,28 @@ namespace
 		TEXT("in powers of two; cascade i = cascade 0 x 4^i. Clamped to [1, 1000]."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsLighting(
+		TEXT("r.PlanetAtmosphere.CloudShadows.Lighting"),
+		1,
+		TEXT("Phase 4 / Step 23: sunlight on the primary planet's clouds = short local march toward the sun (LocalMarchSteps over\n")
+		TEXT("LocalMarchLength) x the cloud shadow cascades for the rest of the sun path; where no cascade texel is available the\n")
+		TEXT("full light march (r.PlanetAtmosphere.LightSteps) is used. 1 = on (default), 0 = full light march everywhere (A/B)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsLocalMarchSteps(
+		TEXT("r.PlanetAtmosphere.CloudShadows.LocalMarchSteps"),
+		3,
+		TEXT("Samples of the short local march from each cloud sample toward the sun (fine self-shadowing, cloud edges).\n")
+		TEXT("1 = fast, 2 = compromise, 3 = default, 4+ = higher quality. Clamped to [1, 8]. Reduced for distant samples by\n")
+		TEXT("r.PlanetAtmosphere.LightLOD like the full light march (down to LightLOD.MinLightSteps)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsLocalMarchLength(
+		TEXT("r.PlanetAtmosphere.CloudShadows.LocalMarchLength"),
+		1.0f,
+		TEXT("Length of the local march in km (Step 21 prototype: 1 km; longer with few steps is worse). Clamped to [0.1, 20]."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLODMinLightSteps(
 		TEXT("r.PlanetAtmosphere.LOD.MinLightSteps"),
 		2,
@@ -336,6 +359,7 @@ namespace PlanetAtmosphere::CVars
 		case 9:  return EDebugMode::ShadowCascade0;
 		case 10: return EDebugMode::ShadowCascade1;
 		case 11: return EDebugMode::ShadowCascade2;
+		case 12: return EDebugMode::CloudShadowUsage;
 		default: return EDebugMode::FinalClouds;
 		}
 	}
@@ -482,6 +506,9 @@ namespace PlanetAtmosphere::CVars
 		Settings.GenerationSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsGenerationSteps.GetValueOnAnyThread(false), 8, 128);
 		Settings.UpdateBudgetTiles = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsUpdateBudget.GetValueOnAnyThread(false), 0, 768);
 		Settings.MinExtentCm = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereCloudShadowsMinExtent.GetValueOnAnyThread(false)), 1.0, 1000.0) * 1.0e5;
+		Settings.bLighting = CVarPlanetAtmosphereCloudShadowsLighting.GetValueOnAnyThread(false) != 0;
+		Settings.LocalMarchSteps = FMath::Clamp(CVarPlanetAtmosphereCloudShadowsLocalMarchSteps.GetValueOnAnyThread(false), 1, 8);
+		Settings.LocalMarchLengthCm = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereCloudShadowsLocalMarchLength.GetValueOnAnyThread(false)), 0.1, 20.0) * 1.0e5;
 		return Settings;
 	}
 }
