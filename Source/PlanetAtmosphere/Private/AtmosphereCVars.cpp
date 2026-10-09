@@ -129,11 +129,12 @@ namespace
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereNoiseFootprintScale(
 		TEXT("r.PlanetAtmosphere.NoiseFootprintScale"),
-		0.25f,
-		TEXT("Noise octaves fade at this fraction of the pixel footprint (density LOD, Step 12).\n")
-		TEXT("< 1: sub-pixel cloud detail is point-sampled and averaged over frames by TSR / temporal accumulation,\n")
-		TEXT("so distant planets keep their cloud cover (unbiased). Costs a little more far away and shimmers more while\n")
-		TEXT("the camera moves (until Phase 3 temporal). 1 = Phase 1 behaviour (clouds of distant planets fade out). Clamped to [0.01, 1]."),
+		1.0f,
+		TEXT("Cloud density LOD footprint = this x the sample spacing (pixel x r.PlanetAtmosphere.Temporal.Interleave); the cloud\n")
+		TEXT("shadow cascades use this x their texel. 1 (default since Step 32a): detail smaller than a traced sample is prefiltered,\n")
+		TEXT("unresolved clouds become the Step 32 effective medium, so distant cover is kept without point-sampled grain.\n")
+		TEXT("< 1: sharper but grainy / flickering (sub-sample detail point-sampled; UE test: grain from orbit, noise at\n")
+		TEXT("interleave 3 with 0.25, the pre-Step 32a default). Clamped to [0.01, 1]."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudTopClamp(
@@ -304,7 +305,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsGenerationSteps(
 		TEXT("r.PlanetAtmosphere.CloudShadows.GenerationSteps"),
 		32,
-		TEXT("Density samples per cascade texel along the sun through the cloud shell (Step 21 prototype: 16 -> +0.4 pt error).\n")
+		TEXT("Minimum density samples per cascade texel along the sun through the cloud shell (Step 21 prototype: 16 -> +0.4 pt\n")
+		TEXT("error). Step 32a: more where the path is long - steps of at most 0.1 x CloudShapeScale, up to 128 - at a static\n")
+		TEXT("per-texel jitter (fixed step centres stacked a small cloud's slices into horizontal bands at low sun).\n")
 		TEXT("Clamped to [8, 128]. A change regenerates every cascade."),
 		ECVF_RenderThreadSafe);
 

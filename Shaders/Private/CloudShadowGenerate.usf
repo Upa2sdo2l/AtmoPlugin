@@ -3,7 +3,8 @@
 // Phase 4 / Step 22 — cloud shadow cascades of the primary planet (Beer Shadow Map, see CloudShadowCommon.ush).
 //
 // GenerateCS: one 32 x 32 tile of cascade texels per group z (z = slot of either set, Step 25) (tile list from AtmosphereCloudShadows.cpp). Mode 1: per
-//   texel, GenerationSteps uniform samples along the cloud-shell segment of the texel ray (from the sun side), density
+//   texel, uniform samples (at least GenerationSteps, Step 32a: steps <= 0.1 x shape scale up to 128, static per-texel
+//   jitter) along the cloud-shell segment of the texel ray (from the sun side), density
 //   ONLY from PA_SampleCloudDensity (AD-1) with the noise octaves faded at NoiseFootprintScale x the texel size (Step 21
 //   prototype: 1/4 texel; a footprint of the step length loses clouds, AD-14). Writes
 //     r = front: first sample interval with density, as a fraction of the segment (1 = no cloud)
@@ -23,6 +24,9 @@ float4 ShadowTiles[PA_SHADOW_MAX_TILES_PER_PASS];   // xy = global tile, z = slo
 int NumShadowTiles;
 int ShadowGenerationSteps;
 float NoiseFootprintScale;
+
+static const float PA_SHADOW_GENERATION_MAX_STEP = 0.1;   // x CloudShapeScale (Step 32a)
+static const int PA_SHADOW_GENERATION_MAX_STEPS = 128;
 
 int ShadowAtlasResolution;                          // ClearCS
 int ClearCascadeMask;                               // ClearCS: bit s = slot s
@@ -54,9 +58,10 @@ float4 PA_GenerateShadowTexel(int Slot, int2 GlobalTexel)
 	// front / back stay fractions of the full segment, so the lookup (CloudShadowCommon.ush) is unchanged.
 	float SegmentStart = 0.0;
 	float SegmentEnd = 1.0;
-	if (CloudTopClamp != 0)
+	const int NumTopPoints = CloudTopClamp != 0 ? PA_CloudTopSampleCount(Layer, Length) : 0;
+	if (NumTopPoints > 0)   // Step 32a: 0 = segment too long to bound safely (grazing sun): the whole layer
 	{
-		const int NumPoints = PA_CloudTopSampleCount(Layer, Length);
+		const int NumPoints = NumTopPoints;
 		const float InvSegments = 1.0 / (float)max(NumPoints - 1, 1);
 		float TopAltitude = A.CloudBottom;
 		for (int Point = 0; Point < NumPoints; ++Point)
@@ -76,8 +81,18 @@ float4 PA_GenerateShadowTexel(int Slot, int2 GlobalTexel)
 	}
 	const float Span = max(SegmentEnd - SegmentStart, 0.0);
 
-	const int NumSteps = max(ShadowGenerationSteps, 1);
-	const float Ds = Length * Span / (float)NumSteps;
+	// Step 32a: steps of at most PA_SHADOW_GENERATION_MAX_STEP x the cloud shape scale (ShadowGenerationSteps..128) at a
+	// fixed per-texel jitter. With fixed step centres every sample sat at the same altitudes in neighbouring texels, so the
+	// shadow of a small cloud was a stack of its horizontal slices with light leaking between them: horizontal bands
+	// inside the clouds, worst at low sun (UE test: gone with CloudShadows.Lighting 0, finer and weaker with
+	// GenerationSteps 128; 0.7 km clouds, sunset span ~4.7 km -> 147 m steps). The jitter is static (the cascade is cached):
+	// neighbouring texels sample different altitudes and the 2 x 2 lookup blends them.
+	const float SpanLength = Length * Span;
+	const int MinSteps = max(ShadowGenerationSteps, 1);
+	const float StepsForLength = ceil(SpanLength / max(PA_SHADOW_GENERATION_MAX_STEP * Layer.ShapeScale, 1.0));
+	const int NumSteps = clamp((int)min(StepsForLength, (float)PA_SHADOW_GENERATION_MAX_STEPS), MinSteps, max(MinSteps, PA_SHADOW_GENERATION_MAX_STEPS));
+	const float Ds = SpanLength / (float)NumSteps;
+	const float Jitter = (float)(PA_Pcg3d(uint3(asuint(GlobalTexel.x), asuint(GlobalTexel.y), 0x5A3Du)).x >> 8) * (1.0 / 16777216.0);
 	const float Footprint = Texel * NoiseFootprintScale;
 
 	float OpticalDepth = 0.0;
@@ -85,7 +100,7 @@ float4 PA_GenerateShadowTexel(int Slot, int2 GlobalTexel)
 	int Last = -1;
 	for (int Step = 0; Step < NumSteps; ++Step)
 	{
-		const float W = WEntry - Length * SegmentStart - ((float)Step + 0.5) * Ds;
+		const float W = WEntry - Length * SegmentStart - ((float)Step + Jitter) * Ds;
 		const float3 P = PlaneOffset + W * Sun;
 		// Same altitude precision as the per-sample light march (|P| at ~64 cm granularity at Earth scale).
 		const float Altitude = sqrt(Rho * Rho + W * W) - A.PlanetRadius;
