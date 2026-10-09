@@ -122,9 +122,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereNoiseSource(
 		TEXT("r.PlanetAtmosphere.NoiseSource"),
 		1,
-		TEXT("Source of the cloud base-shape and erosion noise (the weather mask is always procedural).\n")
-		TEXT(" 0 = Procedural (Phase 1 noise, reference and fallback)\n")
-		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 R16F, baked once on the GPU"),
+		TEXT("Source of the cloud noise (base shape for the cluster / meso / cloud levels, erosion, Worley detail).\n")
+		TEXT(" 0 = Procedural (reference and fallback; much slower, the Worley detail especially)\n")
+		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 + 64^3 R16F, baked once on the GPU"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereNoiseFootprintScale(
@@ -134,6 +134,14 @@ namespace
 		TEXT("< 1: sub-pixel cloud detail is point-sampled and averaged over frames by TSR / temporal accumulation,\n")
 		TEXT("so distant planets keep their cloud cover (unbiased). Costs a little more far away and shimmers more while\n")
 		TEXT("the camera moves (until Phase 3 temporal). 1 = Phase 1 behaviour (clouds of distant planets fade out). Clamped to [0.01, 1]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudTopClamp(
+		TEXT("r.PlanetAtmosphere.CloudTopClamp"),
+		1,
+		TEXT("Step 32: view rays, light marches, surface shadow marches and cloud shadow cascades end at the deepest clouds the\n")
+		TEXT("weather allows along them instead of the cloud-layer top (a 0.6 km fair-weather field otherwise shares its samples\n")
+		TEXT("with ~7 km of empty layer). 1 = on (default), 0 = march the whole layer (A/B)."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightLOD(
@@ -568,6 +576,11 @@ namespace PlanetAtmosphere::CVars
 		return CVarPlanetAtmosphereNoiseSource.GetValueOnAnyThread(false) == 0
 			? ENoiseSource::Procedural
 			: ENoiseSource::BakedTextures;
+	}
+
+	bool IsCloudTopClampEnabled()
+	{
+		return CVarPlanetAtmosphereCloudTopClamp.GetValueOnAnyThread(false) != 0;
 	}
 
 	float GetNoiseFootprintScale()

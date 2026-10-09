@@ -115,6 +115,9 @@ namespace PlanetAtmosphere::CVars
 	/** r.PlanetAtmosphere.NoiseFootprintScale — multiplier of the pixel footprint for noise octave fading, clamped to [0.01, 1]. */
 	float GetNoiseFootprintScale();
 
+	/** r.PlanetAtmosphere.CloudTopClamp — marches end at the deepest clouds the weather allows (Step 32). */
+	bool IsCloudTopClampEnabled();
+
 	struct FLightLODSettings
 	{
 		bool bEnabled = true;

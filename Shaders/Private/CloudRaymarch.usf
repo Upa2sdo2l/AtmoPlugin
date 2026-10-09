@@ -193,7 +193,7 @@ float PA_CloudSunTransmittanceHybrid(
 	FPAAtmosphere A, FPACloudLayer Layer, FPACloudLightingContext Light, float3 P, float Altitude, float T, float Footprint,
 	inout uint NumDensitySamples)
 {
-	const float LocalLength = PA_CloudSunMarchLength(A, P, Altitude, Light.SunDirection, CloudShadowLocalLength);
+	const float LocalLength = PA_CloudSunMarchLength(A, Layer, P, Altitude, Light.SunDirection, CloudShadowLocalLength);
 	const float3 Q = P + Light.SunDirection * LocalLength;
 	const float CascadeTransmittance = PA_CloudShadowTransmittance(
 		CloudShadowAtlas, PA_ToPlanetLocal(A, Q), A.PlanetRadius, A.CloudBottom, A.CloudTop);
@@ -675,7 +675,16 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			}
 		}
 
-		const float2 TopHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.CloudTop);
+		float2 TopHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, A.CloudTop);
+		if (bDrawClouds && TopHit.x <= TopHit.y && TopHit.y > 0.0)
+		{
+			// Step 32: the clouds of this ray reach at most this altitude (the weather's deepest local clouds).
+			const float RayTop = PA_CloudRayTopAltitude(A, Layer, A.CameraRel, Ray.Dir, max(TopHit.x, 0.0), min(TopHit.y, TMax));
+			if (RayTop < A.CloudTop)
+			{
+				TopHit = PA_RaySphereIntersect(A.CameraRel, Ray.Dir, A.PlanetRadius, A.CameraAltitude, RayTop);
+			}
+		}
 		const bool bCloudShellHit = bDrawClouds && TopHit.x <= TopHit.y && TopHit.y > 0.0;
 
 		// Step 15: this planet's atmosphere lights its clouds (in every view mode, so the cloud debug views keep

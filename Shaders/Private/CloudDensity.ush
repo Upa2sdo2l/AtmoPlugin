@@ -11,6 +11,20 @@
 //  in another file. Cheaper variants are expressed through the Footprint (LOD) argument
 //  or a future quality argument of THIS function, never as a separate copy.
 // ============================================================================================
+//
+// Phase 6 / Step 32 (AD-36, prototype p31): multi-scale density. Every level only changes the cloud FRACTION at the
+// distances where it is not resolved, so each distance shows its own scale (visual-target.md, multi-scale principle):
+//   weather   (atlas, hundreds-thousands km): contrast curve cloud water -> cloud fraction; fair weather (shallow
+//             cumulus) -> deep storm clouds;
+//   clusters  (ClusterScale, ~100 km): a soft LOCAL cloud fraction (clouds thin out toward the edge, never sliced);
+//   meso      (MesoScale, ~12 km): top relief and open / closed cells, faded before it reaches the pixel size;
+//   clouds    (ShapeScale, ~0.7 km): vertically coherent noise, flat bases, domed tops, ragged storm bases;
+//   billows   (~0.25 x ShapeScale): Worley detail, billowy at the base, wispy toward the top.
+// Thresholds come from quantile tables of the noise, so the cloud fraction is what the weather asks for. Where the cloud
+// level is smaller than the footprint, the sample returns the density of an EFFECTIVE MEDIUM: a fraction f of clouds
+// with optical depth tau over the local cloud depth -> sigma = -ln(1 - f (1 - e^-tau)) / depth, distributed over the
+// height like the cover; the cloud amount then stays the same from 50 m to 16 km pixels (prototype: <= 0.05, Phase 5
+// up to 0.27) and the far image has no "salt".
 
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereNoise.ush"
 #include "/Plugin/PlanetAtmosphere/Private/WeatherAtlas.ush"
@@ -20,16 +34,108 @@ struct FPACloudLayer
 {
 	float PlanetRadius;    // cm
 	float BottomAltitude;  // cm above the planet radius
-	float Thickness;       // cm (> 0)
-	float Coverage;        // [0, 1]: 0 = clear sky, 1 = mostly overcast
-	float ShapeScale;      // cm, size of the base cloud features
-	float Erosion;         // [0, 1]: how much high-frequency noise erodes the cloud edges
-	// Phase 5 / Step 29: the planet's weather (AtmosphereWeatherInfo): the cloud water sets the local coverage.
-	int WeatherEnabled;    // 0 = procedural weather mask only (no weather for this planet)
+	float Thickness;       // cm (> 0): room for the deepest (storm) clouds
+	float Coverage;        // [0, 1]: with weather 0.5 = the weather as it is; without weather = the cloud fraction
+	float ShapeScale;      // cm, size of the individual clouds
+	float Erosion;         // [0, 1]: billows eating into the cloud edges
+	float Extinction;      // 1/cm at normalized density 1 (effective medium)
+	float ClusterScale;    // cm, Step 32 cluster level
+	float MesoScale;       // cm, Step 32 meso cells
+	float FairDepth;       // cm, depth of fair-weather clouds
+	// Phase 5 / Step 29: the planet's weather (AtmosphereWeatherInfo).
+	int WeatherEnabled;    // 0 = no weather for this planet: Coverage is the cloud fraction everywhere
 	float WeatherRowA;     // first atlas rows of the two snapshots around the weather time, interpolation weight
 	float WeatherRowB;
 	float WeatherBlend;
 };
+
+// ---- Constants of the Step 32 model (prototype p31) -----------------------------------------------
+static const float PA_CLOUD_CONTRAST_LOW = 0.22;     // local cloud water -> cloud fraction (smoothstep)
+static const float PA_CLOUD_CONTRAST_HIGH = 0.52;
+static const float PA_CLOUD_STORM_LOW = 0.6;         // local cloud water at which clouds start / end getting deep
+static const float PA_CLOUD_STORM_HIGH = 0.95;
+static const float PA_CLOUD_CLUSTER_EXPONENT = 0.35; // cluster fraction = fraction^0.35, clouds inside take the rest
+static const float PA_CLOUD_CLUSTER_WIDTH = 0.15;    // soft width of the cluster fraction
+static const float PA_CLOUD_EDGE_WIDTH = 0.07;       // soft width of the cloud edges (stretched noise units)
+static const float PA_CLOUD_VERTICAL_STRETCH = 0.3;  // cloud-level noise: vertical coordinate x 0.3 (coherent columns)
+static const float PA_CLOUD_DOME_EXPONENT = 2.0;     // threshold rises with (height in the local depth)^2: domed tops
+static const float PA_CLOUD_EDGE_DENSITY = 0.12;     // density at the cloud edge ...
+static const float PA_CLOUD_CORE_WIDTH = 0.3;        // ... rising to 1 over this much noise above the threshold
+static const float PA_CLOUD_UNRESOLVED_DENSITY = 0.6;   // mean density inside unresolved clouds (effective medium)
+static const float PA_CLOUD_BASE_RELIEF = 0.75;      // storms: only the denser parts reach the lowest part ...
+static const float PA_CLOUD_BASE_ZONE = 0.15;        // ... of this fraction of the local depth
+static const float PA_CLOUD_MESO_AMPLITUDE = 0.3;    // meso cells: +-30 % cloud fraction (not in overcast) ...
+static const float PA_CLOUD_MESO_RELIEF = 0.3;       // ... and +-30 % local depth
+static const float PA_CLOUD_MESO_FADE_START = 0.05;  // meso pattern fades between these footprint / MesoScale
+static const float PA_CLOUD_MESO_FADE_END = 0.15;
+static const float PA_CLOUD_DETAIL_SCALE = 0.25;     // billows = 0.25 x ShapeScale
+static const float PA_CLOUD_EROSION_LOSS = 0.4;      // unresolved clouds: share of the cloud area eaten by the billows
+static const float PA_CLOUD_CLUSTER_RATIO = 2.37;    // second cluster sample: incommensurate scale (breaks the tiling)
+
+// Quantile tables of the stretched noise value u = saturate(0.5 + 1.5 n) at mip 0 (Q[i]: a fraction i / 64 lies below),
+// its CDF on the grid u = i / 64, and the column profile: mean over the local depth of the domed cover / base cover for
+// a base cover of i / 64. Generated by the CPU prototype p31 (mode "tables") from the same noise.
+static const float PA_CLOUD_QUANTILE_BASE[65] =
+{
+	-0.010000, 0.000000, 0.000000, 0.027968, 0.072268, 0.107903, 0.137918, 0.163020,
+	0.186765, 0.207856, 0.226803, 0.244945, 0.262161, 0.277780, 0.292327, 0.306308,
+	0.320196, 0.332758, 0.345568, 0.357983, 0.370302, 0.381836, 0.393268, 0.404978,
+	0.416347, 0.427267, 0.438132, 0.448811, 0.459778, 0.470432, 0.481098, 0.491806,
+	0.502695, 0.513462, 0.524115, 0.535085, 0.546028, 0.557168, 0.568029, 0.579274,
+	0.590812, 0.602224, 0.614279, 0.626449, 0.638651, 0.650794, 0.663556, 0.676573,
+	0.689644, 0.703867, 0.718175, 0.733117, 0.748528, 0.764839, 0.781728, 0.799335,
+	0.818401, 0.839026, 0.860751, 0.885330, 0.914669, 0.950024, 0.995796, 1.000000,
+	1.010000
+};
+static const float PA_CLOUD_QUANTILE_CLUSTER[65] =
+{
+	-0.010000, 0.000000, 0.000000, 0.033994, 0.075086, 0.108483, 0.136621, 0.161985,
+	0.184828, 0.205047, 0.223663, 0.241651, 0.258576, 0.274522, 0.289796, 0.304549,
+	0.318563, 0.331869, 0.344700, 0.357238, 0.369473, 0.381466, 0.393237, 0.404996,
+	0.416480, 0.427792, 0.438563, 0.449429, 0.460065, 0.470948, 0.481265, 0.492064,
+	0.502657, 0.513554, 0.524334, 0.535112, 0.545833, 0.556640, 0.568066, 0.579346,
+	0.590410, 0.602079, 0.613829, 0.625372, 0.637371, 0.649468, 0.661667, 0.674440,
+	0.687641, 0.701364, 0.715594, 0.729911, 0.745477, 0.760839, 0.777703, 0.795450,
+	0.815517, 0.836918, 0.860370, 0.888031, 0.918824, 0.956486, 1.000000, 1.000000,
+	1.010000
+};
+static const float PA_CLOUD_CDF_BASE[65] =
+{
+	0.015625, 0.039979, 0.048033, 0.053544, 0.059055, 0.065068, 0.071919, 0.078891,
+	0.087025, 0.095435, 0.105161, 0.115202, 0.125544, 0.137120, 0.149609, 0.162772,
+	0.176463, 0.190965, 0.206853, 0.223833, 0.241341, 0.259862, 0.279032, 0.298640,
+	0.318864, 0.340137, 0.361124, 0.382910, 0.405341, 0.428021, 0.450658, 0.473532,
+	0.496132, 0.518797, 0.541412, 0.563689, 0.585796, 0.607779, 0.629023, 0.649894,
+	0.670014, 0.690040, 0.709805, 0.728735, 0.747437, 0.764810, 0.781852, 0.798150,
+	0.813910, 0.828852, 0.843308, 0.857192, 0.870164, 0.882367, 0.894022, 0.905260,
+	0.915308, 0.924695, 0.933016, 0.940685, 0.947590, 0.954184, 0.959518, 0.964851,
+	0.984375
+};
+static const float PA_CLOUD_COLUMN_PROFILE[65] =
+{
+	0.441479, 0.441479, 0.413327, 0.720849, 0.704902, 0.681835, 0.660330, 0.643285,
+	0.631505, 0.621774, 0.612824, 0.605817, 0.600498, 0.595467, 0.591424, 0.587628,
+	0.584851, 0.580866, 0.578091, 0.575767, 0.573083, 0.571358, 0.570134, 0.569156,
+	0.567497, 0.566626, 0.565614, 0.564376, 0.563955, 0.563439, 0.563207, 0.562685,
+	0.562553, 0.562712, 0.562686, 0.562728, 0.562873, 0.563502, 0.563767, 0.564341,
+	0.564992, 0.566180, 0.567684, 0.568733, 0.569894, 0.571826, 0.573667, 0.575773,
+	0.577432, 0.580254, 0.582853, 0.585719, 0.589216, 0.593633, 0.598252, 0.602925,
+	0.608590, 0.615311, 0.621965, 0.630619, 0.640954, 0.653744, 0.657199, 0.646767,
+	0.642874
+};
+
+float PA_CloudTable(const float Table[65], float X)   // X in [0, 1], linear interpolation over 65 entries
+{
+	const float F = saturate(X) * 64.0;
+	const int I = min((int)F, 63);
+	return lerp(Table[I], Table[I + 1], F - (float)I);
+}
+
+/** Noise value below which a fraction Fraction of the base (cluster) noise lies. */
+float PA_CloudQuantileBase(float Fraction) { return PA_CloudTable(PA_CLOUD_QUANTILE_BASE, Fraction); }
+float PA_CloudQuantileCluster(float Fraction) { return PA_CloudTable(PA_CLOUD_QUANTILE_CLUSTER, Fraction); }
+/** Fraction of the base noise below the value U. */
+float PA_CloudCdfBase(float U) { return U <= 0.0 ? 0.0 : (U >= 1.0 ? 1.0 : PA_CloudTable(PA_CLOUD_CDF_BASE, U)); }
 
 /**
  * Step 29: local coverage from the weather's cloud water C and the planet's Coverage parameter: Coverage 0.5 = the weather
@@ -51,71 +157,140 @@ float PA_CloudHeightFraction(FPACloudLayer Layer, float Altitude)
 	return (Altitude - Layer.BottomAltitude) / Layer.Thickness;
 }
 
+/** Weather at Direction (planet local, unit): x = cloud fraction, y = storm factor (0 fair weather, 1 deep storm clouds). */
+float2 PA_CloudWeather(FPACloudLayer Layer, float3 Direction)
+{
+	if (Layer.WeatherEnabled == 0)
+	{
+		// Without weather: Coverage is the cloud fraction; deeper clouds only near full coverage.
+		return float2(Layer.Coverage, smoothstep(0.8, 1.0, Layer.Coverage));
+	}
+	const float CloudWater = saturate(lerp(
+		PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowA).x,
+		PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowB).x,
+		Layer.WeatherBlend));
+	const float LocalCoverage = PA_WeatherLocalCoverage(CloudWater, Layer.Coverage);
+	return float2(
+		smoothstep(PA_CLOUD_CONTRAST_LOW, PA_CLOUD_CONTRAST_HIGH, LocalCoverage),
+		smoothstep(PA_CLOUD_STORM_LOW, PA_CLOUD_STORM_HIGH, LocalCoverage));
+}
+
 /**
- * Normalized cloud density in [0, 1] (multiply by the extinction coefficient to get sigma_t).
+ * Upper bound of the cloud-top altitude over Direction (planet local, unit): the deepest clouds the weather allows there.
+ * Callers march only up to it (Step 32: a 0.6 km fair-weather field no longer shares its samples with 7 km of empty layer).
+ */
+float PA_CloudMaxTopAltitude(FPACloudLayer Layer, float3 Direction)
+{
+	const float Storm = PA_CloudWeather(Layer, Direction).y;
+	return Layer.BottomAltitude + min(Layer.Thickness, lerp(Layer.FairDepth, Layer.Thickness, Storm) * (1.0 + PA_CLOUD_MESO_RELIEF));
+}
+
+/** Soft threshold: fraction of the stretched value U above T, widened by the variance the LOD removed. */
+float PA_CloudSoftStep(float U, float T, float Width, float MissingStd)
+{
+	const float W = sqrt(Width * Width + 2.9 * 2.25 * MissingStd * MissingStd);
+	return smoothstep(T - W, T + W, U);
+}
+
+/**
+ * Normalized cloud density (multiply by the extinction coefficient to get sigma_t; may exceed 1 in storm cores).
  *
  * PosPlanetLocal : sample position relative to the planet center, in the planet's local frame (cm).
  * Altitude       : |PosPlanetLocal| - PlanetRadius (cm).
- * Footprint      : size of one screen pixel at this sample (cm); fades noise octaves smaller than a pixel.
- *
- * Pipeline: height profile -> weather/coverage mask on the sphere (local coverage from the planet's weather, Step 29)
- * -> base shape -> coverage remap -> erosion.
+ * Footprint      : noise footprint at this sample (cm, NoiseFootprintScale x pixel); fades the detail smaller than it.
  */
 float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint)
 {
-	const float H = PA_CloudHeightFraction(Layer, Altitude);
-	if (H <= 0.0 || H >= 1.0)
+	const float H0 = Altitude - Layer.BottomAltitude;
+	if (H0 <= 0.0 || H0 >= Layer.Thickness)
 	{
 		return 0.0;
 	}
-
-	// Rounded bottom, softer top.
-	const float HeightProfile = smoothstep(0.0, 0.1, H) * (1.0 - smoothstep(0.35, 1.0, H));
-
-	// Weather / coverage: large-scale pattern on the sphere (direction only), ~6x the base feature size.
-	const float WeatherScale = Layer.ShapeScale * 6.0;
 	const float3 Direction = PosPlanetLocal / max(length(PosPlanetLocal), 1.0);
 
-	// Phase 5 / Step 29: with weather, the weather's cloud water (atlas, interpolated between the two snapshots) sets the
-	// LOCAL coverage of the mask below; the procedural noise keeps breaking the edges at ~6x the feature size at every
-	// distance (prototype p29: mean column opacity ~ C - 0.1 near the camera, sharper far away). Overcast boost: where the
-	// local coverage exceeds 0.6 the mask grows up to 1.5, so the base threshold below reaches ~0 and storm cores become
-	// overcast (column opacity ~0.95 at C = 1; the formula without it is capped near 0.7).
-	float LocalCoverage = Layer.Coverage;
-	float OvercastBoost = 1.0;
-	if (Layer.WeatherEnabled != 0)
+	// Weather: cloud fraction (contrast) and storm factor.
+	const float2 Weather = PA_CloudWeather(Layer, Direction);
+	const float Fraction = Weather.x;
+	const float Storm = Weather.y;
+	if (Fraction <= 0.0)
 	{
-		const float CloudWater = saturate(lerp(
-			PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowA).x,
-			PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowB).x,
-			Layer.WeatherBlend));
-		LocalCoverage = PA_WeatherLocalCoverage(CloudWater, Layer.Coverage);
-		OvercastBoost = 1.0 + 0.5 * smoothstep(0.6, 1.0, LocalCoverage);
+		return 0.0;   // exact: Coverage 0 or a clear weather zone
 	}
 
-	const float Weather = saturate(0.5 + 1.5 * PA_Fbm(Direction * (Layer.PlanetRadius / WeatherScale), 3, Footprint / WeatherScale));
-	// Threshold spans [1.1, -0.1] so that Coverage 0 gives exactly no clouds and Coverage 1 a full mask
-	// (Weather is clamped to [0, 1], the +-0.1 ramp must lie fully outside that range at both ends).
-	const float CoverageThreshold = 1.1 - 1.2 * LocalCoverage;
-	const float CoverageMask = smoothstep(CoverageThreshold - 0.1, CoverageThreshold + 0.1, Weather) * OvercastBoost;
-	if (CoverageMask <= 0.0)
-	{
-		return 0.0; // exact: with mask 0 the base threshold below is 1, so the remap yields <= 0
-	}
+	// Cluster level: soft local fraction. Two samples at incommensurate scales break the texture tiling.
+	const float ClusterFraction = pow(Fraction, PA_CLOUD_CLUSTER_EXPONENT);
+	const float CloudFraction = Fraction / max(ClusterFraction, 1e-4);
+	const float3 PK1 = Direction * (Layer.PlanetRadius / Layer.ClusterScale);
+	const float3 PK2 = float3(PK1.y * PA_CLOUD_CLUSTER_RATIO + 31.7, PK1.z * PA_CLOUD_CLUSTER_RATIO - 11.3, PK1.x * PA_CLOUD_CLUSTER_RATIO + 5.1);
+	const float ClusterFootprint = Footprint / Layer.ClusterScale;
+	float MissingK1;
+	float MissingK2;
+	const float NK = 0.8 * PA_SampleBaseShapeNoiseLod(PK1, ClusterFootprint, MissingK1)
+		+ 0.6 * PA_SampleBaseShapeNoiseLod(PK2, ClusterFootprint * PA_CLOUD_CLUSTER_RATIO, MissingK2);
+	const float UK = saturate(0.5 + 1.5 * NK);
+	const float MissingK = sqrt(0.64 * MissingK1 * MissingK1 + 0.36 * MissingK2 * MissingK2);
+	const float MaskK = ClusterFraction >= 0.999 ? 1.0
+		: PA_CloudSoftStep(UK, PA_CloudQuantileCluster(1.0 - ClusterFraction), PA_CLOUD_CLUSTER_WIDTH, MissingK);
 
-	// Base shape: inside covered regions the base noise still carves individual clouds. (Mask > 1 only with the overcast
-	// boost: the threshold 1 - 0.65 mask then goes below 0.35.)
-	const float Base = saturate(0.5 + 1.5 * PA_SampleBaseShapeNoise(PosPlanetLocal / Layer.ShapeScale, Footprint / Layer.ShapeScale));
-	float Shape = saturate(PA_Remap(Base * HeightProfile, lerp(1.0, 0.35, CoverageMask), 1.0, 0.0, 1.0));
-	if (Shape <= 0.0)
+	// Meso cells (faded before they reach the pixel size): open / closed cells, relief of the tops.
+	float MissingM;
+	const float3 PM = Direction * (Layer.PlanetRadius / Layer.MesoScale) + float3(71.3, -23.9, 47.1);
+	const float UM = saturate(0.5 + 1.5 * PA_SampleBaseShapeNoiseLod(PM, Footprint / Layer.MesoScale, MissingM));
+	const float MesoVisible = 1.0 - smoothstep(PA_CLOUD_MESO_FADE_START, PA_CLOUD_MESO_FADE_END, Footprint / Layer.MesoScale);
+	const float UMeso = 0.5 + (UM - 0.5) * MesoVisible;
+	const float Fraction4 = Fraction * Fraction * Fraction * Fraction;
+	const float LocalFraction = saturate(CloudFraction * MaskK * (1.0 + PA_CLOUD_MESO_AMPLITUDE * (1.0 - Fraction4) * (2.0 * UMeso - 1.0)));
+	if (LocalFraction <= 1e-3)
 	{
 		return 0.0;
 	}
 
-	// Erosion: high-frequency noise eats into the edges.
-	const float ErosionScale = Layer.ShapeScale * 0.15;
-	const float ErosionNoise = saturate(0.5 + 1.5 * PA_SampleErosionNoise(PosPlanetLocal / ErosionScale, Footprint / ErosionScale));
-	Shape = saturate(PA_Remap(Shape, ErosionNoise * Layer.Erosion * 0.6, 1.0, 0.0, 1.0));
+	// Local depth: shallow fair-weather clouds (thinner toward the cluster edges), deep storms (tops follow the clusters).
+	const float DeepDepth = Layer.Thickness * (0.45 + 0.55 * smoothstep(0.2, 0.8, UK));
+	const float Depth = lerp(Layer.FairDepth * (0.6 + 0.4 * MaskK), DeepDepth, Storm) * (1.0 + PA_CLOUD_MESO_RELIEF * (2.0 * UMeso - 1.0));
+	const float H = H0 / max(Depth, 1.0);
+	if (H >= 1.0)
+	{
+		return 0.0;
+	}
 
-	return Shape;
+	// Cloud level: vertically coherent noise; threshold from the local fraction, rising with height (domes); storms get
+	// ragged bases; flat bases otherwise.
+	const float3 PC = Direction * (Layer.PlanetRadius + Layer.BottomAltitude + H0 * PA_CLOUD_VERTICAL_STRETCH);
+	float MissingC;
+	const float UC = saturate(0.5 + 1.5 * PA_SampleBaseShapeNoiseLod(PC / Layer.ShapeScale, Footprint / Layer.ShapeScale, MissingC));
+	float Threshold = lerp(PA_CloudQuantileBase(1.0 - LocalFraction), 1.02, pow(H, PA_CLOUD_DOME_EXPONENT));
+	Threshold = max(Threshold, lerp(PA_CLOUD_BASE_RELIEF * Storm, -0.01, smoothstep(0.0, PA_CLOUD_BASE_ZONE, H)));
+	const float Base = smoothstep(0.0, 0.06, H);
+	const float Cover = PA_CloudSoftStep(UC, Threshold, PA_CLOUD_EDGE_WIDTH, MissingC) * Base;
+	if (Cover <= 0.0)
+	{
+		return 0.0;
+	}
+
+	// Billows: Worley detail, billowy (inverted) at the base, wispy toward the top.
+	const float DetailScale = Layer.ShapeScale * PA_CLOUD_DETAIL_SCALE;
+	const float UW = saturate(0.5 + 1.5 * PA_SampleDetailNoise(PosPlanetLocal / DetailScale, Footprint / DetailScale));
+	const float Detail = lerp(UW, 1.0 - UW, saturate(H * 1.5));
+	const float StormDensity = lerp(0.8, 1.3, Storm);
+	const float LocalFraction4 = LocalFraction * LocalFraction * LocalFraction * LocalFraction;
+	const float Core = max(PA_CLOUD_EDGE_DENSITY + (1.0 - PA_CLOUD_EDGE_DENSITY) * smoothstep(Threshold, Threshold + PA_CLOUD_CORE_WIDTH, UC),
+		LocalFraction4);   // closed decks stay solid
+
+	// Resolved: the eroded cloud shape. Unresolved: effective medium of a column (see the header).
+	const float Resolved = 1.0 - saturate(MissingC / PA_BASE_NOISE_MIP_STD[0]);
+	const float Resolved2 = Resolved * Resolved;
+	const float Fine = saturate(PA_Remap(Cover * Core, Detail * Layer.Erosion * 0.5, 1.0, 0.0, 1.0)) * StormDensity;
+	if (Resolved2 >= 1.0)
+	{
+		return Fine;
+	}
+	const float InCloud = lerp(PA_CLOUD_UNRESOLVED_DENSITY, Core, Resolved2) * StormDensity;
+	const float Tau = InCloud * Layer.Extinction * Depth;
+	const float ColumnCover = LocalFraction * (1.0 - PA_CLOUD_EROSION_LOSS * Layer.Erosion * (1.0 - LocalFraction4));
+	const float SigmaColumn = -log(max(1.0 - ColumnCover * (1.0 - exp(-Tau)), 1e-6)) / Depth;
+	const float CoverHere = (1.0 - PA_CloudCdfBase(Threshold)) * Base;   // expected cover at this height
+	const float Profile = PA_CloudTable(PA_CLOUD_COLUMN_PROFILE, LocalFraction);
+	const float Effective = SigmaColumn * CoverHere / max(LocalFraction * Profile, 1e-4) / max(Layer.Extinction, 1e-12);
+	return lerp(Effective, Fine, Resolved2);
 }

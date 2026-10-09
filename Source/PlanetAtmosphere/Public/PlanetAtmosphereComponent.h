@@ -142,33 +142,51 @@ public:
 
 	// ===== CLOUD PARAMETERS =====
 
-	/** Bottom of the cloud layer in meters */
+	/**
+	 * Bottom of the cloud layer in meters (radius): the base of the fair-weather clouds. Default: 2.5 km above the default
+	 * planet (Step 32; Earth-like cumulus bases, reference 3 of visual-target.md).
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "1000.0"))
-	double CloudBottomRadius = 1010000.0;
+	double CloudBottomRadius = 1002500.0;
 
-	/** Top of the cloud layer in meters */
+	/** Top of the cloud layer in meters (radius): room for the deepest (storm) clouds. Default: 10 km above the default planet. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "1000.0"))
-	double CloudTopRadius = 1020000.0;
+	double CloudTopRadius = 1010000.0;
 
 	/**
-	 * Cloud coverage amount (0 = no clouds, 1 = full coverage). With planetary weather (r.PlanetAtmosphere.Weather 1,
-	 * Step 29) it scales the weather's local cloud water instead: 0.5 = the weather as it is, below = drier, above = more
-	 * overcast (0 and 1 still mean no clouds / overcast everywhere).
+	 * Cloud amount. With planetary weather (r.PlanetAtmosphere.Weather 1) it scales the weather's local cloud water:
+	 * 0.5 = the weather as it is (~55 % of an Earth-like planet clouded), below = drier, above = more overcast (0.65 gives
+	 * ~85 %); 0 and 1 = no clouds / overcast everywhere. Without weather it is the cloud fraction everywhere.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CloudCoverage = 0.5f;
 
-	/** Base cloud density (scales the extinction coefficient; 1 = typical cumulus) */
+	/** Cloud density (scales the extinction coefficient 0.04 / m; Step 32 default 0.4: soft, white fair-weather cumulus) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "10.0"))
-	float CloudDensity = 1.0f;
+	float CloudDensity = 0.4f;
 
-	/** Size of the base cloud formations in meters (larger = bigger, smoother clouds) */
+	/** Size of the individual clouds in meters (Step 32 default 700 m; billows are 1/4 of it) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "100.0", ClampMax = "1000000.0"))
-	double CloudShapeScale = 8000.0;
+	double CloudShapeScale = 700.0;
 
-	/** How strongly high-frequency noise erodes cloud edges (0 = smooth blobs, 1 = ragged edges) */
+	/** How strongly the billows (Worley detail) eat into the cloud edges (0 = smooth domes, 1 = billowy / wispy edges) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float CloudErosion = 0.5f;
+	float CloudErosion = 1.0f;
+
+	/**
+	 * Step 32: size in meters of the cloud clusters (groups of clouds and the gaps between them, organized by the weather).
+	 * Seen from orbit they are the texture inside the weather zones; from the surface they decide where a field of clouds is.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", AdvancedDisplay, meta = (ClampMin = "1000.0", ClampMax = "10000000.0"))
+	double CloudClusterScale = 100000.0;
+
+	/** Step 32: size in meters of the meso cells (open / closed cells inside cloud decks, relief of the tops from low orbit). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", AdvancedDisplay, meta = (ClampMin = "100.0", ClampMax = "1000000.0"))
+	double CloudMesoScale = 12000.0;
+
+	/** Step 32: depth in meters of the fair-weather clouds (flat bases at the cloud bottom); storms grow up to the cloud top. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "50.0", ClampMax = "100000.0"))
+	double CloudFairWeatherDepth = 600.0;
 
 	/**
 	 * Strength of the sky light on the clouds (Step 15). With the atmosphere on, cloud ambient light is the sky radiance

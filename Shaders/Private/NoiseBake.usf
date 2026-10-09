@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 // Phase 2 / Step 10 — bakes one mip of a tileable 3D noise texture (run once per mip, once per RHI lifetime).
-// Mip m texel centers cover [0, PA_NOISE_TILE)^3; the value is PA_FbmPeriodic with the octaves that survive
-// a footprint of one mip-m texel (TexelSize), i.e. exactly what PA_Fbm would return for that pixel footprint.
+// Mip m texel centers cover [0, PA_NOISE_TILE)^3; the value is PA_FbmPeriodic (NoiseKind 0) or, since Step 32,
+// PA_WorleyFbmPeriodic (NoiseKind 1) with the octaves that survive a footprint of one mip-m texel (TexelSize).
 
 #define PA_NOISE_BAKE_PASS 1
 
@@ -12,6 +12,7 @@
 RWTexture3D<float> OutNoise;   // UAV of one mip
 int MipSize;                   // texels per side of this mip
 int Octaves;
+int NoiseKind;                 // 0 = fBm (base / erosion), 1 = Worley fBm (detail, Step 32)
 float TexelSize;               // PA_NOISE_TILE / MipSize, in noise units
 
 [numthreads(4, 4, 4)]
@@ -22,5 +23,14 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 	const float3 P = ((float3)DispatchThreadId + 0.5) * TexelSize;
-	OutNoise[DispatchThreadId] = PA_FbmPeriodic(P, Octaves, TexelSize);
+	// Explicit branch (with HLSL 2018 the ?: operator evaluates both sides).
+	[branch]
+	if (NoiseKind == 1)
+	{
+		OutNoise[DispatchThreadId] = PA_WorleyFbmPeriodic(P, TexelSize);
+	}
+	else
+	{
+		OutNoise[DispatchThreadId] = PA_FbmPeriodic(P, Octaves, TexelSize);
+	}
 }

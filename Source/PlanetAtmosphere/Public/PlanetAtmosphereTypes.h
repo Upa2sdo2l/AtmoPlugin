@@ -111,6 +111,10 @@ struct FAtmosphereVisibleInstance
 	float CloudDensity = 0.0f;
 	double CloudShapeScaleUU = 0.0;
 	float CloudErosion = 0.0f;
+	/** Step 32: cluster / meso scales and fair-weather cloud depth of the multi-scale density (Unreal Units). */
+	double CloudClusterScaleUU = 0.0;
+	double CloudMesoScaleUU = 0.0;
+	double CloudFairWeatherDepthUU = 0.0;
 	int32 RaymarchSteps = 0;
 
 	/** Sky ambient multiplier on the clouds (Step 15, temporary compensation until Phase 7). */

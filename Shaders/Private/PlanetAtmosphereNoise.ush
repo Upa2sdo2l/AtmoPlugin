@@ -105,6 +105,12 @@ float PA_Fbm(float3 P, int Octaves, float FootprintInNoiseUnits)
 #define PA_EROSION_NOISE_SIZE 64
 #define PA_EROSION_NOISE_OCTAVES 2
 #define PA_EROSION_NOISE_MAX_MIP 3   // mips 0..3 (64..8); mip 3 = zeros
+#define PA_DETAIL_NOISE_SIZE 64      // Step 32: Worley detail (billows), PA_WorleyFbmPeriodic
+#define PA_DETAIL_NOISE_MAX_MIP 3    // mips 0..3 (64..8); mips 2..3 = zeros
+
+// Step 32: standard deviation of the baked base noise per mip (measured on the bake; CPU prototype p31). The density uses
+// the part removed by the LOD (sqrt(std0^2 - std(lod)^2)) to keep the cloud fraction at every distance.
+static const float PA_BASE_NOISE_MIP_STD[5] = { 0.183483, 0.182397, 0.178090, 0.157111, 0.0 };
 
 float PA_GradientNoisePeriodic(float3 P, int Period)
 {
@@ -156,12 +162,74 @@ float PA_FbmPeriodic(float3 P, int Octaves, float FootprintInNoiseUnits)
 	return Sum / Norm;
 }
 
+// ---- Periodic Worley fBm (Step 32: billows of the cloud edges) ----------------------------------
+//
+// 3 octaves of 1 - F1 (distance to the nearest feature point, in cells) with 2 / 4 / 8 cells per noise unit; the lattice
+// of each octave wraps every PA_NOISE_TILE units; feature point of a cell = cell + PA_Pcg3d hash. Octaves fade with the
+// footprint like PA_Fbm (toward their mean); the result is centred and scaled to a std of ~0.2 (same convention as the
+// fBm textures: CloudDensity.ush stretches 0.5 + 1.5 x). Constants measured by the CPU prototype p31 (worleystats).
+
+#define PA_WORLEY_MEAN 0.479579
+#define PA_WORLEY_GAIN 1.694756
+
+int3 PA_WrapCell(int3 C, int Period)
+{
+	return ((C % Period) + Period) % Period;
+}
+
+/** Distance from P (in cells) to the nearest feature point of a lattice that wraps every Period cells. */
+float PA_WorleyF1Periodic(float3 P, int Period)
+{
+	const float3 CellF = floor(P);
+	const int3 Cell = int3(CellF);
+	float Best = 9.0;
+	for (int Z = -1; Z <= 1; ++Z)
+	{
+		for (int Y = -1; Y <= 1; ++Y)
+		{
+			for (int X = -1; X <= 1; ++X)
+			{
+				const int3 C = Cell + int3(X, Y, Z);
+				const uint3 H = PA_Pcg3d(asuint(PA_WrapCell(C, Period)) + uint3(0x9E37u, 0u, 0u));
+				const float3 Feature = float3(C) + float3(H) * (1.0 / 4294967296.0);
+				const float3 D = Feature - P;
+				Best = min(Best, dot(D, D));
+			}
+		}
+	}
+	return sqrt(Best);
+}
+
+/** Periodic Worley fBm (period PA_NOISE_TILE in P, noise units), centred, std ~0.2; octaves fade with the footprint. */
+float PA_WorleyFbmPeriodic(float3 P, float FootprintInNoiseUnits)
+{
+	float Sum = 0.0;
+	float Norm = 0.0;
+	float Amplitude = 0.625;
+	int Cells = 2;
+	for (int Octave = 0; Octave < 3; ++Octave)
+	{
+		const float Weight = saturate(2.0 - 4.0 * FootprintInNoiseUnits * (float)Cells);
+		float Value = PA_WORLEY_MEAN;
+		if (Weight > 0.0)
+		{
+			Value = lerp(PA_WORLEY_MEAN, 1.0 - saturate(PA_WorleyF1Periodic(P * (float)Cells, (int)PA_NOISE_TILE * Cells)), Weight);
+		}
+		Sum += Amplitude * Value;
+		Norm += Amplitude;
+		Amplitude = Octave == 0 ? 0.25 : 0.125;
+		Cells *= 2;
+	}
+	return (Sum / Norm - PA_WORLEY_MEAN) * PA_WORLEY_GAIN;
+}
+
 // ---- Entry points used by CloudDensity.ush -----------------------------------------------------
 
 #ifndef PA_NOISE_BAKE_PASS   // the bake pass itself has no noise textures bound
 
 Texture3D<float> BaseNoiseTexture;      // PA_FbmPeriodic(4 octaves), PA_BASE_NOISE_SIZE^3, R16F, mips 0..PA_BASE_NOISE_MAX_MIP
 Texture3D<float> ErosionNoiseTexture;   // PA_FbmPeriodic(2 octaves), PA_EROSION_NOISE_SIZE^3, R16F, mips 0..PA_EROSION_NOISE_MAX_MIP
+Texture3D<float> DetailNoiseTexture;    // Step 32: PA_WorleyFbmPeriodic, PA_DETAIL_NOISE_SIZE^3, R16F, mips 0..PA_DETAIL_NOISE_MAX_MIP
 SamplerState NoiseSampler;              // trilinear, wrap
 int NoiseSource;                        // 0 = procedural (Phase 1), 1 = baked textures
 
@@ -181,6 +249,35 @@ float PA_SampleBaseShapeNoise(float3 P, float FootprintInNoiseUnits)
 		return PA_SampleNoiseTexture(BaseNoiseTexture, P, FootprintInNoiseUnits, PA_BASE_NOISE_SIZE, PA_BASE_NOISE_MAX_MIP);
 	}
 	return PA_Fbm(P, 4, FootprintInNoiseUnits);
+}
+
+/**
+ * Step 32: base noise + the standard deviation of the octaves removed by the footprint LOD (MissingStd, ~0 at fine
+ * footprints, ~0.18 when the footprint exceeds half a noise unit). Procedural source: same LOD rule as the texture.
+ */
+float PA_SampleBaseShapeNoiseLod(float3 P, float FootprintInNoiseUnits, out float MissingStd)
+{
+	const float TexelsPerUnit = PA_BASE_NOISE_SIZE / PA_NOISE_TILE;
+	const float Lod = clamp(log2(max(FootprintInNoiseUnits * TexelsPerUnit, 1e-6)), 0.0, (float)PA_BASE_NOISE_MAX_MIP);
+	const int Lod0 = (int)Lod;
+	const int Lod1 = min(Lod0 + 1, PA_BASE_NOISE_MAX_MIP);
+	const float Std = lerp(PA_BASE_NOISE_MIP_STD[Lod0], PA_BASE_NOISE_MIP_STD[Lod1], Lod - (float)Lod0);
+	MissingStd = sqrt(max(PA_BASE_NOISE_MIP_STD[0] * PA_BASE_NOISE_MIP_STD[0] - Std * Std, 0.0));
+	if (NoiseSource != 0)
+	{
+		return BaseNoiseTexture.SampleLevel(NoiseSampler, P / PA_NOISE_TILE, Lod);
+	}
+	return PA_Fbm(P, 4, FootprintInNoiseUnits);
+}
+
+/** Step 32: Worley detail noise (billows), centred, std ~0.2. Procedural source: PA_WorleyFbmPeriodic itself. */
+float PA_SampleDetailNoise(float3 P, float FootprintInNoiseUnits)
+{
+	if (NoiseSource != 0)
+	{
+		return PA_SampleNoiseTexture(DetailNoiseTexture, P, FootprintInNoiseUnits, PA_DETAIL_NOISE_SIZE, PA_DETAIL_NOISE_MAX_MIP);
+	}
+	return PA_WorleyFbmPeriodic(P, FootprintInNoiseUnits);
 }
 
 /** Erosion noise: 2-octave fBm, range and statistics of PA_Fbm(P, 2, Footprint). */

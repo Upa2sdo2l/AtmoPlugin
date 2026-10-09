@@ -47,17 +47,43 @@ float4 PA_GenerateShadowTexel(int Slot, int2 GlobalTexel)
 		return float4(1.0, 1.0, 0.0, 1.0);   // no cloud layer on this ray: fully lit
 	}
 
-	const int NumSteps = max(ShadowGenerationSteps, 1);
-	const float Ds = Length / (float)NumSteps;
-	const float Footprint = Texel * NoiseFootprintScale;
 	const float3 PlaneOffset = U * AxisU + V * AxisV;
+
+	// Step 32: only the part of the segment below the deepest clouds the weather allows (PA_CloudMaxTopAltitude at the
+	// start, middle and end of the segment), as fractions [SegmentStart, SegmentEnd] of the full segment: the stored
+	// front / back stay fractions of the full segment, so the lookup (CloudShadowCommon.ush) is unchanged.
+	float SegmentStart = 0.0;
+	float SegmentEnd = 1.0;
+	if (CloudTopClamp != 0)
+	{
+		float TopAltitude = A.CloudBottom;
+		for (int Point = 0; Point < 3; ++Point)
+		{
+			const float3 Q = PlaneOffset + (WEntry - Length * 0.5 * (float)Point) * Sun;
+			TopAltitude = max(TopAltitude, PA_CloudMaxTopAltitude(Layer, Q / max(length(Q), 1.0)));
+		}
+		TopAltitude = min(A.CloudTop, A.CloudBottom + (TopAltitude - A.CloudBottom) * 1.02);
+		float WEntryClamped;
+		float LengthClamped;
+		if (!PA_ShadowRaySegment(Rho, A.PlanetRadius, A.CloudBottom, TopAltitude, WEntryClamped, LengthClamped))
+		{
+			return float4(1.0, 1.0, 0.0, 1.0);
+		}
+		SegmentStart = saturate((WEntry - WEntryClamped) / Length);
+		SegmentEnd = saturate((WEntry - (WEntryClamped - LengthClamped)) / Length);
+	}
+	const float Span = max(SegmentEnd - SegmentStart, 0.0);
+
+	const int NumSteps = max(ShadowGenerationSteps, 1);
+	const float Ds = Length * Span / (float)NumSteps;
+	const float Footprint = Texel * NoiseFootprintScale;
 
 	float OpticalDepth = 0.0;
 	int First = -1;
 	int Last = -1;
 	for (int Step = 0; Step < NumSteps; ++Step)
 	{
-		const float W = WEntry - ((float)Step + 0.5) * Ds;
+		const float W = WEntry - Length * SegmentStart - ((float)Step + 0.5) * Ds;
 		const float3 P = PlaneOffset + W * Sun;
 		// Same altitude precision as the per-sample light march (|P| at ~64 cm granularity at Earth scale).
 		const float Altitude = sqrt(Rho * Rho + W * W) - A.PlanetRadius;
@@ -78,8 +104,9 @@ float4 PA_GenerateShadowTexel(int Slot, int2 GlobalTexel)
 	{
 		return float4(1.0, 1.0, 0.0, 1.0);
 	}
-	const float InvSteps = 1.0 / (float)NumSteps;
-	return float4((float)First * InvSteps, (float)(Last + 1) * InvSteps, min(OpticalDepth, PA_SHADOW_MAX_OPTICAL_DEPTH), 1.0);
+	const float InvSteps = Span / (float)NumSteps;
+	return float4(SegmentStart + (float)First * InvSteps, SegmentStart + (float)(Last + 1) * InvSteps,
+		min(OpticalDepth, PA_SHADOW_MAX_OPTICAL_DEPTH), 1.0);
 }
 
 [numthreads(8, 8, 1)]
