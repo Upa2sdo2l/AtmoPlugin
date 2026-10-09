@@ -49,20 +49,22 @@ float4 PA_GenerateShadowTexel(int Slot, int2 GlobalTexel)
 
 	const float3 PlaneOffset = U * AxisU + V * AxisV;
 
-	// Step 32: only the part of the segment below the deepest clouds the weather allows (PA_CloudMaxTopAltitude at the
-	// start, middle and end of the segment), as fractions [SegmentStart, SegmentEnd] of the full segment: the stored
+	// Step 32: only the part of the segment below the deepest clouds the weather allows (PA_CloudMaxTopAltitude at points
+	// at most half a weather texel apart, PA_CloudTopSampleCount), as fractions [SegmentStart, SegmentEnd] of the full segment: the stored
 	// front / back stay fractions of the full segment, so the lookup (CloudShadowCommon.ush) is unchanged.
 	float SegmentStart = 0.0;
 	float SegmentEnd = 1.0;
 	if (CloudTopClamp != 0)
 	{
+		const int NumPoints = PA_CloudTopSampleCount(Layer, Length);
+		const float InvSegments = 1.0 / (float)max(NumPoints - 1, 1);
 		float TopAltitude = A.CloudBottom;
-		for (int Point = 0; Point < 3; ++Point)
+		for (int Point = 0; Point < NumPoints; ++Point)
 		{
-			const float3 Q = PlaneOffset + (WEntry - Length * 0.5 * (float)Point) * Sun;
+			const float3 Q = PlaneOffset + (WEntry - Length * (float)Point * InvSegments) * Sun;
 			TopAltitude = max(TopAltitude, PA_CloudMaxTopAltitude(Layer, Q / max(length(Q), 1.0)));
 		}
-		TopAltitude = min(A.CloudTop, A.CloudBottom + (TopAltitude - A.CloudBottom) * 1.02);
+		TopAltitude = min(A.CloudTop, A.CloudBottom + (TopAltitude - A.CloudBottom) * 1.05);
 		float WEntryClamped;
 		float LengthClamped;
 		if (!PA_ShadowRaySegment(Rho, A.PlanetRadius, A.CloudBottom, TopAltitude, WEntryClamped, LengthClamped))

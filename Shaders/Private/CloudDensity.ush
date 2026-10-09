@@ -124,18 +124,22 @@ static const float PA_CLOUD_COLUMN_PROFILE[65] =
 	0.642874
 };
 
-float PA_CloudTable(const float Table[65], float X)   // X in [0, 1], linear interpolation over 65 entries
+// Linear interpolation in one of the tables (X in [0, 1], 65 entries). A macro, not a function with an array parameter:
+// some shader compilers copy array arguments into a local array on every call.
+#define PA_CLOUD_TABLE(Table, X) PA_CloudTableLerp(Table[min((int)(saturate(X) * 64.0), 63)], Table[min((int)(saturate(X) * 64.0), 63) + 1], saturate(X) * 64.0)
+
+float PA_CloudTableLerp(float A, float B, float F)
 {
-	const float F = saturate(X) * 64.0;
-	const int I = min((int)F, 63);
-	return lerp(Table[I], Table[I + 1], F - (float)I);
+	return lerp(A, B, F - (float)min((int)F, 63));
 }
 
 /** Noise value below which a fraction Fraction of the base (cluster) noise lies. */
-float PA_CloudQuantileBase(float Fraction) { return PA_CloudTable(PA_CLOUD_QUANTILE_BASE, Fraction); }
-float PA_CloudQuantileCluster(float Fraction) { return PA_CloudTable(PA_CLOUD_QUANTILE_CLUSTER, Fraction); }
+float PA_CloudQuantileBase(float Fraction) { return PA_CLOUD_TABLE(PA_CLOUD_QUANTILE_BASE, Fraction); }
+float PA_CloudQuantileCluster(float Fraction) { return PA_CLOUD_TABLE(PA_CLOUD_QUANTILE_CLUSTER, Fraction); }
 /** Fraction of the base noise below the value U. */
-float PA_CloudCdfBase(float U) { return U <= 0.0 ? 0.0 : (U >= 1.0 ? 1.0 : PA_CloudTable(PA_CLOUD_CDF_BASE, U)); }
+float PA_CloudCdfBase(float U) { return U <= 0.0 ? 0.0 : (U >= 1.0 ? 1.0 : PA_CLOUD_TABLE(PA_CLOUD_CDF_BASE, U)); }
+/** Column profile for a base cover Fraction. */
+float PA_CloudColumnProfile(float Fraction) { return PA_CLOUD_TABLE(PA_CLOUD_COLUMN_PROFILE, Fraction); }
 
 /**
  * Step 29: local coverage from the weather's cloud water C and the planet's Coverage parameter: Coverage 0.5 = the weather
@@ -183,6 +187,20 @@ float PA_CloudMaxTopAltitude(FPACloudLayer Layer, float3 Direction)
 {
 	const float Storm = PA_CloudWeather(Layer, Direction).y;
 	return Layer.BottomAltitude + min(Layer.Thickness, lerp(Layer.FairDepth, Layer.Thickness, Storm) * (1.0 + PA_CLOUD_MESO_RELIEF));
+}
+
+/**
+ * Number of points (>= 3) at which a cloud-top bound must be evaluated along a path of PathLength cm so that no weather
+ * feature between them is missed: about two per weather-atlas texel (~39 km on an Earth-size planet at 256), at most 17.
+ */
+int PA_CloudTopSampleCount(FPACloudLayer Layer, float PathLength)
+{
+	if (Layer.WeatherEnabled == 0)
+	{
+		return 1;   // no weather: the same bound everywhere
+	}
+	const float WeatherTexel = (Layer.PlanetRadius + Layer.BottomAltitude) * 1.5707963 / max((float)WeatherResolution, 1.0);
+	return clamp((int)ceil(2.0 * PathLength / max(WeatherTexel, 1.0)) + 1, 3, 17);
 }
 
 /** Soft threshold: fraction of the stretched value U above T, widened by the variance the LOD removed. */
@@ -290,7 +308,7 @@ float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Al
 	const float ColumnCover = LocalFraction * (1.0 - PA_CLOUD_EROSION_LOSS * Layer.Erosion * (1.0 - LocalFraction4));
 	const float SigmaColumn = -log(max(1.0 - ColumnCover * (1.0 - exp(-Tau)), 1e-6)) / Depth;
 	const float CoverHere = (1.0 - PA_CloudCdfBase(Threshold)) * Base;   // expected cover at this height
-	const float Profile = PA_CloudTable(PA_CLOUD_COLUMN_PROFILE, LocalFraction);
+	const float Profile = PA_CloudColumnProfile(LocalFraction);
 	const float Effective = SigmaColumn * CoverHere / max(LocalFraction * Profile, 1e-4) / max(Layer.Extinction, 1e-12);
 	return lerp(Effective, Fine, Resolved2);
 }

@@ -167,7 +167,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 
 	const PlanetAtmosphere::CVars::FCloudShadowSettings Settings = PlanetAtmosphere::CVars::GetCloudShadowSettings();
 	if (!IsInitialized() || !Settings.bEnabled || View.State == nullptr
-		|| !Inputs.Sun.bValid || Inputs.Noise.BaseShape == nullptr || Inputs.Noise.Erosion == nullptr)
+		|| !Inputs.Sun.bValid || Inputs.Noise.BaseShape == nullptr || Inputs.Noise.Erosion == nullptr || Inputs.Noise.Detail == nullptr)
 	{
 		return nullptr;
 	}

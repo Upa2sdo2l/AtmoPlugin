@@ -382,8 +382,9 @@ namespace
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxStep(
 		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep"),
-		0.125f,
-		TEXT("Longest step of the surface march, in units of the planet's CloudShapeScale (0.125 = 1 km at the default 8 km):\n")
+		0.5f,
+		TEXT("Longest step of the surface march, in units of the planet's CloudShapeScale (0.5 = 350 m at the Step 32 default 700 m;\n")
+		TEXT("was 0.125 = 1 km at the old 8 km; unresolved clouds are an effective medium since Step 32, so the stamps are weaker):\n")
 		TEXT("steps = path through the layer / this, within [SurfaceMarchSteps, SurfaceMarchMaxSteps]. Longer steps at low sun\n")
 		TEXT("make \"ladder\" shadows that are too bright (prototype, sun 8 deg: 12 fixed steps 9.5, 1 km steps 0.8). 0 = always\n")
 		TEXT("SurfaceMarchSteps. Clamped to [0, 4]."),
@@ -405,9 +406,9 @@ namespace
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel(
 		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel"),
-		0.0625f,
-		TEXT("Coarsest cascade texel used for surface shadows, in units of the planet's CloudShapeScale (0.0625 = 1/16, i.e.\n")
-		TEXT("500 m at the default 8 km); surface points whose cascade is coarser are marched (SurfaceMarchSteps). 0 = always\n")
+		0.25f,
+		TEXT("Coarsest cascade texel used for surface shadows, in units of the planet's CloudShapeScale (0.25 = 175 m at the Step 32\n")
+		TEXT("default 700 m; was 0.0625 = 500 m at the old 8 km); surface points whose cascade is coarser are marched (SurfaceMarchSteps). 0 = always\n")
 		TEXT("march. Clamped to [0, 16]."),
 		ECVF_RenderThreadSafe);
 

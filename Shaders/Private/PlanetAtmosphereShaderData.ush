@@ -135,10 +135,11 @@ FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
 
 /**
  * Step 32: altitude up to which the clouds along the segment [TStart, TEnd] of the ray Origin + t Dir (planet-relative,
- * world axes) can reach: the deepest local clouds the weather allows at its start, middle and end
- * (PA_CloudMaxTopAltitude, CloudDensity.ush), at most the cloud top. Marches stop there instead of crossing the whole
- * layer: a 0.6 km fair-weather field otherwise shares its samples with ~7 km of empty layer (prototype p31: 24 steps
- * from the ground, opacity error 0.061 -> 0.003; orbit / storm views 0.004-0.007 -> 0.001). CloudTop if disabled.
+ * world axes) can reach: the deepest local clouds the weather allows at points spaced at most half a weather texel apart
+ * (PA_CloudMaxTopAltitude / PA_CloudTopSampleCount, CloudDensity.ush; 3..17 points), at most the cloud top. Marches stop
+ * there instead of crossing the whole layer: a 0.6 km fair-weather field otherwise shares its samples with ~7 km of empty
+ * layer (prototype p31: 24 steps from the ground, opacity error 0.061 -> 0.003; orbit / storm views 0.004-0.007 -> 0.001).
+ * CloudTop if disabled.
  */
 float PA_CloudRayTopAltitude(FPAAtmosphere A, FPACloudLayer Layer, float3 Origin, float3 Dir, float TStart, float TEnd)
 {
@@ -146,14 +147,16 @@ float PA_CloudRayTopAltitude(FPAAtmosphere A, FPACloudLayer Layer, float3 Origin
 	{
 		return A.CloudTop;
 	}
+	const int NumPoints = PA_CloudTopSampleCount(Layer, abs(TEnd - TStart));
+	const float InvSegments = 1.0 / (float)max(NumPoints - 1, 1);
 	float Top = A.CloudBottom;
-	for (int Point = 0; Point < 3; ++Point)
+	for (int Point = 0; Point < NumPoints; ++Point)
 	{
-		const float3 P = Origin + Dir * lerp(TStart, TEnd, 0.5 * (float)Point);
+		const float3 P = Origin + Dir * lerp(TStart, TEnd, (float)Point * InvSegments);
 		const float3 Local = PA_ToPlanetLocal(A, P);
 		Top = max(Top, PA_CloudMaxTopAltitude(Layer, Local / max(length(Local), 1.0)));
 	}
-	return min(A.CloudTop, A.CloudBottom + (Top - A.CloudBottom) * 1.02);
+	return min(A.CloudTop, A.CloudBottom + (Top - A.CloudBottom) * 1.05);
 }
 
 // ---- Per-pixel ray --------------------------------------------------------------------------

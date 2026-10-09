@@ -182,8 +182,8 @@ namespace PlanetAtmosphere::CVars
 		bool bSurfaceMarchJitter = true; // per-pixel animated jitter of the surface march samples
 		int32 SurfaceMarchSteps = 12;    // minimum samples of the march through the cloud layer from a surface point, [1, 64]
 		int32 SurfaceMarchMaxSteps = 48; // maximum samples (long low-sun paths), [SurfaceMarchSteps, 128]
-		float SurfaceMarchMaxStep = 0.125f;  // longest step, in units of CloudShapeScale, [0, 4]; 0 = always SurfaceMarchSteps
-		float SurfaceMaxTexel = 0.0625f; // coarsest cascade texel used for the surface, in units of CloudShapeScale, [0, 16]
+		float SurfaceMarchMaxStep = 0.5f;    // longest step, in units of CloudShapeScale, [0, 4]; 0 = always SurfaceMarchSteps
+		float SurfaceMaxTexel = 0.25f;   // coarsest cascade texel used for the surface, in units of CloudShapeScale, [0, 16]
 		// Step 29
 		double WeatherRefreshSeconds = 600.0;   // tiles older than this weather time (game s) are regenerated; 0 = never
 	};
