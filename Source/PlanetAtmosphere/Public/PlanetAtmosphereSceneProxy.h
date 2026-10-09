@@ -62,6 +62,9 @@ public:
 	const float CloudDensity;
 	const double CloudShapeScaleUU;
 	const float CloudErosion;
+	const double CloudClusterScaleUU;       // Step 32
+	const double CloudMesoScaleUU;
+	const double CloudFairWeatherDepthUU;
 	const int32 RaymarchSteps;
 	const float CloudSkyAmbientScale;
 	const FPlanetAtmosphereScattering ScatteringUU;

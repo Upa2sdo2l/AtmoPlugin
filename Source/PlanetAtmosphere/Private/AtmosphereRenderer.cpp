@@ -228,6 +228,7 @@ namespace PlanetAtmosphere
 
 			const int32 NumAtmospheres = FMath::Min(Instances.Num(), CVars::GetMaxVisible());
 			OutParameters.NumAtmospheres = NumAtmospheres;
+			OutParameters.CloudTopClamp = CVars::IsCloudTopClampEnabled() ? 1 : 0;
 
 			const FVector4f Zero(0.0f, 0.0f, 0.0f, 0.0f);
 			const FVector4f NoWeather(-1.0f, 0.0f, 0.0f, 0.0f);
@@ -250,6 +251,7 @@ namespace PlanetAtmosphere
 					OutParameters.AtmosphereLutInfo[Index] = Zero;
 					OutParameters.AtmosphereWeatherInfo[Index] = NoWeather;
 					OutParameters.AtmosphereWeatherClimate[Index] = Zero;
+					OutParameters.AtmosphereCloudData[Index] = Zero;
 					continue;
 				}
 
@@ -294,6 +296,12 @@ namespace PlanetAtmosphere
 					static_cast<float>(RaymarchSteps),
 					static_cast<float>(LightSteps),
 					Instance.CloudSkyAmbientScale);
+				// Step 32: cloud levels of the multi-scale density (CloudDensity.ush).
+				OutParameters.AtmosphereCloudData[Index] = FVector4f(
+					static_cast<float>(Instance.CloudClusterScaleUU),
+					static_cast<float>(Instance.CloudMesoScaleUU),
+					static_cast<float>(Instance.CloudFairWeatherDepthUU),
+					0.0f);
 				OutParameters.AtmosphereAxisX[Index] = ToAxis4f(Instance.PlanetAxisX);
 				OutParameters.AtmosphereAxisY[Index] = ToAxis4f(Instance.PlanetAxisY);
 				OutParameters.AtmosphereAxisZ[Index] = ToAxis4f(Instance.PlanetAxisZ);
@@ -490,6 +498,7 @@ namespace PlanetAtmosphere
 			FillMarchParameters(*Parameters);
 			Parameters->BaseNoiseTexture = NoiseTextures.BaseShape;
 			Parameters->ErosionNoiseTexture = NoiseTextures.Erosion;
+			Parameters->DetailNoiseTexture = NoiseTextures.Detail;
 			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 			Parameters->NoiseSource = static_cast<int32>(CVars::GetNoiseSource());
 			Parameters->NoiseFootprintScale = CVars::GetNoiseFootprintScale();

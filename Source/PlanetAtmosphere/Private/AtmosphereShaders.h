@@ -59,6 +59,10 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	// Weather climate (Step 28): x = mean temperature K, y = equator - pole difference K, z = thermal equator (rad) at the
 	// current weather time, w unused (zonal temperature for DebugMode 17)
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereWeatherClimate, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// Clouds (Phase 6 / Step 32, CloudDensity.ush): x = cluster scale, y = meso scale, z = fair-weather depth (cm).
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereCloudData, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// r.PlanetAtmosphere.CloudTopClamp (Step 32): marches end at the deepest clouds the weather allows.
+	SHADER_PARAMETER(int32, CloudTopClamp)
 END_SHADER_PARAMETER_STRUCT()
 
 /**
@@ -174,6 +178,7 @@ public:
 		// Noise (Phase 2 / Step 10). PlanetAtmosphereNoise.ush. Textures are bound for both sources.
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, BaseNoiseTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, ErosionNoiseTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, DetailNoiseTexture)   // Step 32: Worley billows
 		SHADER_PARAMETER_SAMPLER(SamplerState, NoiseSampler)
 		SHADER_PARAMETER(int32, NoiseSource)
 		// Density LOD (Phase 2 / Step 12): multiplier of the pixel footprint used for noise octave fading.
@@ -288,6 +293,7 @@ public:
 		// Same noise inputs as the raymarch (PlanetAtmosphereNoise.ush).
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, BaseNoiseTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, ErosionNoiseTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, DetailNoiseTexture)   // Step 32: Worley billows
 		SHADER_PARAMETER_SAMPLER(SamplerState, NoiseSampler)
 		SHADER_PARAMETER(int32, NoiseSource)
 		// r.PlanetAtmosphere.NoiseFootprintScale: noise octaves fade at this fraction of the texel size (prototype: 1/4).
@@ -464,6 +470,7 @@ public:
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float>, OutNoise)
 		SHADER_PARAMETER(int32, MipSize)
 		SHADER_PARAMETER(int32, Octaves)
+		SHADER_PARAMETER(int32, NoiseKind)   // 0 = fBm, 1 = Worley fBm (Step 32 detail)
 		SHADER_PARAMETER(float, TexelSize)
 	END_SHADER_PARAMETER_STRUCT()
 };

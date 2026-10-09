@@ -31,13 +31,20 @@ float PA_CloudPhase(float CosTheta)
 
 /**
  * Length of the light march from P (planet-relative, world axes, altitude known) toward the sun: up to the cloud-top
- * exit, at most MaxLength.
+ * exit, at most MaxLength. Step 32: the top is the deepest cloud the weather allows along the path
+ * (PA_CloudRayTopAltitude), so the few light samples stay inside a shallow cloud instead of spreading over the layer.
  */
-float PA_CloudSunMarchLength(FPAAtmosphere A, float3 P, float Altitude, float3 SunDirection, float MaxLength)
+float PA_CloudSunMarchLength(FPAAtmosphere A, FPACloudLayer Layer, float3 P, float Altitude, float3 SunDirection, float MaxLength)
 {
 	// Exit of the cloud-top sphere along the sun direction (precision-safe form, sample altitude known).
 	const float2 TopHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudTop);
-	return min(max(TopHit.y, 0.0), MaxLength);
+	float Exit = max(TopHit.y, 0.0);
+	const float Top = PA_CloudRayTopAltitude(A, Layer, P, SunDirection, 0.0, min(Exit, MaxLength));
+	if (Top < A.CloudTop)
+	{
+		Exit = max(PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, Top).y, 0.0);
+	}
+	return min(Exit, MaxLength);
 }
 
 /**
@@ -87,7 +94,7 @@ float PA_CloudSunTransmittance(
 	float BaseFootprint, int NumSteps,
 	inout uint NumDensitySamples)
 {
-	const float MarchLength = PA_CloudSunMarchLength(A, P, Altitude, SunDirection, 3.0 * Layer.Thickness);
+	const float MarchLength = PA_CloudSunMarchLength(A, Layer, P, Altitude, SunDirection, 3.0 * Layer.Thickness);
 	return exp(-PA_CloudSunOpticalDepth(A, Layer, P, SunDirection, BaseFootprint, NumSteps, MarchLength, NumDensitySamples));
 }
 
@@ -109,8 +116,14 @@ float PA_CloudLayerCrossingOpticalDepth(
 	inout uint NumDensitySamples)
 {
 	const float2 BottomHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudBottom);
-	const float2 TopHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudTop);
+	float2 TopHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, A.CloudTop);
 	const float Start = max(BottomHit.y, 0.0);
+	// Step 32: only up to the deepest clouds the weather allows along the crossing.
+	const float Top = PA_CloudRayTopAltitude(A, Layer, P, SunDirection, Start, max(TopHit.y, Start));
+	if (Top < A.CloudTop)
+	{
+		TopHit = PA_RaySphereIntersect(P, SunDirection, A.PlanetRadius, Altitude, Top);
+	}
 	const float Length = max(TopHit.y, 0.0) - Start;
 	if (Length <= 0.0 || MaxSteps <= 0)
 	{

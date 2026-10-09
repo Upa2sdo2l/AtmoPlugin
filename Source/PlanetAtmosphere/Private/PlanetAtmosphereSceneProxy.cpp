@@ -15,6 +15,9 @@ FPlanetAtmosphereSceneProxy::FPlanetAtmosphereSceneProxy(const UPlanetAtmosphere
 	, CloudDensity(FMath::Clamp(InComponent->CloudDensity, 0.0f, 10.0f))
 	, CloudShapeScaleUU(FMath::Clamp(InComponent->CloudShapeScale, 100.0, 1000000.0) * PlanetAtmosphere::MetersToUnrealUnits)
 	, CloudErosion(FMath::Clamp(InComponent->CloudErosion, 0.0f, 1.0f))
+	, CloudClusterScaleUU(FMath::Clamp(InComponent->CloudClusterScale, 1000.0, 10000000.0) * PlanetAtmosphere::MetersToUnrealUnits)
+	, CloudMesoScaleUU(FMath::Clamp(InComponent->CloudMesoScale, 100.0, 1000000.0) * PlanetAtmosphere::MetersToUnrealUnits)
+	, CloudFairWeatherDepthUU(FMath::Clamp(InComponent->CloudFairWeatherDepth, 50.0, 100000.0) * PlanetAtmosphere::MetersToUnrealUnits)
 	, RaymarchSteps(FMath::Clamp(InComponent->RaymarchSteps, 16, 256))
 	, CloudSkyAmbientScale(FMath::Clamp(InComponent->CloudSkyAmbientScale, 0.0f, 100.0f))
 	, ScatteringUU(InComponent->GetValidatedScatteringUU())
@@ -81,6 +84,9 @@ FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() co
 	Instance.CloudDensity = CloudDensity;
 	Instance.CloudShapeScaleUU = CloudShapeScaleUU;
 	Instance.CloudErosion = CloudErosion;
+	Instance.CloudClusterScaleUU = CloudClusterScaleUU;
+	Instance.CloudMesoScaleUU = CloudMesoScaleUU;
+	Instance.CloudFairWeatherDepthUU = CloudFairWeatherDepthUU;
 	Instance.RaymarchSteps = RaymarchSteps;
 	Instance.CloudSkyAmbientScale = CloudSkyAmbientScale;
 	Instance.ScatteringUU = ScatteringUU;

@@ -105,8 +105,9 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.Jitter` | 2 | 0 = off (banding), 1 = static per-pixel pattern, 2 = animated per frame (averaged by TSR while still) |
 | `r.PlanetAtmosphere.EmptySpaceSkip` | 0 | Coarse probes over N steps in clear air (2..8); off by default — loses thin clouds |
 | `r.PlanetAtmosphere.MinTransmittance` | 0.01 | The view ray stops below this transmittance |
-| `r.PlanetAtmosphere.NoiseSource` | 1 | 0 = procedural Phase 1 noise (reference / fallback), 1 = baked 3D textures |
-| `r.PlanetAtmosphere.NoiseFootprintScale` | 0.25 | Density LOD: noise octaves fade at this fraction of the pixel footprint; sub-pixel detail is averaged by TSR over frames, so distant planets keep their clouds. 1 = Phase 1 (distant clouds fade out) |
+| `r.PlanetAtmosphere.NoiseSource` | 1 | 0 = procedural noise (reference / fallback, slow), 1 = baked 3D textures |
+| `r.PlanetAtmosphere.CloudTopClamp` | 1 | Step 32: marches end at the deepest clouds the weather allows along them; paths needing more than 17 bound points (limb, grazing sun) use the whole layer (Step 32a); 0 = the whole cloud layer (A/B) |
+| `r.PlanetAtmosphere.NoiseFootprintScale` | 1 | Density LOD footprint = this × the sample spacing (pixel × `Temporal.Interleave`); cascades: × their texel. 1 since Step 32a: detail smaller than a traced sample is prefiltered (Step 32 effective medium keeps distant cover). < 1 = sharper but grainy (0.25 before Step 32a: grain from orbit, noise at interleave 3) |
 | `r.PlanetAtmosphere.LightLOD` | 1 | Fewer light-march steps where the pixel is large vs the cloud layer (sub-pixel self-shadowing) |
 | `r.PlanetAtmosphere.LightLOD.FullDetailFootprint` | 0.0625 | Pixel footprint (× layer thickness) up to which the full LightSteps are used |
 | `r.PlanetAtmosphere.LightLOD.MinDetailFootprint` | 1.0 | Pixel footprint (× layer thickness) from which `LightLOD.MinLightSteps` are used |
@@ -135,12 +136,12 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudShadows.CrossfadeFrames` | 16 | Frames of the crossfade to the rebuilt set (0 = switch at once) |
 | `r.PlanetAtmosphere.CloudShadows.Surface` | 1 | Cloud shadows on the direct sunlight of the placeholder surface (Step 24); 0 = off (A/B). Scene geometry is not shadowed |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps` | 12 | Minimum samples of the march from a surface point through the cloud layer toward the sun, where the cascades are too coarse (from high up / orbit) and on planets without cascades (1..64; prototype worst-case error 8 → 7.4, 12 → 3.5, 16 → 2.4) |
-| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep` | 0.125 | Longest step of that march, × `CloudShapeScale` (1 km at 8 km): long low-sun paths get more steps, otherwise the shadows turn into too-bright "ladders" (sun 8°: 12 fixed steps 9.5, ≤ 1 km steps 0.8). 0 = always `SurfaceMarchSteps` |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep` | 0.5 | Longest step of that march, × `CloudShapeScale` (350 m at the Step 32 default 700 m; was 0.125 = 1 km at the old 8 km): long low-sun paths get more steps, otherwise the shadows turn into too-bright "ladders" (Step 24 prototype, sun 8°: 12 fixed steps 9.5, ≤ 1 km steps 0.8). 0 = always `SurfaceMarchSteps` |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps` | 48 | Upper limit of those steps |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchJitter` | 1 | Per-pixel animated jitter of those samples (0 = step centres, A/B) |
-| `r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel` | 0.0625 | Coarsest cascade texel used on the surface, × the planet's `CloudShapeScale` (1/16 = 500 m at 8 km); coarser → march. 0 = always march |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel` | 0.25 | Coarsest cascade texel used on the surface, × the planet's `CloudShapeScale` (175 m at the Step 32 default 700 m; was 1/16 = 500 m at the old 8 km); coarser → march. 0 = always march |
 | `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 6 Res RGBA16F (two sets of 3 cascades, Step 25), 12 MB per view at 512 |
-| `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Density samples per cascade texel along the sun through the cloud shell (8..128) |
+| `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Minimum density samples per cascade texel along the sun through the cloud shell (8..128); Step 32a: more on long paths (steps ≤ 0.1 × `CloudShapeScale`, up to 128) at a static per-texel jitter |
 | `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 32 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades: RTX 3050 frame peaks 8 → 0.11 ms, 16 → 0.14 ms, 32 → 0.23 ms; 32 fills all cascades in 24 frames |
 | `r.PlanetAtmosphere.CloudShadows.WeatherRefresh` | 600 | Step 29: cascade tiles generated more than this many game seconds of weather time ago are regenerated (after the missing tiles of both sets, within `UpdateBudget`); 0 = never |
 | `r.PlanetAtmosphere.CloudShadows.MinExtent` | 8 | Half-size of cascade 0 near the cloud layer, km; grows with the camera height in powers of two; cascade i = × 4^i |
@@ -209,16 +210,9 @@ over long times.
   spread over the frames left before it is needed (estimated from the previous frame's time step), so it never has to
   be built synchronously as long as a snapshot lasts at least one frame (faster than that: increase `SnapshotInterval`).
   Storm winds fade out between 2.5 and 4 storm radii (before: a circular jump of up to ~10 m/s at the 4-radius cut).
-- **Clouds** (Step 29): the weather's cloud water C (interpolated between the two snapshots) sets the **local
-  coverage** of the existing procedural cloud mask, which keeps breaking the cloud edges at ~6× `CloudShapeScale` at
-  every distance. `CloudCoverage` becomes a scale on the weather: 0.5 (default) = the weather as it is, 0 = no clouds,
-  1 = overcast; in between C is pushed toward 0 or 1 (`C · Coverage / 0.5` below 0.5, `1 − (1 − C)(1 − Coverage) / 0.5`
-  above). Where the local coverage exceeds 0.6 the mask is boosted up to 1.5×, so storm cores and fronts become
-  overcast. Prototype p29 (mean column opacity near the camera / from far): C 0.3 → 0.15 / 0.05, 0.5 → 0.35 / 0.36,
-  0.7 → 0.58 / 0.85, 1.0 → 0.95 / 1.0 (the far image is sharper, as was the case before with a constant coverage).
-  For a cloudier Earth-like look set `CloudCoverage` ~0.65. Same density function everywhere (raymarch, cloud shadow
-  cascades, surface shadows); `Weather 0` or a planet beyond `Weather.MaxPlanets`: the constant `CloudCoverage` as before.
-  Cost: two bilinear atlas reads per density sample inside the cloud layer.
+- **Clouds** (Step 29, replaced by the Phase 6 multi-scale density of Step 32, see below): the weather's cloud water
+  sets the cloud amount; `CloudCoverage` is a scale on the weather: 0.5 (default) = the weather as it is, 0 = no
+  clouds, 1 = overcast (`C · Coverage / 0.5` below 0.5, `1 − (1 − C)(1 − Coverage) / 0.5` above).
 - Cloud shadow cascades follow the weather: every tile records the weather time it was generated at and is regenerated
   when it is older than `CloudShadows.WeatherRefresh` (default one snapshot interval), through the same queue and budget
   after the missing tiles. A large jump of the weather clock therefore re-lights the shadows progressively (tiles of the
@@ -259,13 +253,59 @@ over long times.
 - CPU: `stat PlanetAtmosphere` → Find Sun Light (GT), Gather Visible Atmospheres (RT), Setup Passes (RT), Weather Update (RT).
 - Per-frame log: `log LogPlanetAtmosphere Verbose` (incl. LUT cache rebuilds); screen radius and LOD steps per atmosphere: `log LogPlanetAtmosphere VeryVerbose`.
 
+## Multi-scale cloud density (Phase 6 / Step 32)
+
+Goal (visual-target, multi-scale principle): beautiful clouds from the surface AND beautiful cloud structures from
+orbit; every distance shows its own scale. `CloudDensity.ush` builds the density from five levels; each one only
+changes the cloud FRACTION at distances where it is not resolved:
+
+| Level | Scale (default) | What it does |
+|---|---|---|
+| Weather | atlas (hundreds–thousands km) | contrast curve cloud water → cloud fraction (clear zones clear, masses overcast, ~55 % of an Earth-like planet at `CloudCoverage` 0.5); storm factor: shallow fair-weather clouds (`CloudFairWeatherDepth` 600 m) → deep storm clouds up to the cloud top |
+| Clusters | `CloudClusterScale` 100 km | soft local cloud fraction: clouds thin out toward the edge of a cluster, never sliced |
+| Meso cells | `CloudMesoScale` 12 km | open / closed cells in the decks, relief of the tops (low orbit); faded before it reaches the pixel size (it would read as grain from orbit) |
+| Clouds | `CloudShapeScale` 700 m | vertically coherent noise, flat bases, domed tops; ragged bases under storms |
+| Billows | 0.25 × `CloudShapeScale` | Worley detail (new 64³ texture), billowy at the base, wispy toward the top (`CloudErosion`) |
+
+- Thresholds come from quantile tables of the noise, so the cloud fraction is what the weather asks for.
+- **Effective medium** where the clouds are smaller than the footprint: the sample returns the density of a pixel
+  that is a fraction f covered by clouds of optical depth τ over the local cloud depth,
+  σ = −ln(1 − f (1 − e^−τ)) / depth, distributed over the height like the cover. The cloud amount stays the same from
+  50 m to 16 km pixels (prototype p31: spread ≤ 0.05; Phase 5: up to 0.27) and a far planet shows the weather
+  pattern without "salt". The light march and the cloud shadow cascades use the same function, so they stay consistent.
+- `r.PlanetAtmosphere.CloudTopClamp` 1: view rays, light marches, surface shadow marches and cascade texels end at the
+  deepest clouds the weather allows along them (`PA_CloudMaxTopAltitude`), so a 0.6 km fair-weather field does not
+  share its samples with ~7 km of empty layer (prototype, 24 steps: ground view opacity error 0.061 → 0.003).
+- `Weather 0`: the same levels with `CloudCoverage` as the cloud fraction everywhere (fair-weather clouds; deeper above
+  0.8).
+- New defaults (Earth-like, reference 3 of the visual target): cloud bottom 2.5 km / top 10 km above the planet,
+  `CloudShapeScale` 700 m, `CloudDensity` 0.4, `CloudErosion` 1. Actors that kept the old defaults change with them.
+- Prototype p31 (views E → D next to the references, simplified lighting): from orbit the weather masses instead of the
+  procedural 48 km mask (share of the opacity variance at > 300 km 0.22 → 0.88, < 50 km 0.29 → 0.02), per-frame
+  "salt" 0.24 → 0.03, from the surface a field of individual clouds (sky cover 0.59; reference 3 ~0.64). The shader
+  file compiled on the CPU matches the prototype (400 000 samples: mean |Δ density| 3e-4).
+- Step 32a (fixes after the UE test, verified with toggles in UE):
+  - bands along the limb / light leaks at the terminator (`CloudTopClamp 0` removed them): a path that needs more than
+    17 bound points (points farther apart than half a weather texel miss storm peaks) gets no bound;
+  - `CloudTopClamp 1` cost more than it saved (Raymarch 4.43 vs 3.71 ms): the short local light march of the hybrid
+    lighting bounds itself with one weather sample at its start (the cascades carry the rest of the path);
+  - grain from orbit and noise at interleave 3 (`NoiseFootprintScale 1` removed it): the density LOD footprint is the
+    traced sample spacing (pixel × interleave × `NoiseFootprintScale`, default now 1), the scale Step 31 calibrated;
+  - horizontal bands inside the clouds at low sun (`CloudShadows.Lighting 0` removed them, `GenerationSteps 128` made
+    them finer): cascade texels sampled at fixed altitudes, stacking a small cloud's slices; now steps ≤ 0.1 × shape
+    scale (32..128) at a static per-texel jitter. The cascade pass may cost up to ~2× per frame at low sun while
+    regenerating (`UpdateBudget` limits it).
+- Not yet: filaments, spiral arms, streets along the wind (transport, Steps 33–34); white clouds, bright edges, the
+  terminator (Phase 7); the cloud-level shape is thresholded fBm and looks crumpled from the ground — cellular
+  cumulus shapes with heterogeneous edges are Step 32b.
+
 ## Noise textures
 
-Base shape (128³, 5 mips) and erosion (64³, 4 mips) noise are tileable 3D R16F textures, 5 392 384 bytes of texel
-data in total. They are baked once on the GPU on first use (`PlanetAtmosphere.BakeNoise` passes; the log prints the
+Base shape (128³, 5 mips), erosion (64³, 4 mips) and, since Step 32, Worley detail (64³, 4 mips) noise are tileable 3D
+R16F textures, 5 991 424 bytes of texel data in total. They are baked once on the GPU on first use (`PlanetAtmosphere.BakeNoise` passes; the log prints the
 actual allocation), shared by all worlds and planets, and released at module shutdown. Every mip holds the noise
 with the octaves that survive one texel of footprint, so the mip level replaces the per-octave fade of the
-procedural noise. The weather mask stays procedural (planet-unique). `NoiseSource 0` restores the Phase 1 noise.
+procedural noise. `NoiseSource 0` evaluates the same noise procedurally (reference; much slower).
 
 ## Atmosphere LUT cache (Step 16)
 
@@ -311,6 +351,11 @@ Raymarch, debug views and the cloud shadow cascades call `PA_SampleCloudDensity(
 and never re-implement any part of it. Cheaper variants go through the LOD (footprint) argument of the same function.
 
 ## Current Status
+
+**Phase 6 — Step 32: multi-scale cloud density** (merged with the Step 32a fixes; UE re-test together with Step 32b) —
+weather / clusters / meso cells / clouds / billows, effective medium for unresolved clouds (same cloud amount at every
+distance), cloud-top clamp of the marches, Worley detail texture, new Earth-like cloud defaults (see "Multi-scale cloud
+density").
 
 **Phase 5 closed (Steps 26–30)** — planetary weather on the GPU: deterministic model C (climatology, storms, synoptic
 noise; pure function of seed, weather time and planet parameters), cube-sphere snapshots per planet with background
@@ -455,7 +500,8 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 6 (advection, transported noise coordinates, weather-driven density) — separate plan, prototype first.
+Next: Phase 6 — Step 32b (prototype: cellular cumulus shapes with heterogeneous edges instead of the crumpled fBm
+threshold), then Step 33 (transport by the wind: flow map with replay vs backtrace vs zonal only).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies

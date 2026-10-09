@@ -80,6 +80,7 @@ namespace
 			Parameters->ShadowGenerationSteps = GenerationSteps;
 			Parameters->BaseNoiseTexture = Inputs.Noise.BaseShape;
 			Parameters->ErosionNoiseTexture = Inputs.Noise.Erosion;
+			Parameters->DetailNoiseTexture = Inputs.Noise.Detail;
 			Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
 			Parameters->NoiseSource = static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource());
 			Parameters->NoiseFootprintScale = PlanetAtmosphere::CVars::GetNoiseFootprintScale();
@@ -166,7 +167,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 
 	const PlanetAtmosphere::CVars::FCloudShadowSettings Settings = PlanetAtmosphere::CVars::GetCloudShadowSettings();
 	if (!IsInitialized() || !Settings.bEnabled || View.State == nullptr
-		|| !Inputs.Sun.bValid || Inputs.Noise.BaseShape == nullptr || Inputs.Noise.Erosion == nullptr)
+		|| !Inputs.Sun.bValid || Inputs.Noise.BaseShape == nullptr || Inputs.Noise.Erosion == nullptr || Inputs.Noise.Detail == nullptr)
 	{
 		return nullptr;
 	}
@@ -236,7 +237,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 
 	// ---- What the content depends on: the planet, its cloud layer (bitwise, as packed for the shader), noise, generation
 	// and extent settings. Any change starts both sets over (there is nothing valid to keep showing). ----
-	FVector4f ContentKey[3];
+	FVector4f ContentKey[4];
 	ContentKey[0] = FVector4f(
 		InstanceParameters.AtmosphereData0[Index].W, InstanceParameters.AtmosphereData1[Index].W,
 		InstanceParameters.AtmosphereData2[Index].X, InstanceParameters.AtmosphereData2[Index].Y);
@@ -247,6 +248,9 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		static_cast<float>(static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource())), PlanetAtmosphere::CVars::GetNoiseFootprintScale(),
 		static_cast<float>(Settings.GenerationSteps),
 		InstanceParameters.AtmosphereWeatherInfo[Index].X >= 0.0f ? 1.0f : 0.0f);   // Step 29: the planet has weather
+	ContentKey[3] = FVector4f(   // Step 32: cloud levels + top clamp
+		InstanceParameters.AtmosphereCloudData[Index].X, InstanceParameters.AtmosphereCloudData[Index].Y,
+		InstanceParameters.AtmosphereCloudData[Index].Z, static_cast<float>(InstanceParameters.CloudTopClamp));
 	const bool bSamePlanet = Entry.bHasPlanet && Entry.PlanetId == Planet.PlanetId;
 	const bool bSameWeather = PlanetAtmosphere::Weather::SameParameters(Entry.Weather, Planet.Weather);
 	if (!bSamePlanet || !bSameWeather || FMemory::Memcmp(Entry.ContentKey, ContentKey, sizeof(ContentKey)) != 0)

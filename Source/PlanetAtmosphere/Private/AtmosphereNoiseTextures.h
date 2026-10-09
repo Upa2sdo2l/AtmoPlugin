@@ -19,6 +19,8 @@ namespace PlanetAtmosphere::NoiseTextures
 	constexpr int32 ErosionSize = 64;    // 64^3 R16F, mips 64..8    ->   599 040 bytes of texel data
 	constexpr int32 ErosionOctaves = 2;
 	constexpr int32 ErosionNumMips = 4;
+	constexpr int32 DetailSize = 64;     // Step 32: Worley fBm, 64^3 R16F, mips 64..8 -> 599 040 bytes of texel data
+	constexpr int32 DetailNumMips = 4;
 	constexpr float TileSize = 4.0f;     // PA_NOISE_TILE: noise units covered by one texture repeat
 }
 
@@ -27,6 +29,7 @@ struct FPlanetAtmosphereNoiseTexturesRDG
 {
 	FRDGTextureRef BaseShape = nullptr;
 	FRDGTextureRef Erosion = nullptr;
+	FRDGTextureRef Detail = nullptr;   // Step 32
 };
 
 /**
@@ -58,10 +61,11 @@ public:
 	virtual void ReleaseRHI() override;
 
 private:
-	/** Guards the two pointers in case views are set up from more than one thread. */
+	/** Guards the pointers in case views are set up from more than one thread. */
 	FCriticalSection Mutex;
 	TRefCountPtr<IPooledRenderTarget> BaseShape;
 	TRefCountPtr<IPooledRenderTarget> Erosion;
+	TRefCountPtr<IPooledRenderTarget> Detail;
 };
 
 namespace PlanetAtmosphere

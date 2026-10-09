@@ -122,18 +122,27 @@ namespace
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereNoiseSource(
 		TEXT("r.PlanetAtmosphere.NoiseSource"),
 		1,
-		TEXT("Source of the cloud base-shape and erosion noise (the weather mask is always procedural).\n")
-		TEXT(" 0 = Procedural (Phase 1 noise, reference and fallback)\n")
-		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 R16F, baked once on the GPU"),
+		TEXT("Source of the cloud noise (base shape for the cluster / meso / cloud levels, erosion, Worley detail).\n")
+		TEXT(" 0 = Procedural (reference and fallback; much slower, the Worley detail especially)\n")
+		TEXT(" 1 = Baked tileable 3D textures (default): 128^3 + 64^3 + 64^3 R16F, baked once on the GPU"),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereNoiseFootprintScale(
 		TEXT("r.PlanetAtmosphere.NoiseFootprintScale"),
-		0.25f,
-		TEXT("Noise octaves fade at this fraction of the pixel footprint (density LOD, Step 12).\n")
-		TEXT("< 1: sub-pixel cloud detail is point-sampled and averaged over frames by TSR / temporal accumulation,\n")
-		TEXT("so distant planets keep their cloud cover (unbiased). Costs a little more far away and shimmers more while\n")
-		TEXT("the camera moves (until Phase 3 temporal). 1 = Phase 1 behaviour (clouds of distant planets fade out). Clamped to [0.01, 1]."),
+		1.0f,
+		TEXT("Cloud density LOD footprint = this x the sample spacing (pixel x r.PlanetAtmosphere.Temporal.Interleave); the cloud\n")
+		TEXT("shadow cascades use this x their texel. 1 (default since Step 32a): detail smaller than a traced sample is prefiltered,\n")
+		TEXT("unresolved clouds become the Step 32 effective medium, so distant cover is kept without point-sampled grain.\n")
+		TEXT("< 1: sharper but grainy / flickering (sub-sample detail point-sampled; UE test: grain from orbit, noise at\n")
+		TEXT("interleave 3 with 0.25, the pre-Step 32a default). Clamped to [0.01, 1]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudTopClamp(
+		TEXT("r.PlanetAtmosphere.CloudTopClamp"),
+		1,
+		TEXT("Step 32: view rays, light marches, surface shadow marches and cloud shadow cascades end at the deepest clouds the\n")
+		TEXT("weather allows along them instead of the cloud-layer top (a 0.6 km fair-weather field otherwise shares its samples\n")
+		TEXT("with ~7 km of empty layer). 1 = on (default), 0 = march the whole layer (A/B)."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightLOD(
@@ -296,7 +305,9 @@ namespace
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudShadowsGenerationSteps(
 		TEXT("r.PlanetAtmosphere.CloudShadows.GenerationSteps"),
 		32,
-		TEXT("Density samples per cascade texel along the sun through the cloud shell (Step 21 prototype: 16 -> +0.4 pt error).\n")
+		TEXT("Minimum density samples per cascade texel along the sun through the cloud shell (Step 21 prototype: 16 -> +0.4 pt\n")
+		TEXT("error). Step 32a: more where the path is long - steps of at most 0.1 x CloudShapeScale, up to 128 - at a static\n")
+		TEXT("per-texel jitter (fixed step centres stacked a small cloud's slices into horizontal bands at low sun).\n")
 		TEXT("Clamped to [8, 128]. A change regenerates every cascade."),
 		ECVF_RenderThreadSafe);
 
@@ -374,8 +385,9 @@ namespace
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSurfaceMarchMaxStep(
 		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep"),
-		0.125f,
-		TEXT("Longest step of the surface march, in units of the planet's CloudShapeScale (0.125 = 1 km at the default 8 km):\n")
+		0.5f,
+		TEXT("Longest step of the surface march, in units of the planet's CloudShapeScale (0.5 = 350 m at the Step 32 default 700 m;\n")
+		TEXT("was 0.125 = 1 km at the old 8 km; unresolved clouds are an effective medium since Step 32, so the stamps are weaker):\n")
 		TEXT("steps = path through the layer / this, within [SurfaceMarchSteps, SurfaceMarchMaxSteps]. Longer steps at low sun\n")
 		TEXT("make \"ladder\" shadows that are too bright (prototype, sun 8 deg: 12 fixed steps 9.5, 1 km steps 0.8). 0 = always\n")
 		TEXT("SurfaceMarchSteps. Clamped to [0, 4]."),
@@ -397,9 +409,9 @@ namespace
 
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsSurfaceMaxTexel(
 		TEXT("r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel"),
-		0.0625f,
-		TEXT("Coarsest cascade texel used for surface shadows, in units of the planet's CloudShapeScale (0.0625 = 1/16, i.e.\n")
-		TEXT("500 m at the default 8 km); surface points whose cascade is coarser are marched (SurfaceMarchSteps). 0 = always\n")
+		0.25f,
+		TEXT("Coarsest cascade texel used for surface shadows, in units of the planet's CloudShapeScale (0.25 = 175 m at the Step 32\n")
+		TEXT("default 700 m; was 0.0625 = 500 m at the old 8 km); surface points whose cascade is coarser are marched (SurfaceMarchSteps). 0 = always\n")
 		TEXT("march. Clamped to [0, 16]."),
 		ECVF_RenderThreadSafe);
 
@@ -568,6 +580,11 @@ namespace PlanetAtmosphere::CVars
 		return CVarPlanetAtmosphereNoiseSource.GetValueOnAnyThread(false) == 0
 			? ENoiseSource::Procedural
 			: ENoiseSource::BakedTextures;
+	}
+
+	bool IsCloudTopClampEnabled()
+	{
+		return CVarPlanetAtmosphereCloudTopClamp.GetValueOnAnyThread(false) != 0;
 	}
 
 	float GetNoiseFootprintScale()

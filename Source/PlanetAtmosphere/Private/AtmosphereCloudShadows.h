@@ -134,7 +134,7 @@ private:
 		int32 Resolution = 0;
 		bool bHasPlanet = false;
 		uint32 PlanetId = 0;
-		FVector4f ContentKey[3];
+		FVector4f ContentKey[4];
 		uint32 RoundRobin = 0;
 		uint32 LastUsedFrame = 0;
 		bool bUsed = false;
