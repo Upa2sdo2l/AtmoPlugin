@@ -184,9 +184,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", AdvancedDisplay, meta = (ClampMin = "100.0", ClampMax = "1000000.0"))
 	double CloudMesoScale = 12000.0;
 
-	/** Step 32: depth in meters of the fair-weather clouds (flat bases at the cloud bottom); storms grow up to the cloud top. */
+	/**
+	 * Step 32: depth in meters of the fair-weather clouds (flat bases at the cloud bottom); storms grow up to the cloud top.
+	 * Step 32b default 800 m (was 600): puffier cumulus, sky cover from the ground ~0.6 as in reference 3.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "50.0", ClampMax = "100000.0"))
-	double CloudFairWeatherDepth = 600.0;
+	double CloudFairWeatherDepth = 800.0;
 
 	/**
 	 * Strength of the sky light on the clouds (Step 15). With the atmosphere on, cloud ambient light is the sky radiance

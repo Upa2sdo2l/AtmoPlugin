@@ -105,12 +105,14 @@ float PA_Fbm(float3 P, int Octaves, float FootprintInNoiseUnits)
 #define PA_EROSION_NOISE_SIZE 64
 #define PA_EROSION_NOISE_OCTAVES 2
 #define PA_EROSION_NOISE_MAX_MIP 3   // mips 0..3 (64..8); mip 3 = zeros
-#define PA_DETAIL_NOISE_SIZE 64      // Step 32: Worley detail (billows), PA_WorleyFbmPeriodic
-#define PA_DETAIL_NOISE_MAX_MIP 3    // mips 0..3 (64..8); mips 2..3 = zeros
+#define PA_DETAIL_NOISE_SIZE 128     // Step 32: Worley detail (billows), PA_WorleyFbmPeriodic; Step 32b: 64 -> 128 (third octave)
+#define PA_DETAIL_NOISE_MAX_MIP 4    // mips 0..4 (128..8); mips 3..4 = zeros
 
 // Step 32: standard deviation of the baked base noise per mip (measured on the bake; CPU prototype p31). The density uses
 // the part removed by the LOD (sqrt(std0^2 - std(lod)^2)) to keep the cloud fraction at every distance.
 static const float PA_BASE_NOISE_MIP_STD[5] = { 0.183483, 0.182397, 0.178090, 0.157111, 0.0 };
+// Step 32b: the same for the baked Worley detail noise (128^3; CPU prototype p32b).
+static const float PA_DETAIL_NOISE_MIP_STD[5] = { 0.200126, 0.196710, 0.182032, 0.0, 0.0 };
 
 float PA_GradientNoisePeriodic(float3 P, int Period)
 {
@@ -276,6 +278,22 @@ float PA_SampleDetailNoise(float3 P, float FootprintInNoiseUnits)
 	if (NoiseSource != 0)
 	{
 		return PA_SampleNoiseTexture(DetailNoiseTexture, P, FootprintInNoiseUnits, PA_DETAIL_NOISE_SIZE, PA_DETAIL_NOISE_MAX_MIP);
+	}
+	return PA_WorleyFbmPeriodic(P, FootprintInNoiseUnits);
+}
+
+/** Step 32b: Worley detail noise + the standard deviation of the octaves removed by the footprint LOD (as the base noise). */
+float PA_SampleDetailNoiseLod(float3 P, float FootprintInNoiseUnits, out float MissingStd)
+{
+	const float TexelsPerUnit = PA_DETAIL_NOISE_SIZE / PA_NOISE_TILE;
+	const float Lod = clamp(log2(max(FootprintInNoiseUnits * TexelsPerUnit, 1e-6)), 0.0, (float)PA_DETAIL_NOISE_MAX_MIP);
+	const int Lod0 = (int)Lod;
+	const int Lod1 = min(Lod0 + 1, PA_DETAIL_NOISE_MAX_MIP);
+	const float Std = lerp(PA_DETAIL_NOISE_MIP_STD[Lod0], PA_DETAIL_NOISE_MIP_STD[Lod1], Lod - (float)Lod0);
+	MissingStd = sqrt(max(PA_DETAIL_NOISE_MIP_STD[0] * PA_DETAIL_NOISE_MIP_STD[0] - Std * Std, 0.0));
+	if (NoiseSource != 0)
+	{
+		return DetailNoiseTexture.SampleLevel(NoiseSampler, P / PA_NOISE_TILE, Lod);
 	}
 	return PA_WorleyFbmPeriodic(P, FootprintInNoiseUnits);
 }
