@@ -19,8 +19,8 @@ namespace PlanetAtmosphere::NoiseTextures
 	constexpr int32 ErosionSize = 64;    // 64^3 R16F, mips 64..8    ->   599 040 bytes of texel data
 	constexpr int32 ErosionOctaves = 2;
 	constexpr int32 ErosionNumMips = 4;
-	constexpr int32 DetailSize = 64;     // Step 32: Worley fBm, 64^3 R16F, mips 64..8 -> 599 040 bytes of texel data
-	constexpr int32 DetailNumMips = 4;
+	constexpr int32 DetailSize = 128;    // Step 32: Worley fBm; Step 32b: 128^3 R16F, mips 128..8 -> 4 793 344 bytes of texel data
+	constexpr int32 DetailNumMips = 5;   // (the third Worley octave, ~45 m billows at CloudShapeScale 700 m, survives in mip 0)
 	constexpr float TileSize = 4.0f;     // PA_NOISE_TILE: noise units covered by one texture repeat
 }
 

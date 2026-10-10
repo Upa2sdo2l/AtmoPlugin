@@ -261,11 +261,11 @@ changes the cloud FRACTION at distances where it is not resolved:
 
 | Level | Scale (default) | What it does |
 |---|---|---|
-| Weather | atlas (hundreds–thousands km) | contrast curve cloud water → cloud fraction (clear zones clear, masses overcast, ~55 % of an Earth-like planet at `CloudCoverage` 0.5); storm factor: shallow fair-weather clouds (`CloudFairWeatherDepth` 600 m) → deep storm clouds up to the cloud top |
+| Weather | atlas (hundreds–thousands km) | contrast curve cloud water → cloud fraction (clear zones clear, masses overcast, ~55 % of an Earth-like planet at `CloudCoverage` 0.5); storm factor: shallow fair-weather clouds (`CloudFairWeatherDepth` 800 m since Step 32b) → deep storm clouds up to the cloud top |
 | Clusters | `CloudClusterScale` 100 km | soft local cloud fraction: clouds thin out toward the edge of a cluster, never sliced |
 | Meso cells | `CloudMesoScale` 12 km | open / closed cells in the decks, relief of the tops (low orbit); faded before it reaches the pixel size (it would read as grain from orbit) |
-| Clouds | `CloudShapeScale` 700 m | vertically coherent noise, flat bases, domed tops; ragged bases under storms |
-| Billows | 0.25 × `CloudShapeScale` | Worley detail (new 64³ texture), billowy at the base, wispy toward the top (`CloudErosion`) |
+| Clouds | `CloudShapeScale` 700 m | Step 32b: Worley cells (1.5 × shape) + Perlin distortion (1.37 × shape), vertically coherent: separate compact cumulus, flat bases, domed tops; ragged bases under storms |
+| Billows | 0.25 × `CloudShapeScale` | Worley detail (128³ since Step 32b, finest ~45 m), billowy at the base, wispy toward the top (`CloudErosion`); Step 32b: 1.5× stronger, billowy / ragged per region (~3 km), coordinates warped by the cell noises (torn fringes) |
 
 - Thresholds come from quantile tables of the noise, so the cloud fraction is what the weather asks for.
 - **Effective medium** where the clouds are smaller than the footprint: the sample returns the density of a pixel
@@ -274,7 +274,7 @@ changes the cloud FRACTION at distances where it is not resolved:
   50 m to 16 km pixels (prototype p31: spread ≤ 0.05; Phase 5: up to 0.27) and a far planet shows the weather
   pattern without "salt". The light march and the cloud shadow cascades use the same function, so they stay consistent.
 - `r.PlanetAtmosphere.CloudTopClamp` 1: view rays, light marches, surface shadow marches and cascade texels end at the
-  deepest clouds the weather allows along them (`PA_CloudMaxTopAltitude`), so a 0.6 km fair-weather field does not
+  deepest clouds the weather allows along them (`PA_CloudMaxTopAltitude`), so a 0.8 km fair-weather field does not
   share its samples with ~7 km of empty layer (prototype, 24 steps: ground view opacity error 0.061 → 0.003).
 - `Weather 0`: the same levels with `CloudCoverage` as the cloud fraction everywhere (fair-weather clouds; deeper above
   0.8).
@@ -295,14 +295,24 @@ changes the cloud FRACTION at distances where it is not resolved:
     them finer): cascade texels sampled at fixed altitudes, stacking a small cloud's slices; now steps ≤ 0.1 × shape
     scale (32..128) at a static per-texel jitter. The cascade pass may cost up to ~2× per frame at low sun while
     regenerating (`UpdateBudget` limits it).
+- Step 32b (after the UE test: clouds from the ground looked "crumpled" — thresholded fBm makes wrinkled iso-surfaces
+  at every scale and, at a cloud fraction above ~0.6, one connected sheet): the cloud level is a linear blend of Worley
+  cells and Perlin fBm (both baked, so the mips and the LOD variance stay exact; new quantile / CDF / column tables);
+  the threshold is raised by what the billows erode (resolved clouds keep the requested amount), the erosion threshold
+  is capped at 0.9 (cores survive), and where the footprint removes billow octaves the erosion is averaged over them
+  (3-point Gauss) so the amount does not jump with the billow LOD. Prototype p32b next to reference 3: separate puffy
+  cumulus with torn fringes, sky cover from the ground 0.62 (reference ~0.64); cloud amount vs pixel size 20 m–16 km
+  (averaged over 8 sites) spread ≤ 0.053 (Step 32 by the same measure: up to 0.098); from orbit unchanged (variance
+  share > 300 km 0.883, salt 0.024). Shader compiled on the CPU vs the prototype: 400 000 samples, mean |Δ| 4e-4.
+  Cost: +2 texture reads per cloud sample inside the local cloud depth (cell Worley, edge character), detail texture
+  +4.2 MB.
 - Not yet: filaments, spiral arms, streets along the wind (transport, Steps 33–34); white clouds, bright edges, the
-  terminator (Phase 7); the cloud-level shape is thresholded fBm and looks crumpled from the ground — cellular
-  cumulus shapes with heterogeneous edges are Step 32b.
+  terminator (Phase 7).
 
 ## Noise textures
 
-Base shape (128³, 5 mips), erosion (64³, 4 mips) and, since Step 32, Worley detail (64³, 4 mips) noise are tileable 3D
-R16F textures, 5 991 424 bytes of texel data in total. They are baked once on the GPU on first use (`PlanetAtmosphere.BakeNoise` passes; the log prints the
+Base shape (128³, 5 mips), erosion (64³, 4 mips) and, since Step 32, Worley detail (Step 32b: 128³, 5 mips) noise are
+tileable 3D R16F textures, 10 185 728 bytes of texel data in total. They are baked once on the GPU on first use (`PlanetAtmosphere.BakeNoise` passes; the log prints the
 actual allocation), shared by all worlds and planets, and released at module shutdown. Every mip holds the noise
 with the octaves that survive one texel of footprint, so the mip level replaces the per-octave fade of the
 procedural noise. `NoiseSource 0` evaluates the same noise procedurally (reference; much slower).
@@ -352,10 +362,10 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 6 — Step 32: multi-scale cloud density** (merged with the Step 32a fixes; UE re-test together with Step 32b) —
-weather / clusters / meso cells / clouds / billows, effective medium for unresolved clouds (same cloud amount at every
-distance), cloud-top clamp of the marches, Worley detail texture, new Earth-like cloud defaults (see "Multi-scale cloud
-density").
+**Phase 6 — Step 32 / 32a / 32b: multi-scale cloud density** (32b in review; UE test of 32a + 32b together) —
+weather / clusters / meso cells / cellular cumulus / billows, effective medium for unresolved clouds (same cloud amount at
+every distance), cloud-top clamp of the marches, Worley detail texture, heterogeneous torn edges, new Earth-like cloud
+defaults (see "Multi-scale cloud density").
 
 **Phase 5 closed (Steps 26–30)** — planetary weather on the GPU: deterministic model C (climatology, storms, synoptic
 noise; pure function of seed, weather time and planet parameters), cube-sphere snapshots per planet with background
@@ -500,8 +510,8 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 6 — Step 32b (prototype: cellular cumulus shapes with heterogeneous edges instead of the crumpled fBm
-threshold), then Step 33 (transport by the wind: flow map with replay vs backtrace vs zonal only).
+Next: UE test of Steps 32a + 32b, then Phase 6 — Step 33 (transport by the wind: flow map with replay vs backtrace vs
+zonal only).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies

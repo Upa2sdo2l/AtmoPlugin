@@ -18,8 +18,10 @@
 //             cumulus) -> deep storm clouds;
 //   clusters  (ClusterScale, ~100 km): a soft LOCAL cloud fraction (clouds thin out toward the edge, never sliced);
 //   meso      (MesoScale, ~12 km): top relief and open / closed cells, faded before it reaches the pixel size;
-//   clouds    (ShapeScale, ~0.7 km): vertically coherent noise, flat bases, domed tops, ragged storm bases;
-//   billows   (~0.25 x ShapeScale): Worley detail, billowy at the base, wispy toward the top.
+//   clouds    (ShapeScale, ~0.7 km): vertically coherent noise, flat bases, domed tops, ragged storm bases; Step 32b:
+//             Worley CELLS + Perlin distortion (separate compact cumulus instead of a crumpled fBm sheet, UE test of 32);
+//   billows   (~0.25 x ShapeScale): Worley detail (128^3, finest ~45 m), billowy at the base, wispy toward the top; Step
+//             32b: stronger, varying per region (billowy / ragged), coordinates warped (torn fringes, reference 3).
 // Thresholds come from quantile tables of the noise, so the cloud fraction is what the weather asks for. Where the cloud
 // level is smaller than the footprint, the sample returns the density of an EFFECTIVE MEDIUM: a fraction f of clouds
 // with optical depth tau over the local cloud depth -> sigma = -ln(1 - f (1 - e^-tau)) / depth, distributed over the
@@ -60,7 +62,7 @@ static const float PA_CLOUD_EDGE_WIDTH = 0.07;       // soft width of the cloud 
 static const float PA_CLOUD_VERTICAL_STRETCH = 0.3;  // cloud-level noise: vertical coordinate x 0.3 (coherent columns)
 static const float PA_CLOUD_DOME_EXPONENT = 2.0;     // threshold rises with (height in the local depth)^2: domed tops
 static const float PA_CLOUD_EDGE_DENSITY = 0.12;     // density at the cloud edge ...
-static const float PA_CLOUD_CORE_WIDTH = 0.3;        // ... rising to 1 over this much noise above the threshold
+static const float PA_CLOUD_CORE_WIDTH = 0.6;        // ... rising to 1 over this much noise above the threshold (32b: 0.3 -> 0.6)
 static const float PA_CLOUD_UNRESOLVED_DENSITY = 0.6;   // mean density inside unresolved clouds (effective medium)
 static const float PA_CLOUD_BASE_RELIEF = 0.75;      // storms: only the denser parts reach the lowest part ...
 static const float PA_CLOUD_BASE_ZONE = 0.15;        // ... of this fraction of the local depth
@@ -69,22 +71,37 @@ static const float PA_CLOUD_MESO_RELIEF = 0.3;       // ... and +-30 % local dep
 static const float PA_CLOUD_MESO_FADE_START = 0.05;  // meso pattern fades between these footprint / MesoScale
 static const float PA_CLOUD_MESO_FADE_END = 0.15;
 static const float PA_CLOUD_DETAIL_SCALE = 0.25;     // billows = 0.25 x ShapeScale
-static const float PA_CLOUD_EROSION_LOSS = 0.4;      // unresolved clouds: share of the cloud area eaten by the billows
+static const float PA_CLOUD_EROSION_LOSS = 0.24;     // unresolved clouds: share of the cloud area eaten by the billows (x strength)
+// ---- Step 32b (prototype p32b): cellular cumulus, heterogeneous edges ---------------------------------------------
+static const float PA_CLOUD_CELL_PERLIN_WEIGHT = 0.5;   // cloud level = Perlin fBm (shape distortion) ...
+static const float PA_CLOUD_CELL_WORLEY_WEIGHT = 0.85;  // ... + Worley cells (compact, separate clouds); linear: LOD exact
+static const float PA_CLOUD_CELL_PERLIN_SCALE = 1.37;   // x ShapeScale (incommensurate with the cells: no 4-unit repeat)
+static const float PA_CLOUD_CELL_WORLEY_SCALE = 1.5;    // x ShapeScale: one cell ~ one cloud
+static const float PA_CLOUD_CELL_STD = 0.169172;        // std of the cell noise at mip 0 (noise units, measured on the bake)
+static const float PA_CLOUD_EROSION_STRENGTH = 1.5;     // erosion of CloudErosion 1 (32b: stronger, torn edges)
+static const float PA_CLOUD_EROSION_COMPENSATION = 0.6; // threshold fraction / (1 - this x erosion x (1 - f)^1.2): the
+static const float PA_CLOUD_EROSION_COMPENSATION_EXPONENT = 1.2;   // ... resolved clouds keep the requested amount
+static const float PA_CLOUD_EROSION_MAX_THRESHOLD = 0.9;   // erosion threshold cap: cores survive the stronger erosion
+static const float PA_CLOUD_DECK_LOSS = 0.07;           // unresolved closed decks: share of thin domes / holes
+static const float PA_CLOUD_EDGE_VARIATION = 0.7;       // erosion x (1 +- this), edge width x (0.58 .. 2.05) ...
+static const float PA_CLOUD_EDGE_VARIATION_SCALE = 4.2857;   // ... varying over this x ShapeScale (3 km at 700 m)
+static const float PA_CLOUD_WARP = 1.5;                 // billow coordinates warped by the cell / edge noises x this x ShapeScale
 static const float PA_CLOUD_CLUSTER_RATIO = 2.37;    // second cluster sample: incommensurate scale (breaks the tiling)
 
-// Quantile tables of the stretched noise value u = saturate(0.5 + 1.5 n) at mip 0 (Q[i]: a fraction i / 64 lies below),
-// its CDF on the grid u = i / 64, and the column profile: mean over the local depth of the domed cover / base cover for
-// a base cover of i / 64. Generated by the CPU prototype p31 (mode "tables") from the same noise.
-static const float PA_CLOUD_QUANTILE_BASE[65] =
+// Quantile tables of the stretched noise value u = saturate(0.5 + 1.5 n) at mip 0 (Q[i]: a fraction i / 64 lies below):
+// the cloud-level CELL noise (Step 32b, PA_CloudCellNoise) and the cluster noise; the CDF of the cell noise on the grid
+// u = i / 64; the column profile: mean over the local depth of the domed cover / base cover for a base cover of i / 64.
+// Generated by the CPU prototype p32b (mode "tables") from the same noise textures (base 128^3, Worley detail 128^3).
+static const float PA_CLOUD_QUANTILE_CELL[65] =
 {
-	-0.010000, 0.000000, 0.000000, 0.027968, 0.072268, 0.107903, 0.137918, 0.163020,
-	0.186765, 0.207856, 0.226803, 0.244945, 0.262161, 0.277780, 0.292327, 0.306308,
-	0.320196, 0.332758, 0.345568, 0.357983, 0.370302, 0.381836, 0.393268, 0.404978,
-	0.416347, 0.427267, 0.438132, 0.448811, 0.459778, 0.470432, 0.481098, 0.491806,
-	0.502695, 0.513462, 0.524115, 0.535085, 0.546028, 0.557168, 0.568029, 0.579274,
-	0.590812, 0.602224, 0.614279, 0.626449, 0.638651, 0.650794, 0.663556, 0.676573,
-	0.689644, 0.703867, 0.718175, 0.733117, 0.748528, 0.764839, 0.781728, 0.799335,
-	0.818401, 0.839026, 0.860751, 0.885330, 0.914669, 0.950024, 0.995796, 1.000000,
+	-0.010000, 0.000000, 0.012847, 0.058693, 0.094557, 0.124076, 0.149650, 0.172466,
+	0.192523, 0.211015, 0.228381, 0.244422, 0.260147, 0.274913, 0.289106, 0.303456,
+	0.316395, 0.328931, 0.341751, 0.353956, 0.365893, 0.377361, 0.389094, 0.400623,
+	0.411894, 0.423152, 0.433696, 0.444720, 0.455521, 0.466073, 0.476486, 0.487007,
+	0.497587, 0.508091, 0.518780, 0.529613, 0.540449, 0.551561, 0.562022, 0.573259,
+	0.584380, 0.595681, 0.607255, 0.618958, 0.631011, 0.643071, 0.655811, 0.668732,
+	0.682339, 0.695907, 0.710386, 0.725388, 0.741088, 0.757357, 0.774896, 0.793473,
+	0.812311, 0.833765, 0.858163, 0.884738, 0.914801, 0.951266, 0.997543, 1.000000,
 	1.010000
 };
 static const float PA_CLOUD_QUANTILE_CLUSTER[65] =
@@ -99,29 +116,29 @@ static const float PA_CLOUD_QUANTILE_CLUSTER[65] =
 	0.815517, 0.836918, 0.860370, 0.888031, 0.918824, 0.956486, 1.000000, 1.000000,
 	1.010000
 };
-static const float PA_CLOUD_CDF_BASE[65] =
+static const float PA_CLOUD_CDF_CELL[65] =
 {
-	0.015625, 0.039979, 0.048033, 0.053544, 0.059055, 0.065068, 0.071919, 0.078891,
-	0.087025, 0.095435, 0.105161, 0.115202, 0.125544, 0.137120, 0.149609, 0.162772,
-	0.176463, 0.190965, 0.206853, 0.223833, 0.241341, 0.259862, 0.279032, 0.298640,
-	0.318864, 0.340137, 0.361124, 0.382910, 0.405341, 0.428021, 0.450658, 0.473532,
-	0.496132, 0.518797, 0.541412, 0.563689, 0.585796, 0.607779, 0.629023, 0.649894,
-	0.670014, 0.690040, 0.709805, 0.728735, 0.747437, 0.764810, 0.781852, 0.798150,
-	0.813910, 0.828852, 0.843308, 0.857192, 0.870164, 0.882367, 0.894022, 0.905260,
-	0.915308, 0.924695, 0.933016, 0.940685, 0.947590, 0.954184, 0.959518, 0.964851,
+	0.015625, 0.032197, 0.037522, 0.042847, 0.048533, 0.055341, 0.062149, 0.070344,
+	0.078690, 0.088236, 0.098270, 0.108970, 0.121087, 0.133958, 0.147584, 0.162089,
+	0.177418, 0.193297, 0.210101, 0.227209, 0.245296, 0.264620, 0.283809, 0.303969,
+	0.324908, 0.345825, 0.367176, 0.388852, 0.411642, 0.434035, 0.457142, 0.480467,
+	0.503589, 0.526638, 0.549235, 0.571536, 0.594415, 0.616212, 0.637956, 0.659081,
+	0.679708, 0.699956, 0.719281, 0.737984, 0.755944, 0.773414, 0.789961, 0.805819,
+	0.821059, 0.835491, 0.849094, 0.862197, 0.875138, 0.886518, 0.897020, 0.906963,
+	0.916150, 0.924935, 0.933056, 0.940531, 0.947226, 0.953753, 0.959028, 0.964304,
 	0.984375
 };
 static const float PA_CLOUD_COLUMN_PROFILE[65] =
 {
-	0.441479, 0.441479, 0.413327, 0.720849, 0.704902, 0.681835, 0.660330, 0.643285,
-	0.631505, 0.621774, 0.612824, 0.605817, 0.600498, 0.595467, 0.591424, 0.587628,
-	0.584851, 0.580866, 0.578091, 0.575767, 0.573083, 0.571358, 0.570134, 0.569156,
-	0.567497, 0.566626, 0.565614, 0.564376, 0.563955, 0.563439, 0.563207, 0.562685,
-	0.562553, 0.562712, 0.562686, 0.562728, 0.562873, 0.563502, 0.563767, 0.564341,
-	0.564992, 0.566180, 0.567684, 0.568733, 0.569894, 0.571826, 0.573667, 0.575773,
-	0.577432, 0.580254, 0.582853, 0.585719, 0.589216, 0.593633, 0.598252, 0.602925,
-	0.608590, 0.615311, 0.621965, 0.630619, 0.640954, 0.653744, 0.657199, 0.646767,
-	0.642874
+	0.441479, 0.441479, 0.362545, 0.724519, 0.709797, 0.686640, 0.667673, 0.652475,
+	0.639131, 0.625410, 0.616769, 0.609388, 0.602726, 0.597456, 0.592292, 0.587898,
+	0.583245, 0.580172, 0.576824, 0.574205, 0.571199, 0.569082, 0.566998, 0.565325,
+	0.563755, 0.562446, 0.561745, 0.560095, 0.559956, 0.559469, 0.559183, 0.558859,
+	0.558453, 0.558358, 0.558309, 0.558245, 0.558502, 0.559143, 0.560067, 0.560361,
+	0.561609, 0.562777, 0.564181, 0.565727, 0.566863, 0.568490, 0.570253, 0.572508,
+	0.574276, 0.576315, 0.579493, 0.582173, 0.585116, 0.588585, 0.591935, 0.595981,
+	0.600412, 0.605453, 0.611744, 0.618931, 0.627423, 0.638048, 0.651674, 0.648069,
+	0.643625
 };
 
 // Linear interpolation in one of the tables (X in [0, 1], 65 entries). A macro, not a function with an array parameter:
@@ -133,11 +150,11 @@ float PA_CloudTableLerp(float A, float B, float F)
 	return lerp(A, B, F - (float)min((int)F, 63));
 }
 
-/** Noise value below which a fraction Fraction of the base (cluster) noise lies. */
-float PA_CloudQuantileBase(float Fraction) { return PA_CLOUD_TABLE(PA_CLOUD_QUANTILE_BASE, Fraction); }
+/** Noise value below which a fraction Fraction of the cell (cluster) noise lies. */
+float PA_CloudQuantileCell(float Fraction) { return PA_CLOUD_TABLE(PA_CLOUD_QUANTILE_CELL, Fraction); }
 float PA_CloudQuantileCluster(float Fraction) { return PA_CLOUD_TABLE(PA_CLOUD_QUANTILE_CLUSTER, Fraction); }
-/** Fraction of the base noise below the value U. */
-float PA_CloudCdfBase(float U) { return U <= 0.0 ? 0.0 : (U >= 1.0 ? 1.0 : PA_CLOUD_TABLE(PA_CLOUD_CDF_BASE, U)); }
+/** Fraction of the cell noise below the value U. */
+float PA_CloudCdfCell(float U) { return U <= 0.0 ? 0.0 : (U >= 1.0 ? 1.0 : PA_CLOUD_TABLE(PA_CLOUD_CDF_CELL, U)); }
 /** Column profile for a base cover Fraction. */
 float PA_CloudColumnProfile(float Fraction) { return PA_CLOUD_TABLE(PA_CLOUD_COLUMN_PROFILE, Fraction); }
 
@@ -217,6 +234,49 @@ float PA_CloudSoftStep(float U, float T, float Width, float MissingStd)
 }
 
 /**
+ * Step 32b: cloud-level cell noise at PC (planet local, cm): Perlin fBm (base texture, shape distortion) + Worley cells
+ * (detail texture: compact, separate clouds), a LINEAR blend so the texture mips stay exact and the variance removed by
+ * the LOD is the weighted sum of both (MissingStd, noise units of the blend). Returns the stretched value u in [0, 1];
+ * NP / NW = the raw Perlin / Worley values (reused as the warp of the billows).
+ */
+float PA_CloudCellNoise(FPACloudLayer Layer, float3 PC, float Footprint, out float NP, out float NW, out float MissingStd)
+{
+	const float PerlinScale = Layer.ShapeScale * PA_CLOUD_CELL_PERLIN_SCALE;
+	const float WorleyScale = Layer.ShapeScale * PA_CLOUD_CELL_WORLEY_SCALE;
+	float MissingP;
+	float MissingW;
+	NP = PA_SampleBaseShapeNoiseLod(PC / PerlinScale, Footprint / PerlinScale, MissingP);
+	const float3 Q = PC / WorleyScale;
+	NW = PA_SampleDetailNoiseLod(float3(Q.y + 13.1, Q.z - 7.7, Q.x + 3.3), Footprint / WorleyScale, MissingW);
+	const float SP = PA_CLOUD_CELL_PERLIN_WEIGHT * PA_BASE_NOISE_MIP_STD[0];
+	const float SW = PA_CLOUD_CELL_WORLEY_WEIGHT * PA_DETAIL_NOISE_MIP_STD[0];
+	const float InvNorm = 0.18 / sqrt(SP * SP + SW * SW);   // the blend has the base noise's std (~0.18)
+	const float MP = PA_CLOUD_CELL_PERLIN_WEIGHT * MissingP;
+	const float MW = PA_CLOUD_CELL_WORLEY_WEIGHT * MissingW;
+	MissingStd = sqrt(MP * MP + MW * MW) * InvNorm;
+	return saturate(0.5 + 1.5 * (PA_CLOUD_CELL_PERLIN_WEIGHT * NP + PA_CLOUD_CELL_WORLEY_WEIGHT * NW) * InvNorm);
+}
+
+/**
+ * Step 32b: erosion of the cloud value X by the billow value Detail (threshold Detail x K). Where the footprint removed
+ * part of the billows (MissingDetail, stretched units), the expectation over the removed values (uniform equivalent,
+ * 3-point Gauss-Legendre) instead of the mean, so the eroded amount does not jump with the billow LOD. The threshold is
+ * capped below 1: with the Step 32b strength it could exceed 1 and cut holes into solid cores (a jump at threshold 1).
+ */
+float PA_CloudErode(float X, float Detail, float K, float MissingDetail)
+{
+	if (MissingDetail <= 1e-4)
+	{
+		return saturate(PA_Remap(X, min(Detail * K, PA_CLOUD_EROSION_MAX_THRESHOLD), 1.0, 0.0, 1.0));
+	}
+	const float Offset = 1.342 * MissingDetail;
+	const float A = saturate(PA_Remap(X, min(saturate(Detail - Offset) * K, PA_CLOUD_EROSION_MAX_THRESHOLD), 1.0, 0.0, 1.0));
+	const float B = saturate(PA_Remap(X, min(Detail * K, PA_CLOUD_EROSION_MAX_THRESHOLD), 1.0, 0.0, 1.0));
+	const float C = saturate(PA_Remap(X, min(saturate(Detail + Offset) * K, PA_CLOUD_EROSION_MAX_THRESHOLD), 1.0, 0.0, 1.0));
+	return (5.0 * A + 8.0 * B + 5.0 * C) / 18.0;
+}
+
+/**
  * Normalized cloud density (multiply by the extinction coefficient to get sigma_t; may exceed 1 in storm cores).
  *
  * PosPlanetLocal : sample position relative to the planet center, in the planet's local frame (cm).
@@ -278,43 +338,62 @@ float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Al
 		return 0.0;
 	}
 
-	// Cloud level: vertically coherent noise; threshold from the local fraction, rising with height (domes); storms get
-	// ragged bases; flat bases otherwise.
+	// Step 32b: edge character per region (~3 km): some clouds billowy and sharp, others ragged with wide soft edges.
+	const float EdgeScale = Layer.ShapeScale * PA_CLOUD_EDGE_VARIATION_SCALE;
+	const float NV = PA_SampleBaseShapeNoise(Direction * (Layer.PlanetRadius / EdgeScale) + float3(-41.7, 9.2, 28.4), Footprint / EdgeScale);
+	const float EdgeK = smoothstep(-0.25, 0.25, NV);
+	const float ErosionScale = lerp(1.0 - PA_CLOUD_EDGE_VARIATION, 1.0 + PA_CLOUD_EDGE_VARIATION, EdgeK);
+	const float EdgeWidthScale = lerp(1.0 - 0.6 * PA_CLOUD_EDGE_VARIATION, 1.0 + 1.5 * PA_CLOUD_EDGE_VARIATION, EdgeK);
+	const float ErosionK = Layer.Erosion * PA_CLOUD_EROSION_STRENGTH * ErosionScale;
+
+	// Cloud level (Step 32b): vertically coherent CELL noise (separate compact clouds); threshold from the local fraction,
+	// raised by what the billows will erode (the resolved clouds keep the requested amount), rising with height (domes);
+	// storms get ragged bases; flat bases otherwise.
+	const float ThresholdFraction = saturate(LocalFraction
+		/ max(1.0 - PA_CLOUD_EROSION_COMPENSATION * ErosionK * pow(1.0 - LocalFraction, PA_CLOUD_EROSION_COMPENSATION_EXPONENT), 0.2));
 	const float3 PC = Direction * (Layer.PlanetRadius + Layer.BottomAltitude + H0 * PA_CLOUD_VERTICAL_STRETCH);
 	float MissingC;
-	const float UC = saturate(0.5 + 1.5 * PA_SampleBaseShapeNoiseLod(PC / Layer.ShapeScale, Footprint / Layer.ShapeScale, MissingC));
-	float Threshold = lerp(PA_CloudQuantileBase(1.0 - LocalFraction), 1.02, pow(H, PA_CLOUD_DOME_EXPONENT));
+	float NP;
+	float NW;
+	const float UC = PA_CloudCellNoise(Layer, PC, Footprint, NP, NW, MissingC);
+	float Threshold = lerp(PA_CloudQuantileCell(1.0 - ThresholdFraction), 1.02, pow(H, PA_CLOUD_DOME_EXPONENT));
 	Threshold = max(Threshold, lerp(PA_CLOUD_BASE_RELIEF * Storm, -0.01, smoothstep(0.0, PA_CLOUD_BASE_ZONE, H)));
 	const float Base = smoothstep(0.0, 0.06, H);
-	const float Cover = PA_CloudSoftStep(UC, Threshold, PA_CLOUD_EDGE_WIDTH, MissingC) * Base;
+	const float Cover = PA_CloudSoftStep(UC, Threshold, PA_CLOUD_EDGE_WIDTH * EdgeWidthScale, MissingC) * Base;
 	if (Cover <= 0.0)
 	{
 		return 0.0;
 	}
 
-	// Billows: Worley detail, billowy (inverted) at the base, wispy toward the top.
+	// Billows: Worley detail, billowy (inverted) at the base, wispy toward the top. Step 32b: its coordinates are warped by
+	// the noises already sampled above (curled, torn fringes at no extra fetch).
 	const float DetailScale = Layer.ShapeScale * PA_CLOUD_DETAIL_SCALE;
-	const float UW = saturate(0.5 + 1.5 * PA_SampleDetailNoise(PosPlanetLocal / DetailScale, Footprint / DetailScale));
-	const float Detail = lerp(UW, 1.0 - UW, saturate(H * 1.5));
+	const float3 PW = PosPlanetLocal + float3(NP, NW, NV) * (PA_CLOUD_WARP * Layer.ShapeScale);
+	float MissingW;
+	const float UW = saturate(0.5 + 1.5 * PA_SampleDetailNoiseLod(PW / DetailScale, Footprint / DetailScale, MissingW));
+	const float DetailInvert = saturate(H * 1.5);
+	const float Detail = lerp(UW, 1.0 - UW, DetailInvert);
+	const float MissingDetail = 1.5 * MissingW * abs(1.0 - 2.0 * DetailInvert);
 	const float StormDensity = lerp(0.8, 1.3, Storm);
 	const float LocalFraction4 = LocalFraction * LocalFraction * LocalFraction * LocalFraction;
 	const float Core = max(PA_CLOUD_EDGE_DENSITY + (1.0 - PA_CLOUD_EDGE_DENSITY) * smoothstep(Threshold, Threshold + PA_CLOUD_CORE_WIDTH, UC),
 		LocalFraction4);   // closed decks stay solid
 
 	// Resolved: the eroded cloud shape. Unresolved: effective medium of a column (see the header).
-	const float Resolved = 1.0 - saturate(MissingC / PA_BASE_NOISE_MIP_STD[0]);
+	const float Resolved = 1.0 - saturate(MissingC / PA_CLOUD_CELL_STD);
 	const float Resolved2 = Resolved * Resolved;
-	const float Fine = saturate(PA_Remap(Cover * Core, Detail * Layer.Erosion * 0.5, 1.0, 0.0, 1.0)) * StormDensity;
+	const float Fine = PA_CloudErode(Cover * Core, Detail, ErosionK * 0.5, MissingDetail) * StormDensity;
 	if (Resolved2 >= 1.0)
 	{
 		return Fine;
 	}
 	const float InCloud = lerp(PA_CLOUD_UNRESOLVED_DENSITY, Core, Resolved2) * StormDensity;
 	const float Tau = InCloud * Layer.Extinction * Depth;
-	const float ColumnCover = LocalFraction * (1.0 - PA_CLOUD_EROSION_LOSS * Layer.Erosion * (1.0 - LocalFraction4));
+	const float ColumnCover = LocalFraction * (1.0 - PA_CLOUD_EROSION_LOSS * ErosionK * (1.0 - LocalFraction4))
+		* (1.0 - PA_CLOUD_DECK_LOSS * LocalFraction4);
 	const float SigmaColumn = -log(max(1.0 - ColumnCover * (1.0 - exp(-Tau)), 1e-6)) / Depth;
-	const float CoverHere = (1.0 - PA_CloudCdfBase(Threshold)) * Base;   // expected cover at this height
-	const float Profile = PA_CloudColumnProfile(LocalFraction);
-	const float Effective = SigmaColumn * CoverHere / max(LocalFraction * Profile, 1e-4) / max(Layer.Extinction, 1e-12);
+	const float CoverHere = (1.0 - PA_CloudCdfCell(Threshold)) * Base;   // expected cover at this height
+	const float Profile = PA_CloudColumnProfile(ThresholdFraction);
+	const float Effective = SigmaColumn * CoverHere / max(ThresholdFraction * Profile, 1e-4) / max(Layer.Extinction, 1e-12);
 	return lerp(Effective, Fine, Resolved2);
 }
