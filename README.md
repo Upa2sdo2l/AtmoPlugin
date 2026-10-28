@@ -106,7 +106,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.EmptySpaceSkip` | 0 | Coarse probes over N steps in clear air (2..8); off by default — loses thin clouds |
 | `r.PlanetAtmosphere.MinTransmittance` | 0.01 | The view ray stops below this transmittance |
 | `r.PlanetAtmosphere.NoiseSource` | 1 | 0 = procedural noise (reference / fallback, slow), 1 = baked 3D textures |
-| `r.PlanetAtmosphere.CloudTopClamp` | 1 | Step 32: marches end at the deepest clouds the weather allows along them; paths needing more than 17 bound points (limb, grazing sun) use the whole layer (Step 32a); 0 = the whole cloud layer (A/B) |
+| `r.PlanetAtmosphere.CloudTopClamp` | 0 | Step 32: 1 = marches end at the deepest clouds the weather allows along them (paths needing more than 17 bound points use the whole layer, Step 32a). Off by default since Step 32b: the 3..17-point bound jumps with the path length and shows as concentric bands from orbit (UE test); to be replaced by a smooth precomputed max-top map |
 | `r.PlanetAtmosphere.NoiseFootprintScale` | 1 | Density LOD footprint = this × the sample spacing (pixel × `Temporal.Interleave`); cascades: × their texel. 1 since Step 32a: detail smaller than a traced sample is prefiltered (Step 32 effective medium keeps distant cover). < 1 = sharper but grainy (0.25 before Step 32a: grain from orbit, noise at interleave 3) |
 | `r.PlanetAtmosphere.LightLOD` | 1 | Fewer light-march steps where the pixel is large vs the cloud layer (sub-pixel self-shadowing) |
 | `r.PlanetAtmosphere.LightLOD.FullDetailFootprint` | 0.0625 | Pixel footprint (× layer thickness) up to which the full LightSteps are used |
@@ -275,7 +275,8 @@ changes the cloud FRACTION at distances where it is not resolved:
   pattern without "salt". The light march and the cloud shadow cascades use the same function, so they stay consistent.
 - `r.PlanetAtmosphere.CloudTopClamp` 1: view rays, light marches, surface shadow marches and cascade texels end at the
   deepest clouds the weather allows along them (`PA_CloudMaxTopAltitude`), so a 0.8 km fair-weather field does not
-  share its samples with ~7 km of empty layer (prototype, 24 steps: ground view opacity error 0.061 → 0.003).
+  share its samples with ~7 km of empty layer (prototype, 24 steps: ground view opacity error 0.061 → 0.003). Off by default
+  since Step 32b (concentric bands from orbit: the number of bound points jumps with the path length).
 - `Weather 0`: the same levels with `CloudCoverage` as the cloud fraction everywhere (fair-weather clouds; deeper above
   0.8).
 - New defaults (Earth-like, reference 3 of the visual target): cloud bottom 2.5 km / top 10 km above the planet,

@@ -139,10 +139,13 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudTopClamp(
 		TEXT("r.PlanetAtmosphere.CloudTopClamp"),
-		1,
+		0,
 		TEXT("Step 32: view rays, light marches, surface shadow marches and cloud shadow cascades end at the deepest clouds the\n")
 		TEXT("weather allows along them instead of the cloud-layer top (a 0.6 km fair-weather field otherwise shares its samples\n")
-		TEXT("with ~7 km of empty layer). 1 = on (default), 0 = march the whole layer (A/B)."),
+		TEXT("with ~7 km of empty layer). 0 = march the whole layer (default since Step 32b), 1 = on. Off by default: the bound is\n")
+		TEXT("evaluated at 3..17 weather points per ray, the count jumps with the path length, and from orbit (equal path\n")
+		TEXT("lengths on circles around the disc centre) this shows as concentric bands (UE test; gone with 0). To be replaced\n")
+		TEXT("by a smooth precomputed max-top map."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightLOD(
