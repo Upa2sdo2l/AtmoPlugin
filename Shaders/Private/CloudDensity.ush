@@ -54,8 +54,14 @@ struct FPACloudLayer
 // ---- Constants of the Step 32 model (prototype p31) -----------------------------------------------
 static const float PA_CLOUD_CONTRAST_LOW = 0.22;     // local cloud water -> cloud fraction (smoothstep)
 static const float PA_CLOUD_CONTRAST_HIGH = 0.52;
-static const float PA_CLOUD_STORM_LOW = 0.6;         // local cloud water at which clouds start / end getting deep
-static const float PA_CLOUD_STORM_HIGH = 0.95;
+// Step 34: inside a weather mass (humidity excess RHe, atlas channel y, shifted by Coverage): the mass edge is broken
+// (fraction x 0.6) and shallow, the core overcast and deep.
+static const float PA_CLOUD_INTERIOR_LOW = 0.64;      // RHe -> interior index (cloud fraction factor)
+static const float PA_CLOUD_INTERIOR_HIGH = 0.90;
+static const float PA_CLOUD_MASS_EDGE_FRACTION = 0.6; // cloud fraction factor at the edge of a mass
+static const float PA_CLOUD_THICK_LOW = 0.70;         // RHe -> storm factor (depth, top height, density)
+static const float PA_CLOUD_THICK_HIGH = 1.0;
+static const float PA_CLOUD_HUMIDITY_COVERAGE = 0.4;  // RHe shift per unit of (Coverage - 0.5) x 2
 static const float PA_CLOUD_CLUSTER_EXPONENT = 0.35; // cluster fraction = fraction^0.35, clouds inside take the rest
 static const float PA_CLOUD_CLUSTER_WIDTH = 0.15;    // soft width of the cluster fraction
 static const float PA_CLOUD_EDGE_WIDTH = 0.07;       // soft width of the cloud edges (stretched noise units)
@@ -180,7 +186,10 @@ float PA_CloudHeightFraction(FPACloudLayer Layer, float Altitude)
 	return (Altitude - Layer.BottomAltitude) / Layer.Thickness;
 }
 
-/** Weather at Direction (planet local, unit): x = cloud fraction, y = storm factor (0 fair weather, 1 deep storm clouds). */
+/**
+ * Weather at Direction (planet local, unit): x = cloud fraction, y = storm factor (0 fair weather, 1 deep storm clouds).
+ * Step 34: the storm factor and a broken mass edge come from the weather humidity (how deep inside a cloud mass).
+ */
 float2 PA_CloudWeather(FPACloudLayer Layer, float3 Direction)
 {
 	if (Layer.WeatherEnabled == 0)
@@ -188,14 +197,18 @@ float2 PA_CloudWeather(FPACloudLayer Layer, float3 Direction)
 		// Without weather: Coverage is the cloud fraction; deeper clouds only near full coverage.
 		return float2(Layer.Coverage, smoothstep(0.8, 1.0, Layer.Coverage));
 	}
-	const float CloudWater = saturate(lerp(
-		PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowA).x,
-		PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowB).x,
-		Layer.WeatherBlend));
+	const float2 Sample = lerp(
+		PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowA).xy,
+		PA_SampleWeatherSnapshot(Direction, Layer.WeatherRowB).xy,
+		Layer.WeatherBlend);
+	const float CloudWater = saturate(Sample.x);
 	const float LocalCoverage = PA_WeatherLocalCoverage(CloudWater, Layer.Coverage);
+	// Step 34: how deep inside a weather mass (effective humidity, unclamped since Step 34), shifted with Coverage.
+	const float Humidity = Sample.y + PA_CLOUD_HUMIDITY_COVERAGE * (Layer.Coverage - 0.5) * 2.0;
+	const float Interior = smoothstep(PA_CLOUD_INTERIOR_LOW, PA_CLOUD_INTERIOR_HIGH, Humidity);
 	return float2(
-		smoothstep(PA_CLOUD_CONTRAST_LOW, PA_CLOUD_CONTRAST_HIGH, LocalCoverage),
-		smoothstep(PA_CLOUD_STORM_LOW, PA_CLOUD_STORM_HIGH, LocalCoverage));
+		smoothstep(PA_CLOUD_CONTRAST_LOW, PA_CLOUD_CONTRAST_HIGH, LocalCoverage) * lerp(PA_CLOUD_MASS_EDGE_FRACTION, 1.0, Interior),
+		smoothstep(PA_CLOUD_THICK_LOW, PA_CLOUD_THICK_HIGH, Humidity));
 }
 
 /**

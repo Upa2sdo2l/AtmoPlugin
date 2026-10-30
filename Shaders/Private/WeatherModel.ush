@@ -523,8 +523,8 @@ static const float PA_W33_NOISE_KM = 350.0;          // synoptic noise (Step 29:
 static const float PA_W33_FINE_KM = 180.0;           // fine noise
 static const float PA_W33_FINE_WEIGHT = 0.10;
 static const uint PA_W33_FINE_SEED_OFFSET = 9000037u;
-static const float PA_W33_COVER_LO = 0.55;           // RHe -> cloud water ramp (Step 29: 0.33 -> 0.92)
-static const float PA_W33_COVER_HI = 0.78;
+static const float PA_W33_COVER_LO = 0.52;           // RHe -> cloud water ramp (Step 29: 0.33 -> 0.92; Step 33: 0.55 -> 0.78;
+static const float PA_W33_COVER_HI = 0.75;           // Step 34: 0.52 -> 0.75 keeps the cloud amount with the broken mass edges)
 static const float PA_W33_CORE = 0.3;                // analytic core of the extratropical cyclones
 static const float PA_W33_DIPOLE = 0.7;              // moisture dipole of the extratropical cyclones (wound -> comma, dry slot)
 static const float PA_W33_DIPOLE_WIDTH = 1.5;        // storm radii
@@ -694,7 +694,8 @@ FPAWeatherSample PA_EvaluateWeatherFlowWarp(float3 P, FPAWeatherInputs In)
 
 	FPAWeatherSample Sample;
 	Sample.Cover = Cover;
-	Sample.Humidity = clamp(EffectiveHumidity, 0.0, 1.0);
+	// Step 34: up to 2 (not 1): the excess above saturation tells the density how deep inside a cloud mass a point is.
+	Sample.Humidity = clamp(EffectiveHumidity, 0.0, 2.0);
 	Sample.WindEast = Climate.WindEast + Storms.WindEast;
 	Sample.WindNorth = Climate.WindNorth + Storms.WindNorth;
 	return Sample;
