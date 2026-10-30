@@ -478,6 +478,14 @@ namespace
 		TEXT("Cube faces of the next weather snapshot computed per frame and planet (background build). Clamped to [1, 6]."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereWeatherFlowWarp(
+		TEXT("r.PlanetAtmosphere.Weather.FlowWarp"),
+		1,
+		TEXT("Step 33 weather-system morphology: 1 = the humidity pattern is carried by the wind (24 h backward trace through the\n")
+		TEXT("snapshot wind with 450 km eddies; cyclones wind up a comma and a dry slot; finer 350 / 180 km noise; cover ramp\n")
+		TEXT("RHe 0.55 -> 0.78), 0 = the Step 29 model (smooth 900 km noise, analytic spiral arms). Changing it rebuilds the weather."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudShadowsWeatherRefresh(
 		TEXT("r.PlanetAtmosphere.CloudShadows.WeatherRefresh"),
 		600.0f,
@@ -699,6 +707,7 @@ namespace PlanetAtmosphere::CVars
 		Settings.MaxPlanets = FMath::Clamp(CVarPlanetAtmosphereWeatherMaxPlanets.GetValueOnAnyThread(false), 1, 8);
 		Settings.SnapshotIntervalSeconds = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereWeatherSnapshotInterval.GetValueOnAnyThread(false)), 10.0, 86400.0);
 		Settings.FacesPerFrame = FMath::Clamp(CVarPlanetAtmosphereWeatherFacesPerFrame.GetValueOnAnyThread(false), 1, 6);
+		Settings.FlowWarp = CVarPlanetAtmosphereWeatherFlowWarp.GetValueOnAnyThread(false) != 0 ? 1 : 0;
 		return Settings;
 	}
 

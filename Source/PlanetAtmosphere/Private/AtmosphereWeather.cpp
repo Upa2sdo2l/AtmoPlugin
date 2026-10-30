@@ -46,7 +46,8 @@ namespace
 		double RadiusKm,
 		double TimeSeconds,
 		uint8 FaceMask,
-		bool bSynchronous)
+		bool bSynchronous,
+		int32 FlowWarp)
 	{
 		using namespace PlanetAtmosphere::Weather;
 
@@ -80,6 +81,7 @@ namespace
 		Parameters->WeatherItczSeed0 = static_cast<int32>(In.ItczSeed[0]);
 		Parameters->WeatherItczSeed1 = static_cast<int32>(In.ItczSeed[1]);
 		Parameters->NumWeatherStorms = In.NumStorms;
+		Parameters->WeatherFlowWarp = FlowWarp;
 		const FVector4f Zero(0.0f, 0.0f, 0.0f, 0.0f);
 		for (int32 Index = 0; Index < MaxStorms; ++Index)
 		{
@@ -181,7 +183,7 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 	// MaxPlanets is per view; the shared atlas holds up to 2 x MaxPlanets slots (all views / worlds of a frame), within the
 	// texture height limit (3 Res rows per slot, at most 16384 rows).
 	const int32 MaxCapacity = FMath::Max(1, FMath::Min(2 * Settings.MaxPlanets, 16384 / (NumSnapshots * Settings.Resolution)));
-	const bool bCompatible = Atlas.IsValid() && Resolution == Settings.Resolution && Capacity <= MaxCapacity;
+	const bool bCompatible = Atlas.IsValid() && Resolution == Settings.Resolution && Capacity <= MaxCapacity && FlowWarp == Settings.FlowWarp;
 	int32 TargetCapacity = FMath::Max(NumWithWeather, Atlas.IsValid() ? Capacity : 0);
 	if (bCompatible)
 	{
@@ -199,6 +201,7 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 	if (bNewAtlas)
 	{
 		ResetAtlas(Settings.Resolution, TargetCapacity);
+		FlowWarp = Settings.FlowWarp;
 		MatchSlots();
 	}
 	const int32 Res = Resolution;
@@ -380,7 +383,7 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 				if (Missing != 0)
 				{
 					AddWeatherSnapshotPass(GraphBuilder, GlobalShaderMap, AtlasTexture, Res, RowBase, Slot.Parameters, Slot.RadiusKm,
-						SnapshotTime, Missing, bDisplayed);
+						SnapshotTime, Missing, bDisplayed, FlowWarp);
 					Snapshot.FacesDone = static_cast<uint8>(Snapshot.FacesDone | Missing);
 				}
 			}

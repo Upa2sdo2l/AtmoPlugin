@@ -112,6 +112,7 @@ private:
 	TRefCountPtr<IPooledRenderTarget> Atlas;
 	int32 Resolution = 0;
 	int32 Capacity = 0;
+	int32 FlowWarp = -1;   // r.PlanetAtmosphere.Weather.FlowWarp the atlas was built with (a change rebuilds it)
 	uint32 AtlasLastUsedFrame = 0;
 	TArray<FSlot> Slots;
 };
