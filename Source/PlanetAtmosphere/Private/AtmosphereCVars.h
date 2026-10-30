@@ -200,6 +200,7 @@ namespace PlanetAtmosphere::CVars
 		int32 MaxPlanets = 4;                    // planets with weather per view (nearest first), [1, 8]
 		double SnapshotIntervalSeconds = 600.0;  // game seconds between two weather snapshots, [10, 86400]
 		int32 FacesPerFrame = 1;                 // cube faces of the next snapshot built per frame and planet, [1, 6]
+		int32 FlowWarp = 1;                      // Step 33: 1 = flow-warped weather morphology, 0 = the Step 29 model
 	};
 	FWeatherSettings GetWeatherSettings();
 

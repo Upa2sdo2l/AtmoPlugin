@@ -152,6 +152,7 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.Weather.Resolution` | 256 | Texels per cube-face side (64..512): ~39 km per texel on an Earth-size planet; 9.4 MB per planet at 256 |
 | `r.PlanetAtmosphere.Weather.MaxPlanets` | 4 | Planets with weather per view, nearest first (1..8); the shared atlas grows to the number seen in a frame by all views (editor + PIE), up to 2 × this |
 | `r.PlanetAtmosphere.Weather.SnapshotInterval` | 600 | Game seconds between weather snapshots (10..86400); the image interpolates between two |
+| `r.PlanetAtmosphere.Weather.FlowWarp` | 1 | Step 33: 1 = weather-system morphology (humidity pattern carried by the wind: eddies, comma clouds, dry slots, finer noise, sharper cover ramp); 0 = the Step 29 weather (A/B). Changing it rebuilds the weather |
 | `r.PlanetAtmosphere.Weather.FacesPerFrame` | 1 | Cube faces of the next snapshot built per frame and planet in the background (1..6); more automatically when the weather time runs so fast that the snapshot would not be ready in time (Step 28) |
 
 ## Clouds through the atmosphere (Step 15)
@@ -225,6 +226,24 @@ over long times.
 - Storm births (Step 29): extratropical cyclones are born on golden-ratio longitude lanes (plus a small jitter) instead of
   random longitudes, so storms of one hemisphere no longer overlap (closest pair median 0.9 → 2.6 radii; < 1 radius
   58 % → 0.3 %); the statistics of the cloud water are unchanged.
+- **Weather-system morphology** (Step 33, `Weather.FlowWarp` 1): from orbit the Step 29 weather read as smooth blobs
+  (only 900 / 2800 km noise; the storms a uniform core). Now the humidity pattern of each point is the one of the air's
+  position 24 h earlier: a backward trace (12 RK2 steps) through the frozen wind of the snapshot — climatology plus a
+  divergence-free eddy field (450 km, ~7 m/s on the storm tracks, 35 % in the tropics / polar caps, drifting east and
+  cross-faded with the noise anchors); storm vortices as exact rotations (×1.5, 72 h, winding capped at 1.25 turns at the
+  radius of maximum wind). Extratropical cyclones wind up a moisture dipole (moist side equatorward-east, half-strength dry
+  side) and their fronts in their own frame → comma head, curved tail, dry slot spiralling into the centre; their analytic
+  arm and fronts are off, the core at 0.3. Tropical cyclones keep the analytic eye and arms. Finer noise (350 km + 180 km
+  instead of 900 km) and a sharper cover ramp (RHe 0.55 → 0.78 instead of 0.33 → 0.92): separate cloud masses on clear
+  ocean instead of holes in a grey veil. Still a pure function of the snapshot (no history).
+  - Effect: global mean cloud fraction of the weather 0.54 → 0.29, partly cloudy area 35 % → 9 %: by default more clear
+    sky also from the ground; `CloudCoverage` above 0.5 brings the amount back with the same shapes.
+  - Cost: the weather snapshot build is ~5× more expensive (CPU measure of the same shader); it runs once per
+    `SnapshotInterval`, spread over frames (`FacesPerFrame`). Cloud rendering is unchanged. GPU stat
+    **PlanetAtmosphere.Weather**.
+  - Verification: the shader compiled on the CPU vs the prototype without eddies: max |Δ| 9e-5 in cloud water; the eddy
+    wind (analytic value-noise gradient instead of the prototype's finite differences, max error 1e-3) normalised to the
+    same rms; cloud fraction statistics equal to the prototype (0.287 / 0.287). `FlowWarp 0` is bit-identical to Step 29.
 - Debug views on the middle of the cloud layer, latitude lines every 30° (equator orange): `DebugMode 14` cloud water, `15` humidity, `16` wind (speed + arrows), `17` temperature.
   The temperature of model C is zonal (latitude + season); storms do not change it.
 
@@ -320,7 +339,10 @@ changes the cloud FRACTION at distances where it is not resolved:
   deck loss 0.03): cloud amount vs pixel size 20 m–16 km spread ≤ 0.046. Shader vs prototype: 400 000 samples, mean |Δ|
   4.6e-4, p99.9 0.021. Orbit experiments (clumps with gaps, exaggerated slope shading) were rejected by the user; the
   look of the weather systems from orbit is Step 33.
-- Not yet: filaments, spiral arms, comma clouds, frontal bands (Step 33); bright edges, the terminator (Phase 7).
+- Step 33: the shape of the weather systems from orbit (see Weather → weather-system morphology): eddies, comma clouds,
+  dry slots, streaks along the wind, at the scale of reference 1.
+- Not yet: volume of the cloud masses from orbit (thin edges / thick cores, top relief, cloud shadows on the surface:
+  Step 34 prototype); bright edges, the terminator (Phase 7).
 
 ## Noise textures
 
@@ -523,8 +545,9 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: UE test of Steps 32a–32c; Phase 6 — Step 33 prototype: the shape of the weather systems from orbit (spiral arms,
-comma clouds, frontal bands, streaks along the wind) next to references 1–2.
+Next: Phase 6 — Step 34 prototype: volume of the cloud masses from orbit (thickness and top height from the weather
+humidity, cloud shadows on the surface, the terminator) next to references 1–2. From now on the UE test is done once per
+phase: the next one after Phase 7 (decision of 30.10.2026).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies
