@@ -237,7 +237,9 @@ over long times.
   instead of 900 km) and a sharper cover ramp (RHe 0.55 → 0.78 instead of 0.33 → 0.92): separate cloud masses on clear
   ocean instead of holes in a grey veil. Still a pure function of the snapshot (no history).
   - Effect: global mean cloud fraction of the weather 0.54 → 0.29, partly cloudy area 35 % → 9 %: by default more clear
-    sky also from the ground; `CloudCoverage` above 0.5 brings the amount back with the same shapes.
+    sky also from the ground; `CloudCoverage` above 0.5 brings the amount back with the same shapes. Step 34: cover ramp
+    0.52 → 0.75 with broken mass edges in the density (same amount, partly cloudy area ~36 %); the atlas humidity is no
+    longer clamped at 1 (up to 2). `FlowWarp 0` gives the Step 29 weather field, drawn with the Step 34 density rules.
   - Cost: the weather snapshot build is ~5× more expensive (CPU measure of the same shader); it runs once per
     `SnapshotInterval`, spread over frames (`FacesPerFrame`). Cloud rendering is unchanged. GPU stat
     **PlanetAtmosphere.Weather**.
@@ -341,8 +343,18 @@ changes the cloud FRACTION at distances where it is not resolved:
   look of the weather systems from orbit is Step 33.
 - Step 33: the shape of the weather systems from orbit (see Weather → weather-system morphology): eddies, comma clouds,
   dry slots, streaks along the wind, at the scale of reference 1.
-- Not yet: volume of the cloud masses from orbit (thin edges / thick cores, top relief, cloud shadows on the surface:
-  Step 34 prototype); bright edges, the terminator (Phase 7).
+- Step 34 (volume of the weather masses; user chose variant B of the prototype): after Step 33 the weather was nearly
+  binary, so every mass had one depth and one density (a flat plate with a vertical edge, grey and flat at low sun). The
+  weather humidity (atlas channel y, unclamped up to 2 since Step 34: ~0.65 at a mass edge, up to ~1.2 in cyclone
+  cores) now says how deep inside a mass a point is: the storm factor (depth, top height, density) = smoothstep(0.70,
+  1.0, RHe) instead of the cloud water; the cloud fraction x lerp(0.6, 1, smoothstep(0.64, 0.90, RHe)) (broken mass
+  edges: from orbit soft grey margins and bright cores, from the ground a cumulus field with sky gaps instead of an
+  overcast veil); RHe shifted by 0.4 x (Coverage − 0.5) x 2. The weather cover ramp moved to RHe 0.52 → 0.75 so the cloud
+  amount stays at the Step 33 level (mean fraction 0.28). No extra texture fetch (both channels in one sample).
+  Shader vs prototype: 400 000 samples, mean |Δ| 5.2e-4, p99.9 0.022; max top altitude within 1.6 m. Cloud shadows on
+  the surface (Phase 4) make the relief readable near the terminator; the prototype had none before Step 34.
+- Not yet: the look of reference 1 (separate soft cloud clusters instead of marbled streams, streaks along the wind, soft
+  edges from far away, atmospheric haze in the comparison: Step 35 prototype); bright edges, the terminator (Phase 7).
 
 ## Noise textures
 
@@ -545,8 +557,8 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 6 — Step 34 prototype: volume of the cloud masses from orbit (thickness and top height from the weather
-humidity, cloud shadows on the surface, the terminator) next to references 1–2. From now on the UE test is done once per
+Next: Phase 6 — Step 35 prototype: closer to reference 1 (soft separate cloud clusters, streaks along the wind, soft
+edges from far, an approximate atmospheric haze in the prototype for a fair comparison). From now on the UE test is done once per
 phase: the next one after Phase 7 (decision of 30.10.2026).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
