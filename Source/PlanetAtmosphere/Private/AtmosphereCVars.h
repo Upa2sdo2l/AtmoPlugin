@@ -69,6 +69,9 @@ namespace PlanetAtmosphere::CVars
 	/** r.PlanetAtmosphere.LightSteps — samples of the light march toward the sun, clamped to [1, 16]. */
 	int32 GetLightSteps();
 
+	/** r.PlanetAtmosphere.CloudLightingModel — 1 = Step 32c (multiple-scattering octaves + sky light by the local cloud height), 0 = Phases 4-5. */
+	int32 GetCloudLightingModel();
+
 	// ---- Raymarch sample distribution (Phase 2 / Step 9) ----
 
 	/** r.PlanetAtmosphere.StepDistribution — uniform or camera-centered steps. */

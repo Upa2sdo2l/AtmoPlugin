@@ -29,6 +29,12 @@ float PA_CloudPhase(float CosTheta)
 	return 0.7 * PA_HenyeyGreenstein(CosTheta, 0.6) + 0.3 * PA_HenyeyGreenstein(CosTheta, -0.25);
 }
 
+/** Step 32c: the same two-lobe phase with both anisotropies scaled (multiple-scattering octaves). */
+float PA_CloudPhaseScaled(float CosTheta, float AnisotropyScale)
+{
+	return 0.7 * PA_HenyeyGreenstein(CosTheta, 0.6 * AnisotropyScale) + 0.3 * PA_HenyeyGreenstein(CosTheta, -0.25 * AnisotropyScale);
+}
+
 /**
  * Length of the light march from P (planet-relative, world axes, altitude known) toward the sun: up to the cloud-top
  * exit, at most MaxLength. Step 32: the top is the deepest cloud the weather allows along the path

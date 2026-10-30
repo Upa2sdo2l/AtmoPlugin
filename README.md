@@ -97,8 +97,9 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.MaxVisible` | 16 | Max atmospheres per view (closest first) |
 | `r.PlanetAtmosphere.DebugPlanetSurface` | 1 | Placeholder planet surface for levels without terrain |
 | `r.PlanetAtmosphere.CloudAmbientIntensity` | 0.1 | Ambient light on clouds as a fraction of the sun; only when the Step 15 sky ambient is off (`Atmosphere 0` or `MultipleScattering 0`) |
-| `r.PlanetAtmosphere.CloudSkyAmbientScale` | 1.0 | Global multiplier of the per-planet **Cloud Sky Ambient Scale** (see below); 0.2 × the default 5 = physical ×1 |
+| `r.PlanetAtmosphere.CloudSkyAmbientScale` | 1.0 | Global multiplier of the per-planet **Cloud Sky Ambient Scale** (see below); 0.5 × the default 2 = physical ×1 (default 5 before Step 32c) |
 | `r.PlanetAtmosphere.LightSteps` | 6 | Light-march samples toward the sun (cloud self-shadowing) |
+| `r.PlanetAtmosphere.CloudLightingModel` | 1 | Step 32c: 1 = multiple-scattering octaves on the sun term + sky light by the height inside the local cloud; 0 = Phase 4–5 lighting (A/B) |
 | `r.PlanetAtmosphere.StepDistribution` | 1 | 0 = uniform steps (Phase 1), 1 = camera-centered: small near the camera, larger far away |
 | `r.PlanetAtmosphere.StepNearDistance` | 1.0 | Camera-centered steps grow with (distance + this × cloud layer thickness) |
 | `r.PlanetAtmosphere.StepRatioMax` | 4 | Camera-centered: max ratio last step / first step of one ray (protects far clouds); ≤ 1 = no cap |
@@ -136,10 +137,10 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudShadows.CrossfadeFrames` | 16 | Frames of the crossfade to the rebuilt set (0 = switch at once) |
 | `r.PlanetAtmosphere.CloudShadows.Surface` | 1 | Cloud shadows on the direct sunlight of the placeholder surface (Step 24); 0 = off (A/B). Scene geometry is not shadowed |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchSteps` | 12 | Minimum samples of the march from a surface point through the cloud layer toward the sun, where the cascades are too coarse (from high up / orbit) and on planets without cascades (1..64; prototype worst-case error 8 → 7.4, 12 → 3.5, 16 → 2.4) |
-| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep` | 0.5 | Longest step of that march, × `CloudShapeScale` (350 m at the Step 32 default 700 m; was 0.125 = 1 km at the old 8 km): long low-sun paths get more steps, otherwise the shadows turn into too-bright "ladders" (Step 24 prototype, sun 8°: 12 fixed steps 9.5, ≤ 1 km steps 0.8). 0 = always `SurfaceMarchSteps` |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxStep` | 0.5 | Longest step of that march, × `CloudShapeScale` (700 m at the Step 32c default 1400 m; was 0.125 = 1 km at the old 8 km): long low-sun paths get more steps, otherwise the shadows turn into too-bright "ladders" (Step 24 prototype, sun 8°: 12 fixed steps 9.5, ≤ 1 km steps 0.8). 0 = always `SurfaceMarchSteps` |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchMaxSteps` | 48 | Upper limit of those steps |
 | `r.PlanetAtmosphere.CloudShadows.SurfaceMarchJitter` | 1 | Per-pixel animated jitter of those samples (0 = step centres, A/B) |
-| `r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel` | 0.25 | Coarsest cascade texel used on the surface, × the planet's `CloudShapeScale` (175 m at the Step 32 default 700 m; was 1/16 = 500 m at the old 8 km); coarser → march. 0 = always march |
+| `r.PlanetAtmosphere.CloudShadows.SurfaceMaxTexel` | 0.25 | Coarsest cascade texel used on the surface, × the planet's `CloudShapeScale` (350 m at the Step 32c default 1400 m; was 1/16 = 500 m at the old 8 km); coarser → march. 0 = always march |
 | `r.PlanetAtmosphere.CloudShadows.Resolution` | 512 | Texels per cascade side (multiple of 32, 128..1024); atlas Res × 6 Res RGBA16F (two sets of 3 cascades, Step 25), 12 MB per view at 512 |
 | `r.PlanetAtmosphere.CloudShadows.GenerationSteps` | 32 | Minimum density samples per cascade texel along the sun through the cloud shell (8..128); Step 32a: more on long paths (steps ≤ 0.1 × `CloudShapeScale`, up to 128) at a static per-texel jitter |
 | `r.PlanetAtmosphere.CloudShadows.UpdateBudget` | 32 | Tiles of 32 × 32 texels generated per view and frame (0..768; 0 = frozen). The GPU cost of the cascades: RTX 3050 frame peaks 8 → 0.11 ms, 16 → 0.14 ms, 32 → 0.23 ms; 32 fills all cascades in 24 frames |
@@ -160,11 +161,15 @@ With `r.PlanetAtmosphere.Atmosphere 1` the clouds of each planet are lit and see
   at the terminator; the planet shadow is the atmosphere's horizon (the cloud light march is skipped where the sun
   is not visible).
 - **Sky ambient** = sky radiance around the sample from the multiple-scattering LUT (blue by day, colored at
-  sunset, dark at night) × **Cloud Sky Ambient Scale** (Details panel → Clouds, default **5**) ×
-  `r.PlanetAtmosphere.CloudSkyAmbientScale`.
+  sunset, dark at night) × **Cloud Sky Ambient Scale** (Details panel → Clouds, default **2** since Step 32c, was 5) ×
+  `r.PlanetAtmosphere.CloudSkyAmbientScale`. Step 32c (`r.PlanetAtmosphere.CloudLightingModel` 1, default): the sun term
+  gets multiple-scattering octaves (Wrenninge, 3 octaves: energy, extinction and anisotropy × 0.5 each) and the sky
+  light follows the height inside the LOCAL cloud (0.25 at the base → 1 at the top) instead of the height in the whole
+  layer; `CloudLightingModel 0` = the Phase 4–5 lighting (A/B).
   > **Cloud Sky Ambient Scale is a temporary artistic compensation until Phase 7.** The clouds do not have multiple
   > scattering inside them yet; the physically correct value 1 makes them far too dark (from orbit ~1/3 of the
-  > Phase 2 brightness). ~5 keeps the daytime brightness close to Phase 2. Phase 7 brings it towards 1 or replaces it
+  > Phase 2 brightness). ~5 kept the daytime brightness close to Phase 2 but filled shallow clouds with one flat sky tone
+  > (the "paper" look of the Step 32b test); Step 32c lowers it to 2 with the octaves. Phase 7 brings it towards 1 or replaces it
   > with a full in-cloud multiple-scattering model.
 - **Aerial perspective**: the atmosphere along the view ray is split at the clouds' contribution-weighted mean depth;
   the part in front attenuates the clouds and adds haze, the part behind is seen through them
@@ -264,8 +269,8 @@ changes the cloud FRACTION at distances where it is not resolved:
 | Weather | atlas (hundreds–thousands km) | contrast curve cloud water → cloud fraction (clear zones clear, masses overcast, ~55 % of an Earth-like planet at `CloudCoverage` 0.5); storm factor: shallow fair-weather clouds (`CloudFairWeatherDepth` 800 m since Step 32b) → deep storm clouds up to the cloud top |
 | Clusters | `CloudClusterScale` 100 km | soft local cloud fraction: clouds thin out toward the edge of a cluster, never sliced |
 | Meso cells | `CloudMesoScale` 12 km | open / closed cells in the decks, relief of the tops (low orbit); faded before it reaches the pixel size (it would read as grain from orbit) |
-| Clouds | `CloudShapeScale` 700 m | Step 32b: Worley cells (1.5 × shape) + Perlin distortion (1.37 × shape), vertically coherent: separate compact cumulus, flat bases, domed tops; ragged bases under storms |
-| Billows | 0.25 × `CloudShapeScale` | Worley detail (128³ since Step 32b, finest ~45 m), billowy at the base, wispy toward the top (`CloudErosion`); Step 32b: 1.5× stronger, billowy / ragged per region (~3 km), coordinates warped by the cell noises (torn fringes) |
+| Clouds | `CloudShapeScale` 1400 m (Step 32c; 700 m before) | Step 32b: Worley cells (1.5 × shape) + Perlin distortion (1.37 × shape), vertically coherent: separate compact cumulus, flat bases, domed tops; ragged bases under storms |
+| Billows | 0.25 × `CloudShapeScale` | Worley detail (128³ since Step 32b, finest ~45 m), billowy at the base, wispy toward the top (`CloudErosion`); Step 32b: 1.5× stronger, billowy / ragged per region (~3 km), coordinates warped by the cell noises (torn fringes); Step 32c: erosion 0.6 of that, warp 0.5 × shape, plus additive billows (Worley at 0.5 × shape, weight 0.3) in the cloud-level field: outward bulges instead of eaten edges |
 
 - Thresholds come from quantile tables of the noise, so the cloud fraction is what the weather asks for.
 - **Effective medium** where the clouds are smaller than the footprint: the sample returns the density of a pixel
@@ -280,7 +285,7 @@ changes the cloud FRACTION at distances where it is not resolved:
 - `Weather 0`: the same levels with `CloudCoverage` as the cloud fraction everywhere (fair-weather clouds; deeper above
   0.8).
 - New defaults (Earth-like, reference 3 of the visual target): cloud bottom 2.5 km / top 10 km above the planet,
-  `CloudShapeScale` 700 m, `CloudDensity` 0.4, `CloudErosion` 1. Actors that kept the old defaults change with them.
+  `CloudShapeScale` 700 m (Step 32c: 1400 m), `CloudDensity` 0.4, `CloudErosion` 1. Actors that kept the old defaults change with them.
 - Prototype p31 (views E → D next to the references, simplified lighting): from orbit the weather masses instead of the
   procedural 48 km mask (share of the opacity variance at > 300 km 0.22 → 0.88, < 50 km 0.29 → 0.02), per-frame
   "salt" 0.24 → 0.03, from the surface a field of individual clouds (sky cover 0.59; reference 3 ~0.64). The shader
@@ -307,8 +312,15 @@ changes the cloud FRACTION at distances where it is not resolved:
   share > 300 km 0.883, salt 0.024). Shader compiled on the CPU vs the prototype: 400 000 samples, mean |Δ| 4e-4.
   Cost: +2 texture reads per cloud sample inside the local cloud depth (cell Worley, edge character), detail texture
   +4.2 MB.
-- Not yet: filaments, spiral arms, streets along the wind (transport, Steps 33–34); white clouds, bright edges, the
-  terminator (Phase 7).
+- Step 32c (after the 32a + 32b test: "рваные бумажки"): the CPU prototype with the Phase 4–5 lighting reproduced the flat
+  white cut-outs on the same density — mostly a lighting problem (sky light ×5 by the layer height = one flat tone).
+  Lighting: multiple-scattering octaves + sky light by the local cloud height (`CloudLightingModel`), `CloudSkyAmbientScale`
+  2. Form: `CloudShapeScale` 1400 m, `CloudFairWeatherDepth` 1200 m, erosion strength 1.5 → 0.6, billow warp 1.5 → 0.5 ×
+  shape, additive billows; the local depth is clamped to the layer. Recalibrated (erosion compensation 0.8, loss 0.5,
+  deck loss 0.03): cloud amount vs pixel size 20 m–16 km spread ≤ 0.046. Shader vs prototype: 400 000 samples, mean |Δ|
+  4.6e-4, p99.9 0.021. Orbit experiments (clumps with gaps, exaggerated slope shading) were rejected by the user; the
+  look of the weather systems from orbit is Step 33.
+- Not yet: filaments, spiral arms, comma clouds, frontal bands (Step 33); bright edges, the terminator (Phase 7).
 
 ## Noise textures
 
@@ -363,7 +375,7 @@ and never re-implement any part of it. Cheaper variants go through the LOD (foot
 
 ## Current Status
 
-**Phase 6 — Step 32 / 32a / 32b: multi-scale cloud density** (32b in review; UE test of 32a + 32b together) —
+**Phase 6 — Step 32 / 32a / 32b / 32c: multi-scale cloud density** (32b, 32c in review; UE test of 32a–32c together) —
 weather / clusters / meso cells / cellular cumulus / billows, effective medium for unresolved clouds (same cloud amount at
 every distance), cloud-top clamp of the marches, Worley detail texture, heterogeneous torn edges, new Earth-like cloud
 defaults (see "Multi-scale cloud density").
@@ -511,8 +523,8 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: UE test of Steps 32a + 32b, then Phase 6 — Step 33 (transport by the wind: flow map with replay vs backtrace vs
-zonal only).
+Next: UE test of Steps 32a–32c; Phase 6 — Step 33 prototype: the shape of the weather systems from orbit (spiral arms,
+comma clouds, frontal bands, streaks along the wind) next to references 1–2.
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
 ## Dependencies

@@ -55,6 +55,7 @@ float3 SunIlluminance;       // 0 when there is no sun
 float3 AmbientIlluminance;   // sky/ambient light on the clouds
 int bHasSun;
 int LightSteps;              // r.PlanetAtmosphere.LightSteps (full detail); per planet: A.LightSteps after LOD
+int CloudLightingModel;      // r.PlanetAtmosphere.CloudLightingModel: 1 = Step 32c (MS octaves + sky light by the local height), 0 = Phases 4-5
 
 // Sample distribution (Step 9). See RaymarchSchedule.ush.
 int StepDistribution;        // 0 = uniform, 1 = camera-centered
@@ -104,6 +105,8 @@ struct FPACloudLightingContext
 	float3 SunIlluminance;
 	float3 AmbientIlluminance;
 	float Phase;          // PA_CloudPhase(dot(ray, sun))
+	float Phase1;         // Step 32c: phase of the 2nd / 3rd multiple-scattering octave (anisotropy x 0.5 / x 0.25)
+	float Phase2;
 	bool bHasSun;
 	float PixelFootprintPerUnitDistance;   // TRUE pixel size at distance 1 (not scaled by NoiseFootprintScale)
 
@@ -168,16 +171,19 @@ struct FPACloudMarchState
 	uint SurfaceShadowMissing;    // 1 = the cascade texels were not generated yet (march instead)
 };
 
-/** Cloud density at distance T along the ray (one density call). Outputs the planet-relative position and altitude. */
+/**
+ * Cloud density at distance T along the ray (one density call). Outputs the planet-relative position, the altitude and
+ * (Step 32c) the height inside the local cloud.
+ */
 float PA_SampleCloudAlongRay(
 	FPAAtmosphere A, FPACloudLayer Layer, FPAPixelRay Ray, float T,
-	out float3 P, out float Altitude, inout FPACloudMarchState State)
+	out float3 P, out float Altitude, out float LocalHeight, inout FPACloudMarchState State)
 {
 	P = A.CameraRel + Ray.Dir * T;           // planet-relative, world axes
 	Altitude = length(P) - A.PlanetRadius;
 	const float Footprint = T * Ray.FootprintPerUnitDistance;
 	State.DensitySamples += 1u;
-	return PA_SampleCloudDensity(Layer, PA_ToPlanetLocal(A, P), Altitude, Footprint);
+	return PA_SampleCloudDensityEx(Layer, PA_ToPlanetLocal(A, P), Altitude, Footprint, LocalHeight);
 }
 
 /**
@@ -280,7 +286,8 @@ float PA_IntegrateCloudStep(
 {
 	float3 P;
 	float Altitude;
-	const float Density = PA_SampleCloudAlongRay(A, Layer, Ray, T, P, Altitude, State);
+	float LocalHeight;
+	const float Density = PA_SampleCloudAlongRay(A, Layer, Ray, T, P, Altitude, LocalHeight, State);
 	if (Density <= 0.0)
 	{
 		return Density;
@@ -291,6 +298,9 @@ float PA_IntegrateCloudStep(
 	// Energy-conserving integration over the step: S * (1 - exp(-sigma dt)) / sigma * sigma.
 	const float Contribution = State.Transmittance * (1.0 - StepTransmittance);
 	const float HeightFraction = saturate(PA_CloudHeightFraction(Layer, Altitude));
+	// Step 32c: sky light by the height inside the LOCAL cloud (dark bases, white tops); Phases 4-5 used the height in
+	// the whole layer, which is ~0 for every shallow cloud -> one flat tone ("paper" look in the UE test).
+	const float AmbientHeightFactor = CloudLightingModel != 0 ? (0.25 + 0.75 * saturate(LocalHeight)) : (0.5 + 0.5 * HeightFraction);
 
 	// In-scattered radiance at this sample (single-scattering albedo 1).
 	float3 Radiance = 0.0;
@@ -328,7 +338,15 @@ float PA_IntegrateCloudStep(
 				{
 					SunTransmittance = PA_CloudSunTransmittance(A, Layer, P, Altitude, Light.SunDirection, Footprint, PA_GetLightSteps(A, Layer, Light, T), State.DensitySamples);
 				}
-				Radiance += Light.SunIlluminance * SunVisibility * (Light.Phase * SunTransmittance);
+				// Step 32c: multiple-scattering octaves (Wrenninge: energy, extinction and anisotropy x 0.5 per octave) light
+				// the inside of the cloud softly instead of the flat sky-light fill; T^0.5 = sqrt(T), T^0.25 = sqrt(sqrt(T)).
+				float SunPhaseTransmittance = Light.Phase * SunTransmittance;
+				if (CloudLightingModel != 0)
+				{
+					const float T1 = sqrt(saturate(SunTransmittance));
+					SunPhaseTransmittance += 0.5 * Light.Phase1 * T1 + 0.25 * Light.Phase2 * sqrt(T1);
+				}
+				Radiance += Light.SunIlluminance * SunVisibility * SunPhaseTransmittance;
 			}
 		}
 
@@ -337,12 +355,12 @@ float PA_IntegrateCloudStep(
 			// Sky ambient: Psi_ms = mean sky radiance around the point (sun illuminance 1), colored by the atmosphere,
 			// dark at night; x SkyAmbientScale (temporary compensation until Phase 7, see CloudSkyAmbientScale).
 			Radiance += Light.SunIlluminance * PA_SampleMultipleScatteringLut(Light.PlanetIndex, Light.Scattering, AtmosphereH, SunMu)
-				* ((0.5 + 0.5 * HeightFraction) * Light.SkyAmbientScale);
+				* (AmbientHeightFactor * Light.SkyAmbientScale);
 		}
 		else
 		{
 			const float Daylight = Light.bHasSun ? PA_DaylightFactor(P, Light.SunDirection) : 1.0;
-			Radiance += Light.AmbientIlluminance * ((0.5 + 0.5 * HeightFraction) * Daylight);
+			Radiance += Light.AmbientIlluminance * (AmbientHeightFactor * Daylight);
 		}
 	}
 
@@ -384,7 +402,8 @@ void PA_MarchClouds(
 			PA_GetMarchBin(Sch, ProbeBin, Jitter, T, Dt);
 			float3 ProbeP;
 			float ProbeAltitude;
-			if (PA_SampleCloudAlongRay(A, Layer, Ray, T, ProbeP, ProbeAltitude, State) <= 0.0)
+			float ProbeLocalHeight;
+			if (PA_SampleCloudAlongRay(A, Layer, Ray, T, ProbeP, ProbeAltitude, ProbeLocalHeight, State) <= 0.0)
 			{
 				Bin = ProbeBin + 1;   // the whole span is treated as empty
 				continue;
@@ -623,6 +642,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Light.SunIlluminance = SunIlluminance;
 	Light.AmbientIlluminance = AmbientIlluminance;
 	Light.Phase = PA_CloudPhase(dot(Ray.Dir, SunDirection));
+	Light.Phase1 = PA_CloudPhaseScaled(dot(Ray.Dir, SunDirection), 0.5);
+	Light.Phase2 = PA_CloudPhaseScaled(dot(Ray.Dir, SunDirection), 0.25);
 	Light.bHasSun = bHasSun != 0;
 	Light.PixelFootprintPerUnitDistance = PixelFootprintPerUnitDistance;
 	Light.bAtmosphereLighting = false;
