@@ -514,12 +514,15 @@ static const int PA_W33_TRACE_STEPS = 12;            // RK2 steps (2 h)
 static const float PA_W33_STORM_HOURS = 72.0;        // winding window of the storm vortices
 static const float PA_W33_STORM_WIND = 1.5;          // storm wind factor in the trace
 static const float PA_W33_STORM_MAX_TURNS = 1.25;    // winding cap at the radius of maximum wind (tropical storms)
-static const float PA_W33_EDDY_KM = 450.0;           // eddy (curl noise) scale
-static const float PA_W33_EDDY_WIND = 7.0;           // m/s rms of the eddy wind before the latitude envelope
-static const float PA_W33_EDDY_NORM = 0.7487;        // 1 / rms of |P x grad psi| (measured over the sphere, one anchor)
+static const float PA_W33_EDDY_KM = 900.0;           // eddy (curl noise) scale (Step 33: 450 km; Step 35: 900 + 360 km)
+static const float PA_W33_EDDY_RATIO = 0.4;          // second eddy octave: 0.4 x the scale (360 km)
+static const float PA_W33_EDDY_OCTAVE_WIND = 0.7369; // its relative wind (0.4^(1/3): velocity ~ L^(1/3))
+static const float PA_W33_EDDY_WIND = 4.8;           // m/s rms of the eddy wind before the latitude envelope (Step 33: 7)
+static const float PA_W33_EDDY_NORM = 0.6041;        // 1 / rms of |P x grad psi| (measured over the sphere, one anchor)
 static const float PA_W33_EDDY_DRIFT = 8.0;          // m/s eastward drift of the eddy field (x Sign x WindScale)
 static const uint PA_W33_EDDY_SEED_OFFSET = 7000021u;
 static const float PA_W33_NOISE_KM = 350.0;          // synoptic noise (Step 29: 900 km)
+static const float PA_W33_NOISE_WEIGHT = 0.04;       // its weight (Step 29 / 33: 0.12; Step 35: the cloud clusters carry most of it)
 static const float PA_W33_FINE_KM = 180.0;           // fine noise
 static const float PA_W33_FINE_WEIGHT = 0.10;
 static const uint PA_W33_FINE_SEED_OFFSET = 9000037u;
@@ -531,6 +534,17 @@ static const float PA_W33_DIPOLE_WIDTH = 1.5;        // storm radii
 static const float PA_W33_DIPOLE_ANGLE = 45.0;       // moist side: degrees equatorward of east
 static const float PA_W33_DIPOLE_DRY = 0.5;          // weight of the dry lobe
 static const float PA_W33_FRONT = 1.5;               // fronts, wound with the dipole
+
+// Step 35 (prototype p35, variant B): separate cloud clusters + streaks along the flow.
+static const float PA_W35_CLUSTER_KM = 300.0;        // soft cloud-cluster blobs (one per cell of this size)
+static const float PA_W35_CLUSTER_RADIUS = 0.45;     // blob radius in cells
+static const float PA_W35_CLUSTER_WEIGHT = 0.35;
+static const float PA_W35_CLUSTER_MEAN = 0.2;        // subtracted (keeps the cloud amount)
+static const uint PA_W35_CLUSTER_SEED_OFFSET = 3000017u;
+static const float PA_W35_STREAK_KM = 120.0;         // noise averaged along the trace -> streaks along the flow
+static const float PA_W35_STREAK_WEIGHT = 0.24;
+static const int PA_W35_STREAK_FIRST_STEP = 4;       // averaged over the trace points 4..12 (8..24 h upstream)
+static const uint PA_W35_STREAK_SEED_OFFSET = 11000027u;
 
 /** Eddy wind (m/s, 3D tangent) at unit P: divergence-free (P x grad psi), psi = two value-noise octaves, two anchors. */
 float3 PA_W33EddyWind(float3 P, FPAWeatherInputs In)
@@ -548,8 +562,12 @@ float3 PA_W33EddyWind(float3 P, FPAWeatherInputs In)
 			// The field drifts east as a solid rotation (no shear) since its anchor.
 			const float Drift = In.Sign * In.WindScale * PA_W33_EDDY_DRIFT * PA_W_KMH * Age / In.RadiusKm;
 			const float3 Q = PA_WeatherRotZ(P, -Drift) * Frequency;
-			const float3 G = PA_WeatherValueNoiseGradient(Q, Seed)
+			// Two eddy scales (900 + 360 km); grad psi in noise units, the octave's wind ~ L^(1/3).
+			float3 G = PA_WeatherValueNoiseGradient(Q, Seed)
 				+ PA_WeatherValueNoiseGradient(Q * 2.03 + 31.0, Seed + 1u) * (0.5 * 2.03);
+			const float3 Q2 = Q * (1.0 / PA_W33_EDDY_RATIO) + 13.7;
+			G = G + (PA_WeatherValueNoiseGradient(Q2, Seed + 2u)
+				+ PA_WeatherValueNoiseGradient(Q2 * 2.03 + 31.0, Seed + 3u) * (0.5 * 2.03)) * PA_W33_EDDY_OCTAVE_WIND;
 			Gradient = Gradient + PA_WeatherRotZ(G, Drift) * Weight;
 			Weights2 += Weight * Weight;
 		}
@@ -604,21 +622,89 @@ float3 PA_W33StormRotate(float3 Q, float DtSeconds, float RadiusKm)
 	return Q;
 }
 
-/** Where the air at P was PA_W33_TRACE_HOURS ago (frozen snapshot wind). */
-float3 PA_W33Departure(float3 P, FPAWeatherInputs In)
+/** Step 35: soft cloud-cluster blobs, one per unit cell (random position, strength 0.1..1), value 0..1. */
+float PA_W35ClusterCells(float3 P, uint Seed)
+{
+	const float3 Cell = floor(P);
+	const int IX = (int)Cell.x;
+	const int IY = (int)Cell.y;
+	const int IZ = (int)Cell.z;
+	float Best = 0.0;
+	for (int DZ = -1; DZ <= 1; ++DZ)
+	{
+		for (int DY = -1; DY <= 1; ++DY)
+		{
+			for (int DX = -1; DX <= 1; ++DX)
+			{
+				const int X = IX + DX;
+				const int Y = IY + DY;
+				const int Z = IZ + DZ;
+				const float3 Centre = float3((float)X + 0.5 + 0.5 * PA_WeatherLatticeValue(X, Y, Z, Seed),
+					(float)Y + 0.5 + 0.5 * PA_WeatherLatticeValue(X, Y, Z, Seed + 1u),
+					(float)Z + 0.5 + 0.5 * PA_WeatherLatticeValue(X, Y, Z, Seed + 2u));
+				const float Strength = 0.55 + 0.45 * PA_WeatherLatticeValue(X, Y, Z, Seed + 3u);
+				const float3 D = P - Centre;
+				Best = max(Best, Strength * exp(-dot(D, D) / (PA_W35_CLUSTER_RADIUS * PA_W35_CLUSTER_RADIUS)));
+			}
+		}
+	}
+	return Best;
+}
+
+/** The cloud clusters carried by the zonal wind like the synoptic noise (same anchors, crossfaded). */
+float PA_W35TransportedClusters(float3 P, float Latitude, float WindEast, FPAWeatherInputs In)
+{
+	const float Frequency = In.RadiusKm / PA_W35_CLUSTER_KM;
+	const float CosLat = max(cos(Latitude), 0.05);
+	float Sum = 0.0;
+	float Weights = 0.0;
+	for (int J = 0; J < 2; ++J)
+	{
+		const float Weight = J == 0 ? In.NoiseWeight0 : In.NoiseWeight1;
+		if (Weight > 0.0)
+		{
+			const float Age = J == 0 ? In.NoiseAge0 : In.NoiseAge1;
+			const uint Seed = (J == 0 ? In.NoiseSeed0 : In.NoiseSeed1) + PA_W35_CLUSTER_SEED_OFFSET;
+			const float DeltaLongitude = WindEast * PA_W_KMH * Age / (In.RadiusKm * CosLat);
+			Sum += Weight * PA_W35ClusterCells(PA_WeatherRotZ(P, -DeltaLongitude) * Frequency, Seed);
+			Weights += Weight;
+		}
+	}
+	return Sum / max(Weights, 1e-6);
+}
+
+/**
+ * Where the air at P was PA_W33_TRACE_HOURS ago (frozen snapshot wind): xyz. w (Step 35) = the streak noise averaged over
+ * the trace points from PA_W35_STREAK_FIRST_STEP on (a line integral along the flow -> streaks).
+ */
+float4 PA_W33Departure(float3 P, FPAWeatherInputs In)
 {
 	const float Dt = PA_W33_TRACE_HOURS * 3600.0 / (float)PA_W33_TRACE_STEPS / (In.RadiusKm * 1000.0);   // m/s -> radians
 	const float StormDt = PA_W33_STORM_HOURS * 3600.0 / (float)PA_W33_TRACE_STEPS;
 	float3 Q = P;
+	float Streak = 0.0;
+	float StreakCount = 0.0;
 	for (int Step = 0; Step < PA_W33_TRACE_STEPS; ++Step)
 	{
 		const float3 V0 = PA_W33BackgroundWind(Q, In);
 		const float3 QM = normalize(Q - V0 * (0.5 * Dt));
 		const float3 VM = PA_W33BackgroundWind(QM, In);
 		Q = normalize(Q - VM * Dt);
+		if (Step + 1 >= PA_W35_STREAK_FIRST_STEP)
+		{
+			const float LatitudeS = asin(clamp(Q.z, -1.0, 1.0));
+			Streak += PA_WeatherTransportedNoise(Q, LatitudeS, PA_WeatherClimatology(LatitudeS, In).WindEast, In, PA_W35_STREAK_KM,
+				PA_W35_STREAK_SEED_OFFSET);
+			StreakCount += 1.0;
+		}
 		Q = normalize(PA_W33StormRotate(Q, StormDt, In.RadiusKm));
 	}
-	return Q;
+	float4 Result;
+	Result.x = Q.x;
+	Result.y = Q.y;
+	Result.z = Q.z;
+	Result.w = StreakCount > 0.0 ? Streak / StreakCount : 0.0;
+	return Result;
 }
 
 /**
@@ -665,7 +751,8 @@ FPAWeatherSample PA_EvaluateWeatherFlowWarp(float3 P, FPAWeatherInputs In)
 	const FPAWeatherClimate Climate = PA_WeatherClimatology(Latitude, In);
 
 	// The humidity pattern (climatology, noise, waves, ITCZ) is the one of the departure point Q.
-	const float3 Q = PA_W33Departure(P, In);
+	const float4 Departure = PA_W33Departure(P, In);
+	const float3 Q = float3(Departure.x, Departure.y, Departure.z);
 	const float LatQ = asin(clamp(Q.z, -1.0, 1.0));
 	const float LonQ = atan2(Q.y, Q.x);
 	const FPAWeatherClimate ClimQ = PA_WeatherClimatology(LatQ, In);
@@ -674,6 +761,7 @@ FPAWeatherSample PA_EvaluateWeatherFlowWarp(float3 P, FPAWeatherInputs In)
 	const float N = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, PA_W33_NOISE_KM, 0u);
 	const float N2 = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, 2800.0, PA_W_N2_SEED_OFFSET);
 	const float NF = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, PA_W33_FINE_KM, PA_W33_FINE_SEED_OFFSET);
+	const float NC = PA_W35TransportedClusters(Q, LatQ, ClimQ.WindEast, In) - PA_W35_CLUSTER_MEAN;
 
 	const float WaveStormTrack = 0.10 * cos(5.0 * LonQ + In.StormTrackWavePhase)
 		* PA_WeatherGauss(X, 0.5 * (In.HadleyDegrees + In.FerrelDegrees), 12.0);
@@ -687,8 +775,8 @@ FPAWeatherSample PA_EvaluateWeatherFlowWarp(float3 P, FPAWeatherInputs In)
 	const float3 QS = normalize(PA_W33StormRotate(P, PA_W33_STORM_HOURS * 3600.0, In.RadiusKm));
 	const float Pattern = PA_W33StormPattern(QS, In.RadiusKm);
 
-	const float EffectiveHumidity = ClimQ.Humidity + 0.12 * N + 0.08 * N2 + PA_W33_FINE_WEIGHT * NF + WaveStormTrack + WaveItcz
-		+ Storms.Humidity + Pattern;
+	const float EffectiveHumidity = ClimQ.Humidity + PA_W33_NOISE_WEIGHT * N + PA_W35_CLUSTER_WEIGHT * NC + PA_W35_STREAK_WEIGHT * Departure.w
+		+ 0.08 * N2 + PA_W33_FINE_WEIGHT * NF + WaveStormTrack + WaveItcz + Storms.Humidity + Pattern;
 	float Cover = clamp((EffectiveHumidity - PA_W33_COVER_LO) / (PA_W33_COVER_HI - PA_W33_COVER_LO), 0.0, 1.0);
 	Cover = Cover * Cover * (3.0 - 2.0 * Cover);
 
