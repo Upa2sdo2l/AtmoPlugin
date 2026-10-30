@@ -62,6 +62,13 @@ static const float PA_CLOUD_MASS_EDGE_FRACTION = 0.6; // cloud fraction factor a
 static const float PA_CLOUD_THICK_LOW = 0.70;         // RHe -> storm factor (depth, top height, density)
 static const float PA_CLOUD_THICK_HIGH = 1.0;
 static const float PA_CLOUD_HUMIDITY_COVERAGE = 0.4;  // RHe shift per unit of (Coverage - 0.5) x 2
+// Step 35: softer edges of the weather masses for large footprints (far views): the contrast range widens toward
+// [0.06, 0.70] (same cloud amount within ~1 %) at half strength between 3 and 15 km of footprint.
+static const float PA_CLOUD_SOFT_FAR_START = 3.0e5;   // cm
+static const float PA_CLOUD_SOFT_FAR_END = 15.0e5;
+static const float PA_CLOUD_SOFT_FAR_STRENGTH = 0.5;
+static const float PA_CLOUD_SOFT_CONTRAST_LOW = 0.06;
+static const float PA_CLOUD_SOFT_CONTRAST_HIGH = 0.70;
 static const float PA_CLOUD_CLUSTER_EXPONENT = 0.35; // cluster fraction = fraction^0.35, clouds inside take the rest
 static const float PA_CLOUD_CLUSTER_WIDTH = 0.15;    // soft width of the cluster fraction
 static const float PA_CLOUD_EDGE_WIDTH = 0.07;       // soft width of the cloud edges (stretched noise units)
@@ -189,8 +196,9 @@ float PA_CloudHeightFraction(FPACloudLayer Layer, float Altitude)
 /**
  * Weather at Direction (planet local, unit): x = cloud fraction, y = storm factor (0 fair weather, 1 deep storm clouds).
  * Step 34: the storm factor and a broken mass edge come from the weather humidity (how deep inside a cloud mass).
+ * Step 35: Footprint (cm) softens the mass edges for far views (0 = none; the storm factor does not depend on it).
  */
-float2 PA_CloudWeather(FPACloudLayer Layer, float3 Direction)
+float2 PA_CloudWeather(FPACloudLayer Layer, float3 Direction, float Footprint)
 {
 	if (Layer.WeatherEnabled == 0)
 	{
@@ -206,8 +214,10 @@ float2 PA_CloudWeather(FPACloudLayer Layer, float3 Direction)
 	// Step 34: how deep inside a weather mass (effective humidity, unclamped since Step 34), shifted with Coverage.
 	const float Humidity = Sample.y + PA_CLOUD_HUMIDITY_COVERAGE * (Layer.Coverage - 0.5) * 2.0;
 	const float Interior = smoothstep(PA_CLOUD_INTERIOR_LOW, PA_CLOUD_INTERIOR_HIGH, Humidity);
+	const float Soft = PA_CLOUD_SOFT_FAR_STRENGTH * smoothstep(PA_CLOUD_SOFT_FAR_START, PA_CLOUD_SOFT_FAR_END, Footprint);
 	return float2(
-		smoothstep(PA_CLOUD_CONTRAST_LOW, PA_CLOUD_CONTRAST_HIGH, LocalCoverage) * lerp(PA_CLOUD_MASS_EDGE_FRACTION, 1.0, Interior),
+		smoothstep(lerp(PA_CLOUD_CONTRAST_LOW, PA_CLOUD_SOFT_CONTRAST_LOW, Soft), lerp(PA_CLOUD_CONTRAST_HIGH, PA_CLOUD_SOFT_CONTRAST_HIGH, Soft),
+			LocalCoverage) * lerp(PA_CLOUD_MASS_EDGE_FRACTION, 1.0, Interior),
 		smoothstep(PA_CLOUD_THICK_LOW, PA_CLOUD_THICK_HIGH, Humidity));
 }
 
@@ -217,7 +227,7 @@ float2 PA_CloudWeather(FPACloudLayer Layer, float3 Direction)
  */
 float PA_CloudMaxTopAltitude(FPACloudLayer Layer, float3 Direction)
 {
-	const float Storm = PA_CloudWeather(Layer, Direction).y;
+	const float Storm = PA_CloudWeather(Layer, Direction, 0.0).y;
 	return Layer.BottomAltitude + min(Layer.Thickness, lerp(Layer.FairDepth, Layer.Thickness, Storm) * (1.0 + PA_CLOUD_MESO_RELIEF));
 }
 
@@ -319,7 +329,7 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	const float3 Direction = PosPlanetLocal / max(length(PosPlanetLocal), 1.0);
 
 	// Weather: cloud fraction (contrast) and storm factor.
-	const float2 Weather = PA_CloudWeather(Layer, Direction);
+	const float2 Weather = PA_CloudWeather(Layer, Direction, Footprint);
 	const float Fraction = Weather.x;
 	const float Storm = Weather.y;
 	if (Fraction <= 0.0)

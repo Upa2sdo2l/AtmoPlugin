@@ -353,8 +353,19 @@ changes the cloud FRACTION at distances where it is not resolved:
   amount stays at the Step 33 level (mean fraction 0.28). No extra texture fetch (both channels in one sample).
   Shader vs prototype: 400 000 samples, mean |Δ| 5.2e-4, p99.9 0.022; max top altitude within 1.6 m. Cloud shadows on
   the surface (Phase 4) make the relief readable near the terminator; the prototype had none before Step 34.
-- Not yet: the look of reference 1 (separate soft cloud clusters instead of marbled streams, streaks along the wind, soft
-  edges from far away, atmospheric haze in the comparison: Step 35 prototype); bright edges, the terminator (Phase 7).
+- Step 35 (closer to reference 1; user chose variant B of the prototype, compared with an approximate haze and a dark
+  ocean in the prototype only): instead of continuous "marbled" streams, the humidity carries many separate soft cloud
+  clusters (one blob per 300 km cell, random strength; transported like the synoptic noise, the 350 km noise weight
+  0.12 → 0.04); the eddies are two scales, 900 + 360 km, 4.8 m/s rms (were 450 km, 7 m/s: they crinkled the edges into
+  worms); a 120 km noise averaged over the trace points 8–24 h upstream adds streaks along the flow; for footprints
+  above 3 km the weather contrast range widens (half strength at 15 km; amount kept within ~1 %): softer mass edges from
+  far, sharp near. Cloud amount equal to Step 34. Verification: weather vs prototype with the eddies off max |ΔC| 1e-4;
+  eddy normalisation 0.6041; density vs prototype 400 000 samples mean |Δ| 5.3e-4, p99.9 0.022. Cost: the weather
+  snapshot build ~12× Step 29 on the CPU measure (~1.9× Step 34) — per background face ~1.5–2 ms estimated from the Step
+  27 UE measurement, a full synchronous rebuild (time jump) ~20 ms once; to be measured, optimisation candidates in the
+  Phase 6 profiling step (fewer trace / streak points).
+- Not yet: more cloud by default than reference 1's look needs (`CloudCoverage`), grey translucent transitions inside the
+  clusters; light and colour, bright edges, the terminator (Phase 7).
 
 ## Noise textures
 
@@ -557,8 +568,9 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: Phase 6 — Step 35 prototype: closer to reference 1 (soft separate cloud clusters, streaks along the wind, soft
-edges from far, an approximate atmospheric haze in the prototype for a fair comparison). From now on the UE test is done once per
+Next: rest of Phase 6 — clouds moving with the wind (transported noise coordinates in the density, temporal
+reprojection with the cloud velocity, cloud shadow cascades following the drift), profiling + optimisation, Phase 6
+checklist; then Phase 7 (lighting) and the UE test of both phases. From now on the UE test is done once per
 phase: the next one after Phase 7 (decision of 30.10.2026).
 Step 16 part 3 (cheaper cloud/atmosphere coupling) was closed without implementation after Phase 3 (saving ~0.1 ms).
 
