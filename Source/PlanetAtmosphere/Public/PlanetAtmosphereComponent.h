@@ -165,9 +165,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "10.0"))
 	float CloudDensity = 0.4f;
 
-	/** Size of the individual clouds in meters (Step 32 default 700 m; billows are 1/4 of it) */
+	/** Size of the individual clouds in meters (Step 32c default 1400 m, was 700; billows are 1/4 of it) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "100.0", ClampMax = "1000000.0"))
-	double CloudShapeScale = 700.0;
+	double CloudShapeScale = 1400.0;
 
 	/** How strongly the billows (Worley detail) eat into the cloud edges (0 = smooth domes, 1 = billowy / wispy edges) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
@@ -186,21 +186,23 @@ public:
 
 	/**
 	 * Step 32: depth in meters of the fair-weather clouds (flat bases at the cloud bottom); storms grow up to the cloud top.
-	 * Step 32b default 800 m (was 600): puffier cumulus, sky cover from the ground ~0.6 as in reference 3.
+	 * Step 32b default 800 m (was 600); Step 32c 1200 m with the 1400 m clouds (puffy cumulus, not flat "paper").
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "50.0", ClampMax = "100000.0"))
-	double CloudFairWeatherDepth = 800.0;
+	double CloudFairWeatherDepth = 1200.0;
 
 	/**
 	 * Strength of the sky light on the clouds (Step 15). With the atmosphere on, cloud ambient light is the sky radiance
 	 * from the atmosphere (multiple-scattering LUT: blue by day, colored at sunset, dark at night) x this value.
 	 * TEMPORARY ARTISTIC COMPENSATION until Phase 7: the clouds have no multiple scattering inside them yet, so the
-	 * physically correct value 1 makes them far too dark (from orbit ~1/3 of the Phase 2 brightness); ~5 keeps the
-	 * daytime brightness close to Phase 2. Phase 7 brings it towards 1 or replaces it with a full model.
+	 * physically correct value 1 makes them far too dark (from orbit ~1/3 of the Phase 2 brightness); ~5 kept the
+	 * daytime brightness close to Phase 2. Step 32c (r.PlanetAtmosphere.CloudLightingModel 1) adds multiple-scattering
+	 * octaves to the sun term, so the default is 2: x5 then filled the clouds with one flat sky tone. Phase 7 brings it
+	 * towards 1 or replaces it with a full model.
 	 * Not used with r.PlanetAtmosphere.Atmosphere 0 / MultipleScattering 0 (then CloudAmbientIntensity applies).
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", UIMax = "20.0"))
-	float CloudSkyAmbientScale = 5.0f;
+	float CloudSkyAmbientScale = 2.0f;
 
 	// ===== RENDERING PARAMETERS =====
 

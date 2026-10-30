@@ -125,6 +125,7 @@ namespace PlanetAtmosphere
 				OutParameters.bHasSun = 0;
 			}
 			OutParameters.LightSteps = CVars::GetLightSteps();
+			OutParameters.CloudLightingModel = CVars::GetCloudLightingModel();
 		}
 
 		/** Sample distribution, jitter and early exit of the cloud raymarch (Phase 2 / Step 9). */

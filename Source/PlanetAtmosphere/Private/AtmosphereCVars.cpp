@@ -65,6 +65,15 @@ namespace
 		TEXT("r.PlanetAtmosphere.Atmosphere.MultipleScattering 0). Without a Directional Light a neutral ambient of 10 lux x this value is used."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudLightingModel(
+		TEXT("r.PlanetAtmosphere.CloudLightingModel"),
+		1,
+		TEXT("Cloud lighting. 1 (default, Step 32c) = the sun term with multiple-scattering octaves (Wrenninge: 3 octaves,\n")
+		TEXT("energy / extinction / anisotropy x 0.5 each) and the sky light by the height inside the LOCAL cloud (dark bases,\n")
+		TEXT("white tops); use with CloudSkyAmbientScale ~2. 0 = Phases 4-5 (single scattering, sky light by the height in the\n")
+		TEXT("whole layer: one flat tone on shallow clouds, the \"paper\" look of the Step 32b test)."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightSteps(
 		TEXT("r.PlanetAtmosphere.LightSteps"),
 		6,
@@ -533,6 +542,11 @@ namespace PlanetAtmosphere::CVars
 	float GetCloudAmbientIntensity()
 	{
 		return FMath::Max(0.0f, CVarPlanetAtmosphereCloudAmbientIntensity.GetValueOnAnyThread(false));
+	}
+
+	int32 GetCloudLightingModel()
+	{
+		return CVarPlanetAtmosphereCloudLightingModel.GetValueOnAnyThread(false) != 0 ? 1 : 0;
 	}
 
 	int32 GetLightSteps()

@@ -167,6 +167,7 @@ public:
 		SHADER_PARAMETER(int32, bHasSun)
 		SHADER_PARAMETER(FVector3f, SunIlluminance)
 		SHADER_PARAMETER(int32, LightSteps)
+		SHADER_PARAMETER(int32, CloudLightingModel)   // Step 32c
 		SHADER_PARAMETER(FVector3f, AmbientIlluminance)
 		// Sample distribution (Phase 2 / Step 9). Shaders/Private/RaymarchSchedule.ush.
 		SHADER_PARAMETER(int32, StepDistribution)
