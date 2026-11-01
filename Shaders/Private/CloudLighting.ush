@@ -29,6 +29,16 @@ float PA_CloudPhase(float CosTheta)
 	return 0.7 * PA_HenyeyGreenstein(CosTheta, 0.6) + 0.3 * PA_HenyeyGreenstein(CosTheta, -0.25);
 }
 
+/**
+ * Step 36 (CloudLightingModel 2): two-lobe phase with a strong forward lobe (bright edges toward the sun, "silver lining")
+ * and a back lobe; anisotropies scaled per multiple-scattering octave. Parameters from the CloudPhase* CVars.
+ */
+float PA_CloudPhaseDual(float CosTheta, float ForwardG, float BackG, float BackWeight, float AnisotropyScale)
+{
+	return (1.0 - BackWeight) * PA_HenyeyGreenstein(CosTheta, ForwardG * AnisotropyScale)
+		+ BackWeight * PA_HenyeyGreenstein(CosTheta, BackG * AnisotropyScale);
+}
+
 /** Step 32c: the same two-lobe phase with both anisotropies scaled (multiple-scattering octaves). */
 float PA_CloudPhaseScaled(float CosTheta, float AnisotropyScale)
 {

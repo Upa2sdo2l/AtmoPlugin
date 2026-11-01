@@ -67,11 +67,56 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudLightingModel(
 		TEXT("r.PlanetAtmosphere.CloudLightingModel"),
-		1,
-		TEXT("Cloud lighting. 1 (default, Step 32c) = the sun term with multiple-scattering octaves (Wrenninge: 3 octaves,\n")
+		2,
+		TEXT("Cloud lighting. 2 (default, Step 36) = 1 + a forward-peaked two-lobe phase (CloudPhase*), sky light from above\n")
+		TEXT("through the cloud above the sample and light of the sunlit ground from below through the cloud below it (diffuse\n")
+		TEXT("transmission 1 / (1 + CloudAmbientDiffusion x optical depth), CloudGroundBounce), powder (CloudPowder).\n")
+		TEXT("1 (Step 32c) = the sun term with multiple-scattering octaves (Wrenninge: 3 octaves,\n")
 		TEXT("energy / extinction / anisotropy x 0.5 each) and the sky light by the height inside the LOCAL cloud (dark bases,\n")
 		TEXT("white tops); use with CloudSkyAmbientScale ~2. 0 = Phases 4-5 (single scattering, sky light by the height in the\n")
 		TEXT("whole layer: one flat tone on shallow clouds, the \"paper\" look of the Step 32b test)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudPhaseForwardG(
+		TEXT("r.PlanetAtmosphere.CloudPhaseForwardG"),
+		0.8f,
+		TEXT("CloudLightingModel 2: anisotropy of the forward lobe of the cloud phase function (bright edges and glow toward\n")
+		TEXT("the sun, silver lining). Higher = narrower, brighter forward peak. Clamped to [0, 0.95]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudPhaseBackG(
+		TEXT("r.PlanetAtmosphere.CloudPhaseBackG"),
+		-0.2f,
+		TEXT("CloudLightingModel 2: anisotropy of the back lobe of the cloud phase function (clouds seen with the sun behind\n")
+		TEXT("the viewer). Clamped to [-0.9, 0]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudPhaseBackWeight(
+		TEXT("r.PlanetAtmosphere.CloudPhaseBackWeight"),
+		0.4f,
+		TEXT("CloudLightingModel 2: weight of the back lobe (the forward lobe gets 1 - this). Clamped to [0, 1]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudAmbientDiffusion(
+		TEXT("r.PlanetAtmosphere.CloudAmbientDiffusion"),
+		0.15f,
+		TEXT("CloudLightingModel 2: how much sky light (from above) and ground light (from below) the cloud blocks: diffuse\n")
+		TEXT("transmission 1 / (1 + this x optical depth) (two-stream ~0.75 x (1 - g)). Higher = darker bases / insides.\n")
+		TEXT("Clamped to [0, 10]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudPowder(
+		TEXT("r.PlanetAtmosphere.CloudPowder"),
+		0.5f,
+		TEXT("CloudLightingModel 2: strength of the powder term: thin sun-facing parts of the clouds darker when seen with the\n")
+		TEXT("sun behind the viewer (light builds up inside the cloud). 0 = off. Clamped to [0, 1]."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudGroundBounce(
+		TEXT("r.PlanetAtmosphere.CloudGroundBounce"),
+		1.0f,
+		TEXT("CloudLightingModel 2: x the sunlight reflected by the ground (the planet's SurfaceAlbedo) onto the cloud bases.\n")
+		TEXT("0 = off. Clamped to [0, 4]."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightSteps(
@@ -554,7 +599,19 @@ namespace PlanetAtmosphere::CVars
 
 	int32 GetCloudLightingModel()
 	{
-		return CVarPlanetAtmosphereCloudLightingModel.GetValueOnAnyThread(false) != 0 ? 1 : 0;
+		return FMath::Clamp(CVarPlanetAtmosphereCloudLightingModel.GetValueOnAnyThread(false), 0, 2);
+	}
+
+	FCloudLightingSettings GetCloudLightingSettings()
+	{
+		FCloudLightingSettings Settings;
+		Settings.PhaseForwardG = FMath::Clamp(CVarPlanetAtmosphereCloudPhaseForwardG.GetValueOnAnyThread(false), 0.0f, 0.95f);
+		Settings.PhaseBackG = FMath::Clamp(CVarPlanetAtmosphereCloudPhaseBackG.GetValueOnAnyThread(false), -0.9f, 0.0f);
+		Settings.PhaseBackWeight = FMath::Clamp(CVarPlanetAtmosphereCloudPhaseBackWeight.GetValueOnAnyThread(false), 0.0f, 1.0f);
+		Settings.AmbientDiffusion = FMath::Clamp(CVarPlanetAtmosphereCloudAmbientDiffusion.GetValueOnAnyThread(false), 0.0f, 10.0f);
+		Settings.Powder = FMath::Clamp(CVarPlanetAtmosphereCloudPowder.GetValueOnAnyThread(false), 0.0f, 1.0f);
+		Settings.GroundBounce = FMath::Clamp(CVarPlanetAtmosphereCloudGroundBounce.GetValueOnAnyThread(false), 0.0f, 4.0f);
+		return Settings;
 	}
 
 	int32 GetLightSteps()

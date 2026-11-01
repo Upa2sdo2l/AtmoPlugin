@@ -317,10 +317,14 @@ float PA_CloudErode(float X, float Detail, float K, float MissingDetail)
  * Footprint      : noise footprint at this sample (cm, NoiseFootprintScale x pixel); fades the detail smaller than it.
  * LocalHeight    : Step 32c: height of the sample inside its local cloud (0 base .. 1 top of the local depth; 0 where
  *                  the density is 0). The lighting darkens the sky light toward the bases with it.
+ * LocalDepth     : Step 36: depth of the local cloud (cm; 0 where the density is 0). With LocalHeight it gives the
+ *                  cloud above / below the sample (sky light occlusion, ground bounce).
  */
-float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint, out float LocalHeight)
+float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint, out float LocalHeight,
+	out float LocalDepth)
 {
 	LocalHeight = 0.0;
+	LocalDepth = 0.0;
 	const float H0 = Altitude - Layer.BottomAltitude;
 	if (H0 <= 0.0 || H0 >= Layer.Thickness)
 	{
@@ -375,6 +379,7 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 		return 0.0;
 	}
 	LocalHeight = H;
+	LocalDepth = Depth;
 
 	// Step 32b: edge character per region (~3 km): some clouds billowy and sharp, others ragged with wide soft edges.
 	const float EdgeScale = Layer.ShapeScale * PA_CLOUD_EDGE_VARIATION_SCALE;
@@ -440,5 +445,6 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 float PA_SampleCloudDensity(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint)
 {
 	float LocalHeight;
-	return PA_SampleCloudDensityEx(Layer, PosPlanetLocal, Altitude, Footprint, LocalHeight);
+	float LocalDepth;
+	return PA_SampleCloudDensityEx(Layer, PosPlanetLocal, Altitude, Footprint, LocalHeight, LocalDepth);
 }

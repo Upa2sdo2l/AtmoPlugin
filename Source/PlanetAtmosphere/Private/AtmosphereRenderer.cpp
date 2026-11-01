@@ -126,6 +126,13 @@ namespace PlanetAtmosphere
 			}
 			OutParameters.LightSteps = CVars::GetLightSteps();
 			OutParameters.CloudLightingModel = CVars::GetCloudLightingModel();
+			const CVars::FCloudLightingSettings CloudLighting = CVars::GetCloudLightingSettings();
+			OutParameters.CloudPhaseForwardG = CloudLighting.PhaseForwardG;
+			OutParameters.CloudPhaseBackG = CloudLighting.PhaseBackG;
+			OutParameters.CloudPhaseBackWeight = CloudLighting.PhaseBackWeight;
+			OutParameters.CloudAmbientDiffusion = CloudLighting.AmbientDiffusion;
+			OutParameters.CloudPowder = CloudLighting.Powder;
+			OutParameters.CloudGroundBounce = CloudLighting.GroundBounce;
 		}
 
 		/** Sample distribution, jitter and early exit of the cloud raymarch (Phase 2 / Step 9). */

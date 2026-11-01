@@ -99,7 +99,13 @@ changes nothing (the air above holds ~6·10⁻⁶ of the column) and does not di
 | `r.PlanetAtmosphere.CloudAmbientIntensity` | 0.1 | Ambient light on clouds as a fraction of the sun; only when the Step 15 sky ambient is off (`Atmosphere 0` or `MultipleScattering 0`) |
 | `r.PlanetAtmosphere.CloudSkyAmbientScale` | 1.0 | Global multiplier of the per-planet **Cloud Sky Ambient Scale** (see below); 0.5 × the default 2 = physical ×1 (default 5 before Step 32c) |
 | `r.PlanetAtmosphere.LightSteps` | 6 | Light-march samples toward the sun (cloud self-shadowing) |
-| `r.PlanetAtmosphere.CloudLightingModel` | 1 | Step 32c: 1 = multiple-scattering octaves on the sun term + sky light by the height inside the local cloud; 0 = Phase 4–5 lighting (A/B) |
+| `r.PlanetAtmosphere.CloudLightingModel` | 2 | 2 = Step 36 (below); 1 = Step 32c: multiple-scattering octaves on the sun term + sky light by the height inside the local cloud; 0 = Phase 4–5 lighting (A/B) |
+| `r.PlanetAtmosphere.CloudPhaseForwardG` | 0.8 | Model 2: forward lobe of the cloud phase function (glow and bright edges toward the sun) |
+| `r.PlanetAtmosphere.CloudPhaseBackG` | -0.2 | Model 2: back lobe anisotropy |
+| `r.PlanetAtmosphere.CloudPhaseBackWeight` | 0.4 | Model 2: back lobe weight (forward = 1 − this) |
+| `r.PlanetAtmosphere.CloudAmbientDiffusion` | 0.15 | Model 2: sky / ground light through the cloud above / below a sample, 1 / (1 + k τ); higher = darker bases and insides |
+| `r.PlanetAtmosphere.CloudPowder` | 0.5 | Model 2: powder term (thin sun-facing parts darker with the sun behind the viewer); 0 = off |
+| `r.PlanetAtmosphere.CloudGroundBounce` | 1 | Model 2: × the sunlight reflected by the ground (`SurfaceAlbedo`) onto cloud bases; 0 = off |
 | `r.PlanetAtmosphere.StepDistribution` | 1 | 0 = uniform steps (Phase 1), 1 = camera-centered: small near the camera, larger far away |
 | `r.PlanetAtmosphere.StepNearDistance` | 1.0 | Camera-centered steps grow with (distance + this × cloud layer thickness) |
 | `r.PlanetAtmosphere.StepRatioMax` | 4 | Camera-centered: max ratio last step / first step of one ray (protects far clouds); ≤ 1 = no cap |
@@ -568,7 +574,15 @@ Phase 3 closed (Step 20): UE measurements at 1256×756 (RTX 3050), PlanetAtmosph
 sunset in clouds 8.08 / 2.10 / 1.04 / 0.62 ms, low orbit 11.59 / 3.09 / 1.53 / 0.97 ms, far planet 6.82 / 1.65 / 0.85 / 0.48 ms;
 Temporal 0.26–0.29 ms, Composite 0.06 ms; whole GPU frame 15.2 → 6.9, 19.1 → 7.4, 13.7 → 6.8 ms (Interleave 1 → 3).
 
-Next: rest of Phase 6 — clouds moving with the wind (transported noise coordinates in the density, temporal
+Step 36 (Phase 7 core brought forward after the independent review of 02.11.2026: lighting before more shape work,
+judged on UE screenshots): `CloudLightingModel` 2 — a forward-peaked two-lobe phase (0.6 × HG(0.8) + 0.4 × HG(−0.2) by
+default: forward glow ~4× Step 32c, side / back about the same), Wrenninge octaves as in 32c; sky light from above
+through the cloud above the sample and the sunlit ground's light (SurfaceAlbedo, shadowed by the sample's sun
+transmittance) from below through the cloud below it, diffuse transmission 1 / (1 + k τ) instead of the height ramp;
+powder. All parameters are CVars for tuning in UE; `CloudLightingModel 1` is the Step 32c lighting (A/B on one build).
+Density unchanged (bit-identical, CPU harness); DXC 20/20.
+
+Next: UE screenshot ladder (lighting model 1 vs 2) and tuning; then rest of Phase 6 — clouds moving with the wind (transported noise coordinates in the density, temporal
 reprojection with the cloud velocity, cloud shadow cascades following the drift), profiling + optimisation, Phase 6
 checklist; then Phase 7 (lighting) and the UE test of both phases. From now on the UE test is done once per
 phase: the next one after Phase 7 (decision of 30.10.2026).
