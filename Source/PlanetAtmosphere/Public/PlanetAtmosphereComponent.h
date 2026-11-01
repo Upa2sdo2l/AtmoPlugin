@@ -192,6 +192,37 @@ public:
 	double CloudFairWeatherDepth = 1200.0;
 
 	/**
+	 * Step 37: size in meters of the cloud heaps -- rounded domes of the cloud tops (flat bases), large (this) and small
+	 * (1/3 of this) on top of them, so that cloud masses read as lumpy volumes from high orbit instead of a flat plate.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1000.0", ClampMax = "1000000.0"))
+	double CloudHeapScale = 40000.0;
+
+	/** Step 37: strength of the heaps (how much the cloud top height varies). 0 = no heaps (flat tops of Step 36). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "0.0", UIMax = "4.0"))
+	float CloudHeapAmplitude = 1.6f;
+
+	/** Step 37: share of the heap strength in fair weather (1 inside weather masses, where the heaps are tallest). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float CloudHeapFairWeather = 0.35f;
+
+	/**
+	 * Step 37: art-directed vertical exaggeration of the clouds seen from far away. Between Exaggeration Start Altitude and
+	 * Exaggeration Full Altitude of the camera the cloud layer and the fair-weather depth grow smoothly from x1 (physical,
+	 * near the planet) to x this, so that the relief of the cloud masses is readable from orbit. 1 = off.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1.0", UIMax = "10.0"))
+	float CloudVerticalExaggeration = 5.0f;
+
+	/** Step 37: camera altitude in meters below which the clouds are not exaggerated. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "100.0"))
+	double CloudExaggerationStartAltitude = 30000.0;
+
+	/** Step 37: camera altitude in meters from which the full exaggeration applies. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "200.0"))
+	double CloudExaggerationFullAltitude = 600000.0;
+
+	/**
 	 * Strength of the sky light on the clouds (Step 15). With the atmosphere on, cloud ambient light is the sky radiance
 	 * from the atmosphere (multiple-scattering LUT: blue by day, colored at sunset, dark at night) x this value.
 	 * TEMPORARY ARTISTIC COMPENSATION until Phase 7: the clouds have no multiple scattering inside them yet, so the

@@ -65,6 +65,12 @@ public:
 	const double CloudClusterScaleUU;       // Step 32
 	const double CloudMesoScaleUU;
 	const double CloudFairWeatherDepthUU;
+	const double CloudHeapScaleUU;          // Step 37
+	const float CloudHeapAmplitude;
+	const float CloudHeapFairWeather;
+	const float CloudVerticalExaggeration;
+	const double CloudExaggerationStartUU;
+	const double CloudExaggerationFullUU;
 	const int32 RaymarchSteps;
 	const float CloudSkyAmbientScale;
 	const FPlanetAtmosphereScattering ScatteringUU;

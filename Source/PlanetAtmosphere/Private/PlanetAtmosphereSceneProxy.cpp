@@ -18,6 +18,12 @@ FPlanetAtmosphereSceneProxy::FPlanetAtmosphereSceneProxy(const UPlanetAtmosphere
 	, CloudClusterScaleUU(FMath::Clamp(InComponent->CloudClusterScale, 1000.0, 10000000.0) * PlanetAtmosphere::MetersToUnrealUnits)
 	, CloudMesoScaleUU(FMath::Clamp(InComponent->CloudMesoScale, 100.0, 1000000.0) * PlanetAtmosphere::MetersToUnrealUnits)
 	, CloudFairWeatherDepthUU(FMath::Clamp(InComponent->CloudFairWeatherDepth, 50.0, 100000.0) * PlanetAtmosphere::MetersToUnrealUnits)
+	, CloudHeapScaleUU(FMath::Clamp(InComponent->CloudHeapScale, 1000.0, 1000000.0) * PlanetAtmosphere::MetersToUnrealUnits)
+	, CloudHeapAmplitude(FMath::Clamp(InComponent->CloudHeapAmplitude, 0.0f, 10.0f))
+	, CloudHeapFairWeather(FMath::Clamp(InComponent->CloudHeapFairWeather, 0.0f, 1.0f))
+	, CloudVerticalExaggeration(FMath::Clamp(InComponent->CloudVerticalExaggeration, 1.0f, 20.0f))
+	, CloudExaggerationStartUU(FMath::Clamp(InComponent->CloudExaggerationStartAltitude, 100.0, 1.0e8) * PlanetAtmosphere::MetersToUnrealUnits)
+	, CloudExaggerationFullUU(FMath::Clamp(InComponent->CloudExaggerationFullAltitude, 200.0, 1.0e9) * PlanetAtmosphere::MetersToUnrealUnits)
 	, RaymarchSteps(FMath::Clamp(InComponent->RaymarchSteps, 16, 256))
 	, CloudSkyAmbientScale(FMath::Clamp(InComponent->CloudSkyAmbientScale, 0.0f, 100.0f))
 	, ScatteringUU(InComponent->GetValidatedScatteringUU())
@@ -87,6 +93,13 @@ FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() co
 	Instance.CloudClusterScaleUU = CloudClusterScaleUU;
 	Instance.CloudMesoScaleUU = CloudMesoScaleUU;
 	Instance.CloudFairWeatherDepthUU = CloudFairWeatherDepthUU;
+	Instance.CloudHeapScaleUU = CloudHeapScaleUU;
+	Instance.CloudHeapAmplitude = CloudHeapAmplitude;
+	Instance.CloudHeapFairWeather = CloudHeapFairWeather;
+	Instance.CloudVerticalExaggeration = CloudVerticalExaggeration;
+	Instance.CloudExaggerationStartUU = CloudExaggerationStartUU;
+	Instance.CloudExaggerationFullUU = CloudExaggerationFullUU;
+	Instance.CloudExaggerationApplied = 1.0f;
 	Instance.RaymarchSteps = RaymarchSteps;
 	Instance.CloudSkyAmbientScale = CloudSkyAmbientScale;
 	Instance.ScatteringUU = ScatteringUU;

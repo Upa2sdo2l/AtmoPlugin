@@ -582,7 +582,30 @@ transmittance) from below through the cloud below it, diffuse transmission 1 / (
 powder. All parameters are CVars for tuning in UE; `CloudLightingModel 1` is the Step 32c lighting (A/B on one build).
 Density unchanged (bit-identical, CPU harness); DXC 20/20.
 
-Next: UE screenshot ladder (lighting model 1 vs 2) and tuning; then rest of Phase 6 — clouds moving with the wind (transported noise coordinates in the density, temporal
+Step 37 (relief of the global level; the UE test of Step 36 showed that from orbit the clouds stay flat whatever the
+lighting: at orbit footprints everything below ~25 km is the effective medium, whose top was a flat ~1.2 km slab):
+- **Cloud heaps** (Details → Clouds → Relief): the local cloud depth is scaled by a field of rounded domes — one per cell of
+  a 3D lattice around the planet (random centre, radius, height), large (`CloudHeapScale`, 40 km) + 0.45 × small (1/3 of
+  that) — with flat bases, `CloudHeapAmplitude` 1.6 (0 = off), `CloudHeapFairWeather` 0.35 of it in fair weather (full
+  inside weather masses, by the humidity of Step 34); a soft cap at the layer top keeps the tallest heaps rounded. Each
+  octave fades to its mean when the footprint no longer resolves it (0.25–0.6 × its size). The cloud-top bound used by the
+  light marches includes the highest heap.
+- **Vertical exaggeration by camera altitude** (art direction, user decision): `CloudVerticalExaggeration` (×5) applied
+  between `CloudExaggerationStartAltitude` (30 km, ×1 below) and `CloudExaggerationFullAltitude` (600 km) of the camera
+  (log scale, smoothstep, quantized to 4 % steps; each step regenerates the cloud shadow cascades) to the cloud layer
+  thickness and the fair-weather depth, per view on the CPU; the cloud top stays 1 km below the atmosphere top.
+- The Step 33–35 weather lengths and times scale with `PlanetRadius` / 6371 km, so a smaller planet shows the approved
+  pattern relative to its disc (Earth radius: bit-identical). For an Earth-like look on a 2500 km planet also set the
+  weather to Earth-equivalent dynamics: Rotation Period ~9.4 h (same equator speed), Cyclone Radius ~750 m·10³ (×sqrt size
+  factor → ~470 km, 0.19 R as on Earth), Cyclones per Hemisphere ~4 (the fast rotation multiplies it by 1.5). With the
+  defaults (24 h) a 2500 km planet is a slow rotator: wide Hadley cells, large storms, ~50 % cloud.
+- Verification: shader vs prototype p37 (400 000 samples, heaps on, exaggeration ×1 / ×3): density mean |Δ| 6.6e-4 /
+  6.4e-4, p99.9 0.033 / 0.028; DXC 20/20. Cost: up to 2 × 27 dome cells per density sample in cloudy columns where the
+  heaps are resolved — to be measured; a baked heap texture is the optimisation if needed.
+
+Next: UE screenshots of Step 37 on a 2500 km planet (high orbit ~600 km looking down ~50°, sun ~15°; whole planet;
+terminator); then the edges of the cloud masses (breaking into small clouds as on reference 4), coverage of the regions
+above the clouds (reference 5); bug fixes and optimisation after the look (user decision); rest of Phase 6 — clouds moving with the wind (transported noise coordinates in the density, temporal
 reprojection with the cloud velocity, cloud shadow cascades following the drift), profiling + optimisation, Phase 6
 checklist; then Phase 7 (lighting) and the UE test of both phases. From now on the UE test is done once per
 phase: the next one after Phase 7 (decision of 30.10.2026).

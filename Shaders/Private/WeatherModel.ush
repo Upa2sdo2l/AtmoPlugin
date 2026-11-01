@@ -509,6 +509,10 @@ FPAWeatherStormField PA_WeatherStorms(float3 P, float RadiusKm, float Extratropi
 
 // ---- Step 33: weather-system morphology (prototype p33, variant r2) ---------------------------------
 
+// Step 37: the lengths and times below were tuned on an Earth-size planet; they scale with RadiusKm / 6371 (PA_W33Scale),
+// so that a smaller planet shows the same pattern relative to its disc (angular sizes and trace displacements kept).
+// Storm radii (CPU, CycloneRadiusKm x sqrt size factor) and the ITCZ clusters are not scaled here.
+static const float PA_W33_EARTH_RADIUS_KM = 6371.0;
 static const float PA_W33_TRACE_HOURS = 24.0;        // backward trace of the humidity pattern
 static const int PA_W33_TRACE_STEPS = 12;            // RK2 steps (2 h)
 static const float PA_W33_STORM_HOURS = 72.0;        // winding window of the storm vortices
@@ -546,10 +550,16 @@ static const float PA_W35_STREAK_WEIGHT = 0.24;
 static const int PA_W35_STREAK_FIRST_STEP = 4;       // averaged over the trace points 4..12 (8..24 h upstream)
 static const uint PA_W35_STREAK_SEED_OFFSET = 11000027u;
 
+/** Step 37: size factor of the Step 33-35 lengths and times (1 on an Earth-size planet). */
+float PA_W33Scale(float RadiusKm)
+{
+	return RadiusKm / PA_W33_EARTH_RADIUS_KM;
+}
+
 /** Eddy wind (m/s, 3D tangent) at unit P: divergence-free (P x grad psi), psi = two value-noise octaves, two anchors. */
 float3 PA_W33EddyWind(float3 P, FPAWeatherInputs In)
 {
-	const float Frequency = In.RadiusKm / PA_W33_EDDY_KM;
+	const float Frequency = In.RadiusKm / (PA_W33_EDDY_KM * PA_W33Scale(In.RadiusKm));
 	float3 Gradient = float3(0.0, 0.0, 0.0);
 	float Weights2 = 0.0;
 	for (int J = 0; J < 2; ++J)
@@ -611,7 +621,7 @@ float3 PA_W33StormRotate(float3 Q, float DtSeconds, float RadiusKm)
 		const float PeakWind = PA_W33_STORM_WIND * S1.w * S3.x;
 		const float Speed = PeakWind * (R < RMax ? R / RMax : pow(RMax / R, 0.6)) * (Fade * Fade * (3.0 - 2.0 * Fade));
 		// Angular velocity (rad/s); the winding over the whole window is capped at PA_W33_STORM_MAX_TURNS at RMax.
-		const float OmegaMax = PA_W33_STORM_MAX_TURNS * 2.0 * PA_W_PI / (PA_W33_STORM_HOURS * 3600.0);
+		const float OmegaMax = PA_W33_STORM_MAX_TURNS * 2.0 * PA_W_PI / (PA_W33_STORM_HOURS * PA_W33Scale(RadiusKm) * 3600.0);
 		const float OmegaRMax = PeakWind / (RMax * 1000.0);
 		const float Omega = Speed / (R * 1000.0) * min(1.0, OmegaMax / max(OmegaRMax, 1e-12));
 		const float Theta = -S2.x * Omega * DtSeconds;
@@ -654,7 +664,7 @@ float PA_W35ClusterCells(float3 P, uint Seed)
 /** The cloud clusters carried by the zonal wind like the synoptic noise (same anchors, crossfaded). */
 float PA_W35TransportedClusters(float3 P, float Latitude, float WindEast, FPAWeatherInputs In)
 {
-	const float Frequency = In.RadiusKm / PA_W35_CLUSTER_KM;
+	const float Frequency = In.RadiusKm / (PA_W35_CLUSTER_KM * PA_W33Scale(In.RadiusKm));
 	const float CosLat = max(cos(Latitude), 0.05);
 	float Sum = 0.0;
 	float Weights = 0.0;
@@ -679,8 +689,9 @@ float PA_W35TransportedClusters(float3 P, float Latitude, float WindEast, FPAWea
  */
 float4 PA_W33Departure(float3 P, FPAWeatherInputs In)
 {
-	const float Dt = PA_W33_TRACE_HOURS * 3600.0 / (float)PA_W33_TRACE_STEPS / (In.RadiusKm * 1000.0);   // m/s -> radians
-	const float StormDt = PA_W33_STORM_HOURS * 3600.0 / (float)PA_W33_TRACE_STEPS;
+	const float Scale = PA_W33Scale(In.RadiusKm);
+	const float Dt = PA_W33_TRACE_HOURS * Scale * 3600.0 / (float)PA_W33_TRACE_STEPS / (In.RadiusKm * 1000.0);   // m/s -> radians
+	const float StormDt = PA_W33_STORM_HOURS * Scale * 3600.0 / (float)PA_W33_TRACE_STEPS;
 	float3 Q = P;
 	float Streak = 0.0;
 	float StreakCount = 0.0;
@@ -693,7 +704,7 @@ float4 PA_W33Departure(float3 P, FPAWeatherInputs In)
 		if (Step + 1 >= PA_W35_STREAK_FIRST_STEP)
 		{
 			const float LatitudeS = asin(clamp(Q.z, -1.0, 1.0));
-			Streak += PA_WeatherTransportedNoise(Q, LatitudeS, PA_WeatherClimatology(LatitudeS, In).WindEast, In, PA_W35_STREAK_KM,
+			Streak += PA_WeatherTransportedNoise(Q, LatitudeS, PA_WeatherClimatology(LatitudeS, In).WindEast, In, PA_W35_STREAK_KM * Scale,
 				PA_W35_STREAK_SEED_OFFSET);
 			StreakCount += 1.0;
 		}
@@ -758,9 +769,10 @@ FPAWeatherSample PA_EvaluateWeatherFlowWarp(float3 P, FPAWeatherInputs In)
 	const FPAWeatherClimate ClimQ = PA_WeatherClimatology(LatQ, In);
 	const float X = abs(ClimQ.Psi);
 
-	const float N = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, PA_W33_NOISE_KM, 0u);
-	const float N2 = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, 2800.0, PA_W_N2_SEED_OFFSET);
-	const float NF = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, PA_W33_FINE_KM, PA_W33_FINE_SEED_OFFSET);
+	const float Scale = PA_W33Scale(In.RadiusKm);
+	const float N = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, PA_W33_NOISE_KM * Scale, 0u);
+	const float N2 = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, 2800.0 * Scale, PA_W_N2_SEED_OFFSET);
+	const float NF = PA_WeatherTransportedNoise(Q, LatQ, ClimQ.WindEast, In, PA_W33_FINE_KM * Scale, PA_W33_FINE_SEED_OFFSET);
 	const float NC = PA_W35TransportedClusters(Q, LatQ, ClimQ.WindEast, In) - PA_W35_CLUSTER_MEAN;
 
 	const float WaveStormTrack = 0.10 * cos(5.0 * LonQ + In.StormTrackWavePhase)
@@ -772,7 +784,7 @@ FPAWeatherSample PA_EvaluateWeatherFlowWarp(float3 P, FPAWeatherInputs In)
 
 	// Storms: analytic part at P (tropical arms / eye, reduced extratropical core), wound pattern in the storm frame.
 	const FPAWeatherStormField Storms = PA_WeatherStorms(P, In.RadiusKm, PA_W33_CORE, 0.0, 0.0);
-	const float3 QS = normalize(PA_W33StormRotate(P, PA_W33_STORM_HOURS * 3600.0, In.RadiusKm));
+	const float3 QS = normalize(PA_W33StormRotate(P, PA_W33_STORM_HOURS * Scale * 3600.0, In.RadiusKm));
 	const float Pattern = PA_W33StormPattern(QS, In.RadiusKm);
 
 	const float EffectiveHumidity = ClimQ.Humidity + PA_W33_NOISE_WEIGHT * N + PA_W35_CLUSTER_WEIGHT * NC + PA_W35_STREAK_WEIGHT * Departure.w

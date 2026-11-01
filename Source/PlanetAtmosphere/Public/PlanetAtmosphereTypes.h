@@ -115,6 +115,15 @@ struct FAtmosphereVisibleInstance
 	double CloudClusterScaleUU = 0.0;
 	double CloudMesoScaleUU = 0.0;
 	double CloudFairWeatherDepthUU = 0.0;
+	/** Step 37: relief of the global level (cloud heaps) and vertical exaggeration by camera altitude. */
+	double CloudHeapScaleUU = 0.0;
+	float CloudHeapAmplitude = 0.0f;
+	float CloudHeapFairWeather = 0.0f;
+	float CloudVerticalExaggeration = 1.0f;
+	double CloudExaggerationStartUU = 0.0;
+	double CloudExaggerationFullUU = 0.0;
+	/** Set per view (AtmosphereRenderer ApplyCloudExaggeration): the factor already applied to CloudTop / fair depth. */
+	float CloudExaggerationApplied = 1.0f;
 	int32 RaymarchSteps = 0;
 
 	/** Sky ambient multiplier on the clouds (Step 15, temporary compensation until Phase 7). */

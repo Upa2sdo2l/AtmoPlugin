@@ -49,6 +49,8 @@ float4 AtmosphereWeatherInfo[PA_MAX_ATMOSPHERES];
 float4 AtmosphereWeatherClimate[PA_MAX_ATMOSPHERES];
 // Clouds (Phase 6 / Step 32, CloudDensity.ush): x = cluster scale, y = meso scale, z = fair-weather depth (cm), w unused.
 float4 AtmosphereCloudData[PA_MAX_ATMOSPHERES];
+// Step 37: x = heap scale (cm), y = heap amplitude, z = heap share in fair weather, w = vertical exaggeration of this view.
+float4 AtmosphereCloudRelief[PA_MAX_ATMOSPHERES];
 // r.PlanetAtmosphere.CloudTopClamp (Step 32): 1 = marches end at the deepest clouds the weather allows (PA_CloudRayTopAltitude).
 int CloudTopClamp;
 
@@ -124,6 +126,9 @@ FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
 	Layer.ClusterScale = max(A.CloudClusterScale, 1.0);
 	Layer.MesoScale = max(A.CloudMesoScale, 1.0);
 	Layer.FairDepth = max(A.CloudFairDepth, 1.0);
+	Layer.HeapScale = max(AtmosphereCloudRelief[A.Index].x, 1.0);
+	Layer.HeapAmplitude = AtmosphereCloudRelief[A.Index].y;
+	Layer.HeapFairWeather = AtmosphereCloudRelief[A.Index].z;
 	// Step 29: the planet's weather snapshots (AtmosphereWeatherInfo, written by AtmosphereWeather.cpp; -1 = none).
 	const float4 WeatherInfo = AtmosphereWeatherInfo[A.Index];
 	Layer.WeatherEnabled = WeatherInfo.x >= 0.0 ? 1 : 0;
