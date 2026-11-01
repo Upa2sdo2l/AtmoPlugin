@@ -69,8 +69,23 @@ namespace PlanetAtmosphere::CVars
 	/** r.PlanetAtmosphere.LightSteps — samples of the light march toward the sun, clamped to [1, 16]. */
 	int32 GetLightSteps();
 
-	/** r.PlanetAtmosphere.CloudLightingModel — 1 = Step 32c (multiple-scattering octaves + sky light by the local cloud height), 0 = Phases 4-5. */
+	/**
+	 * r.PlanetAtmosphere.CloudLightingModel — 2 = Step 36 (forward-peaked phase, occluded sky light + ground bounce, powder),
+	 * 1 = Step 32c (multiple-scattering octaves + sky light by the local cloud height), 0 = Phases 4-5.
+	 */
 	int32 GetCloudLightingModel();
+
+	/** Step 36: parameters of CloudLightingModel 2 (r.PlanetAtmosphere.CloudPhase*, .CloudAmbientDiffusion, ...), validated. */
+	struct FCloudLightingSettings
+	{
+		float PhaseForwardG = 0.8f;      // [0, 0.95]
+		float PhaseBackG = -0.2f;        // [-0.9, 0]
+		float PhaseBackWeight = 0.4f;    // [0, 1]
+		float AmbientDiffusion = 0.15f;  // [0, 10]
+		float Powder = 0.5f;             // [0, 1]
+		float GroundBounce = 1.0f;       // [0, 4]
+	};
+	FCloudLightingSettings GetCloudLightingSettings();
 
 	// ---- Raymarch sample distribution (Phase 2 / Step 9) ----
 

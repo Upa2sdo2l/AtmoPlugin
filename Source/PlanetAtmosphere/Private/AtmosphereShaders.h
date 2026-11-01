@@ -167,7 +167,14 @@ public:
 		SHADER_PARAMETER(int32, bHasSun)
 		SHADER_PARAMETER(FVector3f, SunIlluminance)
 		SHADER_PARAMETER(int32, LightSteps)
-		SHADER_PARAMETER(int32, CloudLightingModel)   // Step 32c
+		SHADER_PARAMETER(int32, CloudLightingModel)   // Step 32c; 2 = Step 36
+		// Step 36 (CloudLightingModel 2)
+		SHADER_PARAMETER(float, CloudPhaseForwardG)
+		SHADER_PARAMETER(float, CloudPhaseBackG)
+		SHADER_PARAMETER(float, CloudPhaseBackWeight)
+		SHADER_PARAMETER(float, CloudAmbientDiffusion)
+		SHADER_PARAMETER(float, CloudPowder)
+		SHADER_PARAMETER(float, CloudGroundBounce)
 		SHADER_PARAMETER(FVector3f, AmbientIlluminance)
 		// Sample distribution (Phase 2 / Step 9). Shaders/Private/RaymarchSchedule.ush.
 		SHADER_PARAMETER(int32, StepDistribution)
