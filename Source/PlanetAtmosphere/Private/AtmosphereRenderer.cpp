@@ -260,6 +260,7 @@ namespace PlanetAtmosphere
 					OutParameters.AtmosphereWeatherInfo[Index] = NoWeather;
 					OutParameters.AtmosphereWeatherClimate[Index] = Zero;
 					OutParameters.AtmosphereCloudData[Index] = Zero;
+					OutParameters.AtmosphereCloudRelief[Index] = Zero;
 					continue;
 				}
 
@@ -310,6 +311,12 @@ namespace PlanetAtmosphere
 					static_cast<float>(Instance.CloudMesoScaleUU),
 					static_cast<float>(Instance.CloudFairWeatherDepthUU),
 					0.0f);
+				// Step 37: relief of the global level; the exaggeration is already in RadiiUU.CloudTop / CloudFairWeatherDepthUU.
+				OutParameters.AtmosphereCloudRelief[Index] = FVector4f(
+					static_cast<float>(Instance.CloudHeapScaleUU),
+					Instance.CloudHeapAmplitude,
+					Instance.CloudHeapFairWeather,
+					Instance.CloudExaggerationApplied);
 				OutParameters.AtmosphereAxisX[Index] = ToAxis4f(Instance.PlanetAxisX);
 				OutParameters.AtmosphereAxisY[Index] = ToAxis4f(Instance.PlanetAxisY);
 				OutParameters.AtmosphereAxisZ[Index] = ToAxis4f(Instance.PlanetAxisZ);
@@ -328,6 +335,40 @@ namespace PlanetAtmosphere
 				OutParameters.AtmosphereWeatherInfo[Index] = NoWeather;
 				OutParameters.AtmosphereWeatherClimate[Index] = Zero;
 			}
+		}
+	}
+
+	/**
+	 * Step 37: vertical exaggeration of each planet's clouds for this view. From CloudExaggerationStart to
+	 * CloudExaggerationFull camera altitude (log scale, smoothstep) the cloud layer thickness and the fair-weather depth grow
+	 * from x1 to x CloudVerticalExaggeration: clouds are physical near the planet and their relief reads from orbit.
+	 * Quantized to steps of 4 % (every change regenerates the cloud shadow cascades); the cloud top stays 1 km below the
+	 * atmosphere top.
+	 */
+	static void ApplyCloudExaggeration(const FSceneView& View, TArray<FAtmosphereVisibleInstance>& Instances)
+	{
+		const FVector3d ViewOrigin = View.ViewMatrices.GetViewOrigin();
+		for (FAtmosphereVisibleInstance& Instance : Instances)
+		{
+			Instance.CloudExaggerationApplied = 1.0f;
+			FPlanetAtmosphereRadii& R = Instance.RadiiUU;
+			if (Instance.CloudVerticalExaggeration <= 1.0f || R.CloudTop <= R.CloudBottom)
+			{
+				continue;
+			}
+			const double CameraAltitude = (ViewOrigin - Instance.PlanetCenterWorld).Length() - R.Planet;
+			const double Start = FMath::Max(Instance.CloudExaggerationStartUU, 1.0);
+			const double Full = FMath::Max(Instance.CloudExaggerationFullUU, Start * 1.01);
+			const double X = FMath::Clamp(FMath::Loge(FMath::Max(CameraAltitude, 1.0) / Start) / FMath::Loge(Full / Start), 0.0, 1.0);
+			double Factor = 1.0 + (Instance.CloudVerticalExaggeration - 1.0) * (X * X * (3.0 - 2.0 * X));
+			const double Step = FMath::Loge(1.04);
+			Factor = FMath::Exp(FMath::RoundToDouble(FMath::Loge(Factor) / Step) * Step);
+			const double MaxTop = FMath::Max(R.AtmosphereTop - 1.0e5, R.CloudTop);
+			const double NewTop = FMath::Min(R.CloudBottom + (R.CloudTop - R.CloudBottom) * Factor, MaxTop);
+			Factor = (NewTop - R.CloudBottom) / (R.CloudTop - R.CloudBottom);
+			R.CloudTop = NewTop;
+			Instance.CloudFairWeatherDepthUU *= Factor;
+			Instance.CloudExaggerationApplied = static_cast<float>(Factor);
 		}
 	}
 
@@ -352,6 +393,8 @@ namespace PlanetAtmosphere
 		{
 			return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 		}
+		// Step 37: vertical exaggeration of the clouds for this view (camera altitude), before anything reads the cloud layer.
+		ApplyCloudExaggeration(View, Instances);
 
 		const CVars::EDebugMode DebugMode = CVars::GetDebugMode();
 		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(View.GetFeatureLevel());

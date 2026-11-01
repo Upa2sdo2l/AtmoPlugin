@@ -237,7 +237,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 
 	// ---- What the content depends on: the planet, its cloud layer (bitwise, as packed for the shader), noise, generation
 	// and extent settings. Any change starts both sets over (there is nothing valid to keep showing). ----
-	FVector4f ContentKey[4];
+	FVector4f ContentKey[5];
 	ContentKey[0] = FVector4f(
 		InstanceParameters.AtmosphereData0[Index].W, InstanceParameters.AtmosphereData1[Index].W,
 		InstanceParameters.AtmosphereData2[Index].X, InstanceParameters.AtmosphereData2[Index].Y);
@@ -251,6 +251,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 	ContentKey[3] = FVector4f(   // Step 32: cloud levels + top clamp
 		InstanceParameters.AtmosphereCloudData[Index].X, InstanceParameters.AtmosphereCloudData[Index].Y,
 		InstanceParameters.AtmosphereCloudData[Index].Z, static_cast<float>(InstanceParameters.CloudTopClamp));
+	ContentKey[4] = InstanceParameters.AtmosphereCloudRelief[Index];   // Step 37: heaps + exaggeration of this view
 	const bool bSamePlanet = Entry.bHasPlanet && Entry.PlanetId == Planet.PlanetId;
 	const bool bSameWeather = PlanetAtmosphere::Weather::SameParameters(Entry.Weather, Planet.Weather);
 	if (!bSamePlanet || !bSameWeather || FMemory::Memcmp(Entry.ContentKey, ContentKey, sizeof(ContentKey)) != 0)
