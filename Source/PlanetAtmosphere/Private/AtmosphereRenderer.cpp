@@ -132,6 +132,7 @@ namespace PlanetAtmosphere
 			OutParameters.CloudPhaseBackWeight = CloudLighting.PhaseBackWeight;
 			OutParameters.CloudAmbientDiffusion = CloudLighting.AmbientDiffusion;
 			OutParameters.CloudPowder = CloudLighting.Powder;
+			OutParameters.CloudLightingSmoothColumn = CloudLighting.SmoothColumn;
 			OutParameters.CloudGroundBounce = CloudLighting.GroundBounce;
 		}
 
@@ -236,7 +237,7 @@ namespace PlanetAtmosphere
 
 			const int32 NumAtmospheres = FMath::Min(Instances.Num(), CVars::GetMaxVisible());
 			OutParameters.NumAtmospheres = NumAtmospheres;
-			OutParameters.CloudTopClamp = CVars::IsCloudTopClampEnabled() ? 1 : 0;
+			OutParameters.CloudTopClamp = CVars::GetCloudTopClampMode();
 
 			const FVector4f Zero(0.0f, 0.0f, 0.0f, 0.0f);
 			const FVector4f NoWeather(-1.0f, 0.0f, 0.0f, 0.0f);
@@ -352,6 +353,8 @@ namespace PlanetAtmosphere
 		{
 			Instance.CloudExaggerationApplied = 1.0f;
 			FPlanetAtmosphereRadii& R = Instance.RadiiUU;
+			Instance.CloudTopBaseUU = R.CloudTop;   // Step 39: unexaggerated values (cloud shadow content key)
+			Instance.CloudFairWeatherDepthBaseUU = Instance.CloudFairWeatherDepthUU;
 			if (Instance.CloudVerticalExaggeration <= 1.0f || R.CloudTop <= R.CloudBottom)
 			{
 				continue;

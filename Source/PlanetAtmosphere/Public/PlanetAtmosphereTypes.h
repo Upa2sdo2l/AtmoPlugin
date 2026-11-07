@@ -124,6 +124,9 @@ struct FAtmosphereVisibleInstance
 	double CloudExaggerationFullUU = 0.0;
 	/** Set per view (AtmosphereRenderer ApplyCloudExaggeration): the factor already applied to CloudTop / fair depth. */
 	float CloudExaggerationApplied = 1.0f;
+	/** Step 39: cloud top (radius) and fair-weather depth BEFORE the exaggeration of this view (cloud shadow content key). */
+	double CloudTopBaseUU = 0.0;
+	double CloudFairWeatherDepthBaseUU = 0.0;
 	int32 RaymarchSteps = 0;
 
 	/** Sky ambient multiplier on the clouds (Step 15, temporary compensation until Phase 7). */

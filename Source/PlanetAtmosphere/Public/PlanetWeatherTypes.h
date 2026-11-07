@@ -81,5 +81,11 @@ struct FPlanetWeatherParameters
 	double FlowSynopticScaleKm = 7136.0;
 	double FlowSynopticStrength = 0.35;
 	double FlowStreakLengthKm = 1274.0;
-	double FlowSlitStrength = 0.8;
+	double FlowSlitStrength = 0.6;
+	// Step 39: the flowmap model's climate bands do not depend on the rotation (0 = from the rotation, as model C). The edge of
+	// the tropical cells in degrees; the mid-latitude / polar edge is halfway to the pole (30 -> 60).
+	double FlowTropicsEdgeDegrees = 30.0;
+	// Internal (not a setting): set by the renderer to FlowTropicsEdgeDegrees for the flowmap model; > 0 replaces the
+	// rotation-derived cell edges in ComputeCellEdges (storm tracks, bands, ITCZ storms follow it).
+	double CellEdgeOverrideDegrees = 0.0;
 };

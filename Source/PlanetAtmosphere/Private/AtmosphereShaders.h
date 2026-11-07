@@ -176,6 +176,7 @@ public:
 		SHADER_PARAMETER(float, CloudPhaseBackWeight)
 		SHADER_PARAMETER(float, CloudAmbientDiffusion)
 		SHADER_PARAMETER(float, CloudPowder)
+		SHADER_PARAMETER(int32, CloudLightingSmoothColumn)   // Step 39
 		SHADER_PARAMETER(float, CloudGroundBounce)
 		SHADER_PARAMETER(FVector3f, AmbientIlluminance)
 		// Sample distribution (Phase 2 / Step 9). Shaders/Private/RaymarchSchedule.ush.

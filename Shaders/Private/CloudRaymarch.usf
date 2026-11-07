@@ -63,6 +63,7 @@ float CloudPhaseBackWeight;  // weight of the back lobe
 float CloudAmbientDiffusion; // diffuse transmission of sky / ground light through the cloud: 1 / (1 + k x optical depth)
 float CloudPowder;           // strength of the powder term (dark sun-facing low-density edges seen with the sun behind)
 float CloudGroundBounce;     // x the light reflected by the ground (SurfaceAlbedo) onto the cloud bases
+int CloudLightingSmoothColumn; // Step 39: 1 = sky / ground light and powder from the smooth column density
 
 // Sample distribution (Step 9). See RaymarchSchedule.ush.
 int StepDistribution;        // 0 = uniform, 1 = camera-centered
@@ -304,6 +305,9 @@ float PA_IntegrateCloudStep(
 
 	const float Sigma = Density * A.CloudExtinction;
 	const float StepTransmittance = exp(-Sigma * Dt);
+	// Step 39: extinction of the cloud column around the sample for the diffuse terms (sky / ground light, powder): the
+	// in-cloud mean density instead of this sample's density (which jumps between samples at eroded edges -> grain).
+	const float ColumnSigma = CloudLightingSmoothColumn != 0 ? PA_CLOUD_UNRESOLVED_DENSITY * A.CloudExtinction : Sigma;
 	// Energy-conserving integration over the step: S * (1 - exp(-sigma dt)) / sigma * sigma.
 	const float Contribution = State.Transmittance * (1.0 - StepTransmittance);
 	const float HeightFraction = saturate(PA_CloudHeightFraction(Layer, Altitude));
@@ -360,7 +364,9 @@ float PA_IntegrateCloudStep(
 				{
 					// Step 36: powder (Schneider 2015): light needs some depth to build up by multiple scattering, so thin
 					// sun-facing parts look darker when seen with the sun behind the viewer (none when looking toward it).
-					const float PowderDepth = Sigma * 0.25 * Layer.ShapeScale;
+					const float PowderDepth = CloudLightingSmoothColumn != 0
+						? ColumnSigma * (0.25 * Layer.ShapeScale + (1.0 - saturate(LocalHeight)) * LocalDepth)   // depth below the local top
+						: Sigma * 0.25 * Layer.ShapeScale;
 					const float Powder = 1.0 - exp(-2.0 * PowderDepth);
 					SunPhaseTransmittance *= lerp(1.0, Powder, CloudPowder * saturate(0.5 - 0.5 * Light.CosTheta));
 				}
@@ -375,8 +381,8 @@ float PA_IntegrateCloudStep(
 			// below through the cloud below it; diffuse (two-stream-like) transmission 1 / (1 + k tau) instead of the
 			// height ramp. Each hemisphere contributes half of the in-scattered radiance (isotropic average); with the
 			// default CloudSkyAmbientScale 2 a cloud top sees the full clear-sky radiance.
-			const float Above = Sigma * (1.0 - saturate(LocalHeight)) * LocalDepth;
-			const float Below = Sigma * saturate(LocalHeight) * LocalDepth;
+			const float Above = ColumnSigma * (1.0 - saturate(LocalHeight)) * LocalDepth;
+			const float Below = ColumnSigma * saturate(LocalHeight) * LocalDepth;
 			const float3 SkyRadiance = Light.SunIlluminance * PA_SampleMultipleScatteringLut(Light.PlanetIndex, Light.Scattering, AtmosphereH, SunMu);
 			float3 GroundRadiance = 0.0;
 			if (CloudGroundBounce > 0.0 && SunMu > 0.0)

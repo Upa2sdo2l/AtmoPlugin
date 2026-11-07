@@ -236,22 +236,27 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 	}
 
 	// ---- What the content depends on: the planet, its cloud layer (bitwise, as packed for the shader), noise, generation
-	// and extent settings. Any change starts both sets over (there is nothing valid to keep showing). ----
+	// and extent settings. Any change starts both sets over (there is nothing valid to keep showing). Step 39: the
+	// vertical exaggeration of the view (it changes in 4 % steps while the camera climbs or descends) is NOT part of the
+	// key -- the key holds the unexaggerated top / fair depth; an exaggeration change rebuilds the back set in the
+	// background and crossfades, like a sun move (it restarted both sets with the fallback march every step: shadows
+	// jumped and visibly rebuilt while zooming, user's UE test). ----
 	FVector4f ContentKey[5];
 	ContentKey[0] = FVector4f(
 		InstanceParameters.AtmosphereData0[Index].W, InstanceParameters.AtmosphereData1[Index].W,
-		InstanceParameters.AtmosphereData2[Index].X, InstanceParameters.AtmosphereData2[Index].Y);
+		InstanceParameters.AtmosphereData2[Index].Y, static_cast<float>(Settings.MinExtentCm));
 	ContentKey[1] = FVector4f(
-		InstanceParameters.AtmosphereData2[Index].Z, InstanceParameters.AtmosphereData2[Index].W,
-		InstanceParameters.AtmosphereData3[Index].X, static_cast<float>(Settings.MinExtentCm));
+		static_cast<float>(Planet.CloudTopBaseUU - Planet.RadiiUU.Planet), InstanceParameters.AtmosphereData2[Index].Z,
+		InstanceParameters.AtmosphereData2[Index].W, InstanceParameters.AtmosphereData3[Index].X);
 	ContentKey[2] = FVector4f(
 		static_cast<float>(static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource())), PlanetAtmosphere::CVars::GetNoiseFootprintScale(),
 		static_cast<float>(Settings.GenerationSteps),
 		InstanceParameters.AtmosphereWeatherInfo[Index].X >= 0.0f ? 1.0f : 0.0f);   // Step 29: the planet has weather
 	ContentKey[3] = FVector4f(   // Step 32: cloud levels + top clamp
 		InstanceParameters.AtmosphereCloudData[Index].X, InstanceParameters.AtmosphereCloudData[Index].Y,
-		InstanceParameters.AtmosphereCloudData[Index].Z, static_cast<float>(InstanceParameters.CloudTopClamp));
-	ContentKey[4] = InstanceParameters.AtmosphereCloudRelief[Index];   // Step 37: heaps + exaggeration of this view
+		static_cast<float>(Planet.CloudFairWeatherDepthBaseUU), static_cast<float>(InstanceParameters.CloudTopClamp));
+	ContentKey[4] = InstanceParameters.AtmosphereCloudRelief[Index];   // Step 37b: macro clouds (w = exaggeration: excluded below)
+	ContentKey[4].W = 1.0f;
 	const bool bSamePlanet = Entry.bHasPlanet && Entry.PlanetId == Planet.PlanetId;
 	const bool bSameWeather = PlanetAtmosphere::Weather::SameParameters(Entry.Weather, Planet.Weather);
 	if (!bSamePlanet || !bSameWeather || FMemory::Memcmp(Entry.ContentKey, ContentKey, sizeof(ContentKey)) != 0)
@@ -302,6 +307,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		FCascadeSet& Set = Entry.Sets[SetIndex];
 		Set.bConfigured = true;
 		Set.ExtentLevel = Level;
+		Set.Exaggeration = Planet.CloudExaggerationApplied;
 		const double HalfSize0 = Settings.MinExtentCm * FMath::Pow(2.0, static_cast<double>(Level));
 		for (int32 CascadeIndex = 0; CascadeIndex < NumCascades; ++CascadeIndex)
 		{
@@ -321,7 +327,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		}
 		// A first configuration or a level change should be rare (repeated lines with a static camera = the cascades never
 		// finish: diagnostic for the UE test); sun rebuilds are routine with a moving sun (Verbose).
-		if (FCString::Strcmp(Reason, TEXT("sun direction")) == 0)
+		if (FCString::Strcmp(Reason, TEXT("sun direction")) == 0 || FCString::Strcmp(Reason, TEXT("cloud exaggeration")) == 0)
 		{
 			UE_LOG(LogPlanetAtmosphere, Verbose, TEXT("Cloud shadows of view %u, frame %u: set %d rebuilt (%s), level %d, texel %.1f m"),
 				ViewKey, FrameNumber, SetIndex, Reason, Level, Entry.Cascades[SetIndex * NumCascades].TexelSize * 1e-2);
@@ -367,9 +373,11 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		const double RebuildCos = FMath::Cos(FMath::DegreesToRadians(static_cast<double>(Settings.SunRebuildAngleDeg)));
 		const bool bSunMoved = FVector3d::DotProduct(FrontSun, SunLocal) < RebuildCos;
 		const bool bLevelOutOfRange = Front.ExtentLevel < NeededLevel || Front.ExtentLevel > NeededLevel + 1;
-		if (bSunMoved || bLevelOutOfRange)
+		const bool bExaggerationChanged = Front.Exaggeration != Planet.CloudExaggerationApplied;   // Step 39
+		if (bSunMoved || bLevelOutOfRange || bExaggerationChanged)
 		{
-			ConfigureSet(BackSet, bLevelOutOfRange ? NeededLevel : Front.ExtentLevel, bLevelOutOfRange ? TEXT("extent level") : TEXT("sun direction"));
+			ConfigureSet(BackSet, bLevelOutOfRange ? NeededLevel : Front.ExtentLevel,
+				bLevelOutOfRange ? TEXT("extent level") : (bSunMoved ? TEXT("sun direction") : TEXT("cloud exaggeration")));
 			Entry.bBackActive = true;
 			Entry.CrossfadeFrame = 0;
 		}

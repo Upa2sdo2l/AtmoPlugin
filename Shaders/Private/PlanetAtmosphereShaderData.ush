@@ -51,7 +51,8 @@ float4 AtmosphereWeatherClimate[PA_MAX_ATMOSPHERES];
 float4 AtmosphereCloudData[PA_MAX_ATMOSPHERES];
 // Step 37: x = heap scale (cm), y = heap amplitude, z = heap share in fair weather, w = vertical exaggeration of this view.
 float4 AtmosphereCloudRelief[PA_MAX_ATMOSPHERES];
-// r.PlanetAtmosphere.CloudTopClamp (Step 32): 1 = marches end at the deepest clouds the weather allows (PA_CloudRayTopAltitude).
+// r.PlanetAtmosphere.CloudTopClamp (Step 32): marches end at the deepest clouds the weather allows (PA_CloudRayTopAltitude):
+// 0 = off, 1 = Step 32 point count by the path length, 2 = Step 39 fixed point count, continuous (default).
 int CloudTopClamp;
 
 struct FPAAtmosphere
@@ -153,6 +154,30 @@ float PA_CloudRayTopAltitude(FPAAtmosphere A, FPACloudLayer Layer, float3 Origin
 	if (CloudTopClamp == 0)
 	{
 		return A.CloudTop;
+	}
+	if (CloudTopClamp == 2)
+	{
+		// Step 39: a FIXED number of points (no count jumps -> no concentric bands): the bound is the max over continuous
+		// functions of the ray, hence continuous over the screen. Paths longer than the points can cover at half a weather
+		// texel blend smoothly to the whole layer (no cut storm tops along the limb, the Step 32a failure).
+		const float PathLength = abs(TEnd - TStart);
+		const float HalfTexel = 0.5 * PA_CloudWeatherTexel(Layer);
+		const float FullBlend = Layer.WeatherEnabled != 0
+			? smoothstep((float)(PA_CLOUD_TOP_FIXED_POINTS - 1) * HalfTexel, 4.0 * (float)(PA_CLOUD_TOP_FIXED_POINTS - 1) * HalfTexel, PathLength)
+			: 0.0;
+		if (FullBlend >= 1.0)
+		{
+			return A.CloudTop;
+		}
+		float FixedTop = A.CloudBottom;
+		for (int FixedPoint = 0; FixedPoint < PA_CLOUD_TOP_FIXED_POINTS; ++FixedPoint)
+		{
+			const float3 P = Origin + Dir * lerp(TStart, TEnd, (float)FixedPoint / (float)(PA_CLOUD_TOP_FIXED_POINTS - 1));
+			const float3 Local = PA_ToPlanetLocal(A, P);
+			FixedTop = max(FixedTop, PA_CloudMaxTopAltitude(Layer, Local / max(length(Local), 1.0)));
+		}
+		const float Bounded = min(A.CloudTop, A.CloudBottom + (FixedTop - A.CloudBottom) * 1.05);
+		return lerp(Bounded, A.CloudTop, FullBlend);
 	}
 	const int NumPoints = PA_CloudTopSampleCount(Layer, abs(TEnd - TStart));
 	if (NumPoints == 0)
