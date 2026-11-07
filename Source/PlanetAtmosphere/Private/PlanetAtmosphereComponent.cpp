@@ -133,6 +133,7 @@ FPlanetWeatherParameters UPlanetAtmosphereComponent::GetValidatedWeatherParamete
 	W.FlowSynopticStrength = FMath::Clamp(static_cast<double>(FlowSynopticStrength), 0.0, 1.0);
 	W.FlowStreakLengthKm = FMath::Clamp(FlowStreakLength, 0.0, 5000000.0) / 1000.0;
 	W.FlowSlitStrength = FMath::Clamp(static_cast<double>(FlowSlitStrength), 0.0, 2.0);
+	W.FlowTropicsEdgeDegrees = FlowTropicsEdge > 0.0f ? FMath::Clamp(static_cast<double>(FlowTropicsEdge), 12.0, 60.0) : 0.0;
 	return W;
 }
 

@@ -51,8 +51,11 @@ namespace
 	{
 		using namespace PlanetAtmosphere::Weather;
 
+		// Step 39: the flowmap model (FlowWarp 2) uses its own climate-band edges instead of the rotation-derived ones.
+		FPlanetWeatherParameters Params = WeatherParameters;
+		Params.CellEdgeOverrideDegrees = FlowWarp == 2 ? Params.FlowTropicsEdgeDegrees : 0.0;
 		FSnapshotInputs In;
-		BuildSnapshotInputs(WeatherParameters, RadiusKm, TimeSeconds / 3600.0, In);
+		BuildSnapshotInputs(Params, RadiusKm, TimeSeconds / 3600.0, In);
 
 		FAtmosphereWeatherGenerateCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereWeatherGenerateCS::FParameters>();
 		Parameters->OutWeatherAtlas = GraphBuilder.CreateUAV(AtlasTexture);

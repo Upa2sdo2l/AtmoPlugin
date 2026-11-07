@@ -261,6 +261,13 @@ float PA_CloudMaxTopAltitude(FPACloudLayer Layer, float3 Direction)
 }
 
 static const int PA_CLOUD_TOP_MAX_POINTS = 17;
+static const int PA_CLOUD_TOP_FIXED_POINTS = 9;   // Step 39: CloudTopClamp 2
+
+/** Size (cm) of a weather-atlas texel on the cloud base sphere. */
+float PA_CloudWeatherTexel(FPACloudLayer Layer)
+{
+	return (Layer.PlanetRadius + Layer.BottomAltitude) * 1.5707963 / max((float)WeatherResolution, 1.0);
+}
 
 /**
  * Number of points (>= 3) at which a cloud-top bound must be evaluated along a path of PathLength cm so that no weather
@@ -275,8 +282,7 @@ int PA_CloudTopSampleCount(FPACloudLayer Layer, float PathLength)
 	{
 		return 1;   // no weather: the same bound everywhere
 	}
-	const float WeatherTexel = (Layer.PlanetRadius + Layer.BottomAltitude) * 1.5707963 / max((float)WeatherResolution, 1.0);
-	const float NumPoints = ceil(2.0 * PathLength / max(WeatherTexel, 1.0)) + 1.0;
+	const float NumPoints = ceil(2.0 * PathLength / max(PA_CloudWeatherTexel(Layer), 1.0)) + 1.0;
 	return NumPoints > (float)PA_CLOUD_TOP_MAX_POINTS ? 0 : max((int)NumPoints, 3);
 }
 

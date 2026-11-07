@@ -410,7 +410,15 @@ public:
 
 	/** Strength of the thin clear slits along the flow inside storm shields. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "2.0"))
-	float FlowSlitStrength = 0.8f;
+	float FlowSlitStrength = 0.6f;
+
+	/**
+	 * Step 39: latitude (degrees) of the edge of the tropical cells for the flowmap weather; the mid-latitude / polar edge
+	 * is halfway to the pole. Storm tracks, wind bands and the cloud profile follow it. 0 = derived from the rotation
+	 * period and the radius as in the physical model (a slowly rotating small planet then gets tropics up to 60 deg).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "60.0"))
+	float FlowTropicsEdge = 30.0f;
 
 	/** Weather parameters with runtime-safe clamps (UPROPERTY clamps only apply to Details-panel edits), model units. */
 	FPlanetWeatherParameters GetValidatedWeatherParameters() const;

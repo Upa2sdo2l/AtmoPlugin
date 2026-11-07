@@ -112,6 +112,16 @@ namespace
 		TEXT("sun behind the viewer (light builds up inside the cloud). 0 = off. Clamped to [0, 1]."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudLightingSmoothColumn(
+		TEXT("r.PlanetAtmosphere.CloudLightingSmoothColumn"),
+		1,
+		TEXT("Step 39 (CloudLightingModel 2): 1 = the sky / ground light through the cloud above / below a sample and the powder
+")
+		TEXT("term use the smooth column density (in-cloud mean x local cloud depth) -- default; 0 = Step 36: the density of the
+")
+		TEXT("sample itself, which jumps from sample to sample at eroded edges and showed as grain (UE test from the ground)."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<float> CVarPlanetAtmosphereCloudGroundBounce(
 		TEXT("r.PlanetAtmosphere.CloudGroundBounce"),
 		1.0f,
@@ -193,13 +203,16 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudTopClamp(
 		TEXT("r.PlanetAtmosphere.CloudTopClamp"),
-		0,
+		2,
 		TEXT("Step 32: view rays, light marches, surface shadow marches and cloud shadow cascades end at the deepest clouds the\n")
 		TEXT("weather allows along them instead of the cloud-layer top (a 0.6 km fair-weather field otherwise shares its samples\n")
 		TEXT("with ~7 km of empty layer). 0 = march the whole layer (default since Step 32b), 1 = on. Off by default: the bound is\n")
 		TEXT("evaluated at 3..17 weather points per ray, the count jumps with the path length, and from orbit (equal path\n")
 		TEXT("lengths on circles around the disc centre) this shows as concentric bands (UE test; gone with 0). To be replaced\n")
-		TEXT("by a smooth precomputed max-top map."),
+		TEXT("by a smooth precomputed max-top map.\n")
+		TEXT("2 = Step 39 (default): view rays use a FIXED 9 points (continuous, no bands) and blend to the whole layer on paths\n")
+		TEXT("longer than those points cover at half a weather texel (limb); light / shadow marches as 1. Needed with the\n")
+		TEXT("vertical exaggeration: the samples otherwise spread over a ~5x thicker, mostly empty layer (slicing stripes)."),
 		ECVF_RenderThreadSafe);
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereLightLOD(
@@ -613,6 +626,7 @@ namespace PlanetAtmosphere::CVars
 		Settings.AmbientDiffusion = FMath::Clamp(CVarPlanetAtmosphereCloudAmbientDiffusion.GetValueOnAnyThread(false), 0.0f, 10.0f);
 		Settings.Powder = FMath::Clamp(CVarPlanetAtmosphereCloudPowder.GetValueOnAnyThread(false), 0.0f, 1.0f);
 		Settings.GroundBounce = FMath::Clamp(CVarPlanetAtmosphereCloudGroundBounce.GetValueOnAnyThread(false), 0.0f, 4.0f);
+		Settings.SmoothColumn = CVarPlanetAtmosphereCloudLightingSmoothColumn.GetValueOnAnyThread(false) != 0 ? 1 : 0;
 		return Settings;
 	}
 
@@ -669,6 +683,11 @@ namespace PlanetAtmosphere::CVars
 	bool IsCloudTopClampEnabled()
 	{
 		return CVarPlanetAtmosphereCloudTopClamp.GetValueOnAnyThread(false) != 0;
+	}
+
+	int32 GetCloudTopClampMode()
+	{
+		return FMath::Clamp(CVarPlanetAtmosphereCloudTopClamp.GetValueOnAnyThread(false), 0, 2);
 	}
 
 	float GetNoiseFootprintScale()

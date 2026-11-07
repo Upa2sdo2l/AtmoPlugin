@@ -50,6 +50,7 @@ static const float PA_W38_CLUMP_MEAN = 0.545;       // mean of the Worley clump 
 static const float PA_W38_ITCZ_WIDTH = 6.0;        // degrees
 static const float PA_W38_ITCZ_MEANDER = 5.0;      // degrees
 static const uint PA_W38_SEED_OFFSET = 13000027u;
+static const float PA_W38_SHIELD_MAX = 0.7;          // Step 39: storm shield radius <= 0.7 planet radii (large default cyclones)
 static const float PA_W38_DRIFT_SHARE = 0.35;      // the pattern moves at this share of the band wind (less shear, steering speed)
 static const float PA_W38_SWIRL_STREAK_WIND = 25.0;   // m/s of the storm circulation in the streak direction
 static const float PA_W38_SWIRL_WIND = 30.0;          // m/s of the storm circulation in the atlas wind
@@ -116,7 +117,7 @@ FPAFlowmapStorms PA_W38Storms(float3 P, FPAWeatherInputs In, FPAFlowmapParams F)
 	{
 		const float3 C = WeatherStorm0[I].xyz;
 		const float CosD = dot(C, P);
-		const float ShieldKm = max(WeatherStorm0[I].w * F.Storm.x, 1.0);
+		const float ShieldKm = clamp(WeatherStorm0[I].w * F.Storm.x, 1.0, PA_W38_SHIELD_MAX * In.RadiusKm);   // Step 39: cap
 		// influence 2.5 shield radii (rotation ~0 beyond 1, shield cloud < 0.2 % beyond 2.5)
 		if (CosD < cos(min(2.5 * ShieldKm / In.RadiusKm, PA_W_PI)))
 		{
@@ -224,7 +225,7 @@ float PA_W38Anchor(float3 P, FPAFlowmapStorms S, float3 FlowDir, float Shield, f
 	const float Scale = PA_W33Scale(In.RadiusKm);
 	// drift east with the band wind since the anchor's birth (solid rotation per latitude)
 	const float3 Q0 = S.Q;
-	const float CosLat = sqrt(max(1.0 - Q0.z * Q0.z, 0.04));
+	const float CosLat = sqrt(max(1.0 - Q0.z * Q0.z, 0.25));   // Step 39: >= cos 60 deg (no polar marbling)
 	const float Drift = PA_W38_DRIFT_SHARE * PA_W38Bands(PA_W38Psi(Q0, In), In, F).x * PA_W_KMH * AgeHours / (In.RadiusKm * CosLat);
 	float3 Q = PA_WeatherRotZ(Q0, -Drift);
 	// synoptic noise (cloud shields ~2800 km) and Worley clumps (tufts around rounded holes), carried with the anchor

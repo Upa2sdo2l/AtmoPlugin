@@ -126,6 +126,7 @@ private:
 	{
 		bool bConfigured = false;
 		int32 ExtentLevel = -1;
+		float Exaggeration = 1.0f;   // Step 39: vertical cloud exaggeration the set was configured for
 	};
 
 	struct FViewEntry

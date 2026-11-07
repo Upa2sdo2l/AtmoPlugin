@@ -279,13 +279,17 @@ namespace PlanetAtmosphere::Weather
 			&& A.FlowSynopticScaleKm == B.FlowSynopticScaleKm
 			&& A.FlowSynopticStrength == B.FlowSynopticStrength
 			&& A.FlowStreakLengthKm == B.FlowStreakLengthKm
-			&& A.FlowSlitStrength == B.FlowSlitStrength;
+			&& A.FlowSlitStrength == B.FlowSlitStrength
+			&& A.FlowTropicsEdgeDegrees == B.FlowTropicsEdgeDegrees
+			&& A.CellEdgeOverrideDegrees == B.CellEdgeOverrideDegrees;
 	}
 
 	void ComputeCellEdges(const FPlanetWeatherParameters& Params, double PlanetRadiusKm, double& OutHadleyDegrees, double& OutFerrelDegrees)
 	{
 		const double Earth = EarthOmega * EarthRadiusKm;
-		OutHadleyDegrees = FMath::Clamp(30.0 * Earth / (Omega(Params) * PlanetRadiusKm), 12.0, 60.0);
+		OutHadleyDegrees = Params.CellEdgeOverrideDegrees > 0.0
+			? FMath::Clamp(Params.CellEdgeOverrideDegrees, 12.0, 60.0)   // Step 39: flowmap bands independent of the rotation
+			: FMath::Clamp(30.0 * Earth / (Omega(Params) * PlanetRadiusKm), 12.0, 60.0);
 		OutFerrelDegrees = OutHadleyDegrees + (90.0 - OutHadleyDegrees) * 0.5;
 	}
 
