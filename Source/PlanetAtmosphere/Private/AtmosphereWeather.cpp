@@ -86,11 +86,11 @@ namespace
 		const FPlanetWeatherParameters& W = WeatherParameters;
 		auto F = [](double X, double Y, double Z, double V) { return FVector4f(static_cast<float>(X), static_cast<float>(Y), static_cast<float>(Z), static_cast<float>(V)); };
 		Parameters->WeatherFlowmap[0] = F(W.FlowTradeWind, W.FlowJetWind, W.FlowPolarWind, W.FlowMeridionalWind);
-		Parameters->WeatherFlowmap[1] = F(W.FlowEddyWind, W.FlowEddyScaleKm, W.FlowAdvectionHours, W.FlowStreakShare);
-		Parameters->WeatherFlowmap[2] = F(W.FlowNoiseScaleKm, W.FlowNoiseOctave2, W.FlowNoiseOctave3, W.FlowEdgeSharpness);
+		Parameters->WeatherFlowmap[1] = F(W.FlowWarpScaleKm, W.FlowWarpDisplacementKm, W.FlowFineWarpScaleKm, W.FlowFineWarpDisplacementKm);
+		Parameters->WeatherFlowmap[2] = F(W.FlowNoiseScaleKm, W.FlowEdgeSharpness, W.FlowClumpScaleKm, W.FlowClumpStrength);
 		Parameters->WeatherFlowmap[3] = F(W.FlowCloudItcz, W.FlowCloudSubtropics, W.FlowCloudMidLatitudes, W.FlowCloudPoles);
-		Parameters->WeatherFlowmap[4] = F(W.FlowStormCoreRatio, W.FlowStormInflowDegrees, W.FlowStormCloud, W.FlowItczStorminess);
-		Parameters->WeatherFlowmap[5] = F(W.FlowStormWindScale, 0.0, 0.0, 0.0);
+		Parameters->WeatherFlowmap[4] = F(W.FlowStormShieldRatio, FMath::DegreesToRadians(W.FlowStormRotationDegrees), W.FlowStormCloud, W.FlowItczStorminess);
+		Parameters->WeatherFlowmap[5] = F(W.FlowSynopticScaleKm, W.FlowSynopticStrength, W.FlowStreakLengthKm, W.FlowSlitStrength);
 		const FVector4f Zero(0.0f, 0.0f, 0.0f, 0.0f);
 		for (int32 Index = 0; Index < MaxStorms; ++Index)
 		{

@@ -311,14 +311,16 @@ public:
 	float WindScale = 1.0f;
 
 	// ===== Step 38: flowmap weather (r.PlanetAtmosphere.Weather.FlowWarp 2, the default) =====
-	// No meteorology: a flow (wind bands + the storms above as vortices + eddies) winds and streaks a cloud pattern; the
-	// cloud amount follows a latitude profile. The settings above still place and move the storms and the climate belts.
+	// No meteorology: a multi-octave cloud pattern, distorted (hooks, commas), gathered into tufts where the cover is
+	// partial, wound into broad comma shields around the storms above (streaks and thin slits inside them), carried east by
+	// the wind bands; the cloud amount follows a latitude profile. The settings above still place and move the storms and
+	// the climate belts. Sizes are for an Earth-size planet and scale with PlanetRadius (2500 km: x 0.39).
 
-	/** Trade-wind speed (m/s): easterlies of the tropical cells, they stretch the clouds into diagonal streaks. */
+	/** Trade-wind speed (m/s): easterlies of the tropical cells. Moves and orients the cloud pattern. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "60.0"))
 	float FlowTradeWind = 8.0f;
 
-	/** Mid-latitude westerly speed (m/s): the jets that carry and shear the cloud bands. */
+	/** Mid-latitude westerly speed (m/s). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "80.0"))
 	float FlowJetWind = 22.0f;
 
@@ -326,49 +328,49 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "40.0"))
 	float FlowPolarWind = 6.0f;
 
-	/** Meridional wind (m/s): toward the equator in the tropics, poleward in mid latitudes (diagonal streaks). */
+	/** Meridional wind (m/s): toward the equator in the tropics, poleward in mid latitudes. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "20.0"))
 	float FlowMeridionalWind = 4.0f;
 
-	/** Eddy wind (m/s): random swirls of the flow (more = more marbled, broken patterns). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "40.0"))
-	float FlowEddyWind = 6.0f;
+	/** Size of the large distortion of the cloud pattern (hooks, commas), meters on an Earth-size planet (scaled with the radius). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "100000.0", ClampMax = "20000000.0"))
+	double FlowWarpScale = 2039000.0;
 
-	/** Eddy size in meters on an Earth-size planet (scaled with the planet radius). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "100000.0", ClampMax = "10000000.0"))
-	double FlowEddyScale = 1800000.0;
+	/** How far the large distortion moves the pattern, meters on an Earth-size planet. More = more curled, marbled. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "5000000.0"))
+	double FlowWarpDisplacement = 153000.0;
 
-	/** How long (game hours, Earth-size planet) the cloud pattern is carried by the flow: more = more wound and stretched. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "400.0"))
-	float FlowAdvectionHours = 100.0f;
+	/** Size of the fine distortion, meters on an Earth-size planet. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "50000.0", ClampMax = "10000000.0"))
+	double FlowFineWarpScale = 637000.0;
 
-	/** Part of the flow path averaged into streaks (0 = sharp blobs, 1 = long smooth streaks). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float FlowStreakShare = 0.375f;
+	/** How far the fine distortion moves the pattern, meters on an Earth-size planet. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "2000000.0"))
+	double FlowFineWarpDisplacement = 64000.0;
 
-	/** Largest size of the cloud pattern in meters on an Earth-size planet (scaled with the radius); finer octaves at 0.37 x and 0.13 x. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "100000.0", ClampMax = "10000000.0"))
-	double FlowNoiseScale = 1200000.0;
+	/** Largest size of the cloud pattern, meters on an Earth-size planet; finer octaves at 1/2, 1/4, 1/8, 1/16. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "200000.0", ClampMax = "20000000.0"))
+	double FlowNoiseScale = 3058000.0;
 
-	/** Weight of the middle pattern octave (0.37 x the size): more = more medium patches. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "3.0"))
-	float FlowNoiseOctave2 = 1.0f;
-
-	/** Weight of the fine pattern octave (0.13 x the size): more = more small broken patches. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "3.0"))
-	float FlowNoiseOctave3 = 0.8f;
-
-	/** Sharpness of the cloud-pattern edges (lower = softer, more broken edges). */
+	/** Sharpness of the cloud-pattern edges (lower = softer). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.1", ClampMax = "5.0"))
-	float FlowEdgeSharpness = 0.6f;
+	float FlowEdgeSharpness = 0.5f;
+
+	/** Size of the tufts / rounded clear holes where the cover is partial, meters on an Earth-size planet. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "50000.0", ClampMax = "10000000.0"))
+	double FlowClumpScale = 765000.0;
+
+	/** How strongly partial cloud gathers into tufts around rounded holes (0 = off). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "3.0"))
+	float FlowClumpStrength = 1.0f;
 
 	/** Cloud fraction of the tropical rain belt (ITCZ). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float FlowCloudItcz = 0.5f;
+	float FlowCloudItcz = 0.4f;
 
-	/** Cloud fraction of the subtropics (edge of the tropical cells). */
+	/** Cloud fraction of the subtropics (mostly clear with tufts). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float FlowCloudSubtropics = 0.4f;
+	float FlowCloudSubtropics = 0.25f;
 
 	/** Cloud fraction of the mid latitudes (storm tracks). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
@@ -376,27 +378,39 @@ public:
 
 	/** Cloud fraction of the polar regions. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float FlowCloudPoles = 0.45f;
+	float FlowCloudPoles = 0.35f;
 
-	/** Vortex core of a storm relative to its radius (Cyclone Radius): larger = bigger spirals. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.1", ClampMax = "2.0"))
-	float FlowStormCoreRatio = 0.65f;
+	/** Size of a storm's cloud shield relative to Cyclone Radius. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.5", ClampMax = "8.0"))
+	float FlowStormShieldRatio = 3.5f;
 
-	/** Inflow angle of the storm spirals in degrees (0 = circles, larger = more open arms). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "60.0"))
-	float FlowStormInflow = 22.0f;
+	/** Maximum winding of the pattern around a storm, degrees (about 50 = a broad comma, 360 = a full turn). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "360.0"))
+	float FlowStormRotation = 51.6f;
 
-	/** Cloud fraction added inside a storm. */
+	/** Cloud fraction added inside a storm shield. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float FlowStormCloud = 0.45f;
+	float FlowStormCloud = 0.5f;
 
 	/** Deep (storm) clouds in the tropical rain belt, 0..1. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float FlowItczStorminess = 0.6f;
 
-	/** Vortex wind of the storms relative to their maximum wind: larger = more wound spirals. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "5.0"))
-	float FlowStormWindScale = 1.4f;
+	/** Size of the slow large variation of the cloud amount (where shields and clear regions are), meters on an Earth-size planet. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "500000.0", ClampMax = "40000000.0"))
+	double FlowSynopticScale = 7136000.0;
+
+	/** Strength of that variation (cloud fraction units). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float FlowSynopticStrength = 0.35f;
+
+	/** Length of the streaks along the flow inside storm shields, meters on an Earth-size planet. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "5000000.0"))
+	double FlowStreakLength = 1274000.0;
+
+	/** Strength of the thin clear slits along the flow inside storm shields. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Flowmap", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+	float FlowSlitStrength = 0.8f;
 
 	/** Weather parameters with runtime-safe clamps (UPROPERTY clamps only apply to Details-panel edits), model units. */
 	FPlanetWeatherParameters GetValidatedWeatherParameters() const;

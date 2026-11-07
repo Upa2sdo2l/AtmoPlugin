@@ -260,23 +260,26 @@ namespace PlanetAtmosphere::Weather
 			&& A.FlowJetWind == B.FlowJetWind
 			&& A.FlowPolarWind == B.FlowPolarWind
 			&& A.FlowMeridionalWind == B.FlowMeridionalWind
-			&& A.FlowEddyWind == B.FlowEddyWind
-			&& A.FlowEddyScaleKm == B.FlowEddyScaleKm
-			&& A.FlowAdvectionHours == B.FlowAdvectionHours
-			&& A.FlowStreakShare == B.FlowStreakShare
+			&& A.FlowWarpScaleKm == B.FlowWarpScaleKm
+			&& A.FlowWarpDisplacementKm == B.FlowWarpDisplacementKm
+			&& A.FlowFineWarpScaleKm == B.FlowFineWarpScaleKm
+			&& A.FlowFineWarpDisplacementKm == B.FlowFineWarpDisplacementKm
 			&& A.FlowNoiseScaleKm == B.FlowNoiseScaleKm
-			&& A.FlowNoiseOctave2 == B.FlowNoiseOctave2
-			&& A.FlowNoiseOctave3 == B.FlowNoiseOctave3
 			&& A.FlowEdgeSharpness == B.FlowEdgeSharpness
+			&& A.FlowClumpScaleKm == B.FlowClumpScaleKm
+			&& A.FlowClumpStrength == B.FlowClumpStrength
 			&& A.FlowCloudItcz == B.FlowCloudItcz
 			&& A.FlowCloudSubtropics == B.FlowCloudSubtropics
 			&& A.FlowCloudMidLatitudes == B.FlowCloudMidLatitudes
 			&& A.FlowCloudPoles == B.FlowCloudPoles
-			&& A.FlowStormCoreRatio == B.FlowStormCoreRatio
-			&& A.FlowStormInflowDegrees == B.FlowStormInflowDegrees
+			&& A.FlowStormShieldRatio == B.FlowStormShieldRatio
+			&& A.FlowStormRotationDegrees == B.FlowStormRotationDegrees
 			&& A.FlowStormCloud == B.FlowStormCloud
 			&& A.FlowItczStorminess == B.FlowItczStorminess
-			&& A.FlowStormWindScale == B.FlowStormWindScale;
+			&& A.FlowSynopticScaleKm == B.FlowSynopticScaleKm
+			&& A.FlowSynopticStrength == B.FlowSynopticStrength
+			&& A.FlowStreakLengthKm == B.FlowStreakLengthKm
+			&& A.FlowSlitStrength == B.FlowSlitStrength;
 	}
 
 	void ComputeCellEdges(const FPlanetWeatherParameters& Params, double PlanetRadiusKm, double& OutHadleyDegrees, double& OutFerrelDegrees)
