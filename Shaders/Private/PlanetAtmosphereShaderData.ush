@@ -129,6 +129,7 @@ FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
 	Layer.HeapScale = max(AtmosphereCloudRelief[A.Index].x, 1.0);
 	Layer.HeapAmplitude = AtmosphereCloudRelief[A.Index].y;
 	Layer.HeapFairWeather = AtmosphereCloudRelief[A.Index].z;
+	Layer.ReliefExaggeration = max(AtmosphereCloudRelief[A.Index].w, 1.0);   // Step 37b
 	// Step 29: the planet's weather snapshots (AtmosphereWeatherInfo, written by AtmosphereWeather.cpp; -1 = none).
 	const float4 WeatherInfo = AtmosphereWeatherInfo[A.Index];
 	Layer.WeatherEnabled = WeatherInfo.x >= 0.0 ? 1 : 0;
