@@ -213,10 +213,12 @@ public:
 	/**
 	 * Step 37: art-directed vertical exaggeration of the clouds seen from far away. Between Exaggeration Start Altitude and
 	 * Exaggeration Full Altitude of the camera the cloud layer and the fair-weather depth grow smoothly from x1 (physical,
-	 * near the planet) to x this, so that the relief of the cloud masses is readable from orbit. 1 = off.
+	 * near the planet) to x this, so that the relief of the cloud masses is readable from orbit. 1 = off. Step 39b: default
+	 * 5 -> 9 (the soft cap at the exaggerated layer top flattened the tallest macro clouds from far). Capped 1 km below the
+	 * atmosphere top.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1.0", UIMax = "10.0"))
-	float CloudVerticalExaggeration = 5.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1.0", UIMax = "12.0"))
+	float CloudVerticalExaggeration = 9.0f;
 
 	/** Step 37: camera altitude in meters below which the clouds are not exaggerated. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "100.0"))
