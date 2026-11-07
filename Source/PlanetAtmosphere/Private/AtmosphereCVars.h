@@ -84,7 +84,7 @@ namespace PlanetAtmosphere::CVars
 		float AmbientDiffusion = 0.15f;  // [0, 10]
 		float Powder = 0.5f;             // [0, 1]
 		float GroundBounce = 1.0f;       // [0, 4]
-		int32 SmoothColumn = 1;          // Step 39: 1 = sky / ground light and powder from the smooth column density
+		int32 SmoothColumn = 0;          // Step 39: 1 = sky / ground light and powder from the smooth column density
 	};
 	FCloudLightingSettings GetCloudLightingSettings();
 
