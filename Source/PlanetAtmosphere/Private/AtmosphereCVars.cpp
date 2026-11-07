@@ -115,10 +115,8 @@ namespace
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudLightingSmoothColumn(
 		TEXT("r.PlanetAtmosphere.CloudLightingSmoothColumn"),
 		1,
-		TEXT("Step 39 (CloudLightingModel 2): 1 = the sky / ground light through the cloud above / below a sample and the powder
-")
-		TEXT("term use the smooth column density (in-cloud mean x local cloud depth) -- default; 0 = Step 36: the density of the
-")
+		TEXT("Step 39 (CloudLightingModel 2): 1 = the sky / ground light through the cloud above / below a sample and the powder\n")
+		TEXT("term use the smooth column density (in-cloud mean x local cloud depth) -- default; 0 = Step 36: the density of the\n")
 		TEXT("sample itself, which jumps from sample to sample at eroded edges and showed as grain (UE test from the ground)."),
 		ECVF_RenderThreadSafe);
 
