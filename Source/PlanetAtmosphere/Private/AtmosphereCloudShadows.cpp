@@ -373,7 +373,11 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		const double RebuildCos = FMath::Cos(FMath::DegreesToRadians(static_cast<double>(Settings.SunRebuildAngleDeg)));
 		const bool bSunMoved = FVector3d::DotProduct(FrontSun, SunLocal) < RebuildCos;
 		const bool bLevelOutOfRange = Front.ExtentLevel < NeededLevel || Front.ExtentLevel > NeededLevel + 1;
-		const bool bExaggerationChanged = Front.Exaggeration != Planet.CloudExaggerationApplied;   // Step 39
+		// Step 39 / 39c: the exaggeration changes in 4 % steps while the camera climbs or descends; rebuilding on every step kept
+		// the generation running all the time (heavier since Step 37b) -> rebuild only past 25 % (or back to exactly x1).
+		const float ExaggerationRatio = Planet.CloudExaggerationApplied / FMath::Max(Front.Exaggeration, 1e-3f);
+		const bool bExaggerationChanged = (ExaggerationRatio > 1.25f || ExaggerationRatio < 0.8f)
+			|| (Planet.CloudExaggerationApplied == 1.0f && Front.Exaggeration != 1.0f);
 		if (bSunMoved || bLevelOutOfRange || bExaggerationChanged)
 		{
 			ConfigureSet(BackSet, bLevelOutOfRange ? NeededLevel : Front.ExtentLevel,
