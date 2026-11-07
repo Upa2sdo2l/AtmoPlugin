@@ -82,6 +82,15 @@ namespace
 		Parameters->WeatherItczSeed1 = static_cast<int32>(In.ItczSeed[1]);
 		Parameters->NumWeatherStorms = In.NumStorms;
 		Parameters->WeatherFlowWarp = FlowWarp;
+		// Step 38: flowmap weather parameters (FPAFlowmapParams in FlowmapWeather.ush).
+		const FPlanetWeatherParameters& W = WeatherParameters;
+		auto F = [](double X, double Y, double Z, double V) { return FVector4f(static_cast<float>(X), static_cast<float>(Y), static_cast<float>(Z), static_cast<float>(V)); };
+		Parameters->WeatherFlowmap[0] = F(W.FlowTradeWind, W.FlowJetWind, W.FlowPolarWind, W.FlowMeridionalWind);
+		Parameters->WeatherFlowmap[1] = F(W.FlowEddyWind, W.FlowEddyScaleKm, W.FlowAdvectionHours, W.FlowStreakShare);
+		Parameters->WeatherFlowmap[2] = F(W.FlowNoiseScaleKm, W.FlowNoiseOctave2, W.FlowNoiseOctave3, W.FlowEdgeSharpness);
+		Parameters->WeatherFlowmap[3] = F(W.FlowCloudItcz, W.FlowCloudSubtropics, W.FlowCloudMidLatitudes, W.FlowCloudPoles);
+		Parameters->WeatherFlowmap[4] = F(W.FlowStormCoreRatio, W.FlowStormInflowDegrees, W.FlowStormCloud, W.FlowItczStorminess);
+		Parameters->WeatherFlowmap[5] = F(W.FlowStormWindScale, 0.0, 0.0, 0.0);
 		const FVector4f Zero(0.0f, 0.0f, 0.0f, 0.0f);
 		for (int32 Index = 0; Index < MaxStorms; ++Index)
 		{
