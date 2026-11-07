@@ -525,8 +525,10 @@ namespace
 
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereWeatherFlowWarp(
 		TEXT("r.PlanetAtmosphere.Weather.FlowWarp"),
-		1,
-		TEXT("Step 33 weather-system morphology: 1 = the humidity pattern is carried by the wind (24 h backward trace through the\n")
+		2,
+		TEXT("Weather model. 2 = Step 38 flowmap weather (default): wind bands + the storms as vortices + eddies wind and streak a\n")
+		TEXT("cloud pattern, the cloud amount follows a latitude profile (settings: Weather|Flowmap of the component).\n")
+		TEXT("1 = Step 33 model C morphology: the humidity pattern is carried by the wind (24 h backward trace through the\n")
 		TEXT("snapshot wind with 450 km eddies; cyclones wind up a comma and a dry slot; finer 350 / 180 km noise; cover ramp\n")
 		TEXT("RHe 0.55 -> 0.78), 0 = the Step 29 model (smooth 900 km noise, analytic spiral arms). Changing it rebuilds the weather."),
 		ECVF_RenderThreadSafe);
@@ -764,7 +766,7 @@ namespace PlanetAtmosphere::CVars
 		Settings.MaxPlanets = FMath::Clamp(CVarPlanetAtmosphereWeatherMaxPlanets.GetValueOnAnyThread(false), 1, 8);
 		Settings.SnapshotIntervalSeconds = FMath::Clamp(static_cast<double>(CVarPlanetAtmosphereWeatherSnapshotInterval.GetValueOnAnyThread(false)), 10.0, 86400.0);
 		Settings.FacesPerFrame = FMath::Clamp(CVarPlanetAtmosphereWeatherFacesPerFrame.GetValueOnAnyThread(false), 1, 6);
-		Settings.FlowWarp = CVarPlanetAtmosphereWeatherFlowWarp.GetValueOnAnyThread(false) != 0 ? 1 : 0;
+		Settings.FlowWarp = FMath::Clamp(CVarPlanetAtmosphereWeatherFlowWarp.GetValueOnAnyThread(false), 0, 2);
 		return Settings;
 	}
 

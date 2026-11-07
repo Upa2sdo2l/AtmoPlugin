@@ -270,8 +270,10 @@ public:
 		SHADER_PARAMETER(int32, WeatherItczSeed1)
 		// Storms (see WeatherModel.ush)
 		SHADER_PARAMETER(int32, NumWeatherStorms)
-		// Step 33: 1 = flow-warped weather morphology, 0 = the Step 29 model (r.PlanetAtmosphere.Weather.FlowWarp)
+		// r.PlanetAtmosphere.Weather.FlowWarp: 2 = Step 38 flowmap weather, 1 = Step 33 flow-warped model C, 0 = Step 29
 		SHADER_PARAMETER(int32, WeatherFlowWarp)
+		// Step 38: FPAFlowmapParams (FlowmapWeather.ush): wind bands, eddies / advection, noise, cloud profile, storms, extra
+		SHADER_PARAMETER_ARRAY(FVector4f, WeatherFlowmap, [6])
 		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm0, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
 		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm1, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
 		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm2, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])

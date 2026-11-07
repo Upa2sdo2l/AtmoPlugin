@@ -255,7 +255,28 @@ namespace PlanetAtmosphere::Weather
 			&& A.CyclonesPerHemisphere == B.CyclonesPerHemisphere
 			&& A.CycloneRadiusKm == B.CycloneRadiusKm
 			&& A.TropicalCyclonesPerHemisphere == B.TropicalCyclonesPerHemisphere
-			&& A.WindScale == B.WindScale;
+			&& A.WindScale == B.WindScale
+			&& A.FlowTradeWind == B.FlowTradeWind
+			&& A.FlowJetWind == B.FlowJetWind
+			&& A.FlowPolarWind == B.FlowPolarWind
+			&& A.FlowMeridionalWind == B.FlowMeridionalWind
+			&& A.FlowEddyWind == B.FlowEddyWind
+			&& A.FlowEddyScaleKm == B.FlowEddyScaleKm
+			&& A.FlowAdvectionHours == B.FlowAdvectionHours
+			&& A.FlowStreakShare == B.FlowStreakShare
+			&& A.FlowNoiseScaleKm == B.FlowNoiseScaleKm
+			&& A.FlowNoiseOctave2 == B.FlowNoiseOctave2
+			&& A.FlowNoiseOctave3 == B.FlowNoiseOctave3
+			&& A.FlowEdgeSharpness == B.FlowEdgeSharpness
+			&& A.FlowCloudItcz == B.FlowCloudItcz
+			&& A.FlowCloudSubtropics == B.FlowCloudSubtropics
+			&& A.FlowCloudMidLatitudes == B.FlowCloudMidLatitudes
+			&& A.FlowCloudPoles == B.FlowCloudPoles
+			&& A.FlowStormCoreRatio == B.FlowStormCoreRatio
+			&& A.FlowStormInflowDegrees == B.FlowStormInflowDegrees
+			&& A.FlowStormCloud == B.FlowStormCloud
+			&& A.FlowItczStorminess == B.FlowItczStorminess
+			&& A.FlowStormWindScale == B.FlowStormWindScale;
 	}
 
 	void ComputeCellEdges(const FPlanetWeatherParameters& Params, double PlanetRadiusKm, double& OutHadleyDegrees, double& OutFerrelDegrees)

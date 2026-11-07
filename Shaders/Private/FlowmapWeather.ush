@@ -1,0 +1,242 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Step 38 — flowmap weather (r.PlanetAtmosphere.Weather.FlowWarp 2, the default). No meteorology: a flow field
+//  (zonal wind bands + the storm list of the CPU as vortices + curl-noise eddies) warps and streaks multi-octave noise;
+//  the cloud amount follows a latitude profile (ITCZ / subtropics / mid latitudes / poles) plus the vortices. The noise
+//  ranks are normalised analytically (Gaussian CDF), so the profile is the cloud fraction directly.
+//  Animation: the storms move and fade (CPU storm sequence), the noise anchors crossfade every 24 h (CPU, as model C) and
+//  each anchor drifts east with the zonal wind of its latitude since its birth; snapshots are blended by the readers.
+//  Lengths and times are given for an Earth-size planet and scale with RadiusKm / 6371 (PA_W33Scale).
+//  Included by WeatherModel.ush (PA_WEATHER_GENERATE only); the model frame is the right-handed one of WeatherModel.ush.
+
+struct FPAFlowmapParams
+{
+	float4 Wind;    // trade, jet, polar zonal wind (m/s, signed eastward for trade < 0 = easterly), meridional (m/s)
+	float4 Eddy;    // eddy wind (m/s), eddy scale (km), advection time (h), streak share (0..1: part of the trace averaged)
+	float4 Noise;   // largest noise scale (km), weight of the 2nd / 3rd octave (x 0.37 / x 0.13 of the scale), edge sharpness
+	float4 Cover;   // cloud fraction: ITCZ, subtropics, mid latitudes, poles
+	float4 Storm;   // core radius / storm radius, inflow angle (deg), cloud fraction added by a storm, ITCZ storminess
+	float4 Extra;   // storm wind multiplier, unused x 3
+};
+
+float4 WeatherFlowmap[6];   // FPAFlowmapParams (WeatherGenerate.usf; filled from FPlanetWeatherParameters)
+
+FPAFlowmapParams PA_LoadFlowmapParams()
+{
+	FPAFlowmapParams P;
+	P.Wind = WeatherFlowmap[0];
+	P.Eddy = WeatherFlowmap[1];
+	P.Noise = WeatherFlowmap[2];
+	P.Cover = WeatherFlowmap[3];
+	P.Storm = WeatherFlowmap[4];
+	P.Extra = WeatherFlowmap[5];
+	return P;
+}
+
+static const int PA_W38_TRACE_STEPS = 16;            // backward trace (RK2)
+static const float PA_W38_OCTAVE_RATIO2 = 0.37;      // 2nd / 3rd noise octave scale relative to the first
+static const float PA_W38_OCTAVE_RATIO3 = 0.13;
+static const float PA_W38_NOISE_STD = 0.2272;        // std of PA_WeatherFbm (measured over the sphere)
+static const float PA_W38_STREAK_STD = 0.89;         // std reduction of the streak average (measured)
+static const float PA_W38_ITCZ_WIDTH = 6.0;          // degrees
+static const float PA_W38_ITCZ_MEANDER = 5.0;        // degrees
+static const uint PA_W38_SEED_OFFSET = 13000027u;
+static const uint PA_W38_EDDY_SEED_OFFSET = 17000041u;
+
+struct FPAFlowmapFlow
+{
+	float3 Wind;        // m/s, 3D tangent
+	float Vortex;       // 0..1: inside a storm (cloud amount)
+	float Core;         // 0..1: storm core (deep clouds)
+};
+
+/** Zonal (x) and meridional (y) wind, m/s, at Psi (degrees from the thermal equator): sin^2-shaped bands. */
+float2 PA_W38Bands(float Psi, FPAWeatherInputs In, FPAFlowmapParams F)
+{
+	const float A = abs(Psi);
+	const float H = In.HadleyDegrees;
+	const float Fe = In.FerrelDegrees;
+	float U;
+	float V;
+	if (A < H)
+	{
+		const float S = sin(PA_W_PI * A / H);
+		U = -F.Wind.x * S;
+		V = -F.Wind.w * S;     // toward the equator
+	}
+	else if (A < Fe)
+	{
+		const float S = sin(PA_W_PI * (A - H) / (Fe - H));
+		U = F.Wind.y * S;
+		V = F.Wind.w * S;      // poleward
+	}
+	else
+	{
+		const float S = sin(PA_W_PI * (A - Fe) / (90.0 - Fe));
+		U = -F.Wind.z * S;
+		V = -F.Wind.w * 0.5 * S;
+	}
+	return float2(U * In.Sign, V * (Psi >= 0.0 ? 1.0 : -1.0)) * In.WindScale;
+}
+
+/** Divergence-free eddy wind (m/s, 3D tangent) at unit P: P x grad psi, two value-noise octaves, anchor 0 / 1 crossfade. */
+float3 PA_W38EddyWind(float3 P, FPAWeatherInputs In, FPAFlowmapParams F)
+{
+	const float Frequency = In.RadiusKm / (F.Eddy.y * PA_W33Scale(In.RadiusKm));
+	float3 Gradient = float3(0.0, 0.0, 0.0);
+	float Weights2 = 0.0;
+	for (int J = 0; J < 2; ++J)
+	{
+		const float Weight = J == 0 ? In.NoiseWeight0 : In.NoiseWeight1;
+		if (Weight > 0.0)
+		{
+			const uint Seed = (J == 0 ? In.NoiseSeed0 : In.NoiseSeed1) + PA_W38_EDDY_SEED_OFFSET;
+			const float3 Q = P * Frequency;
+			const float3 G = PA_WeatherValueNoiseGradient(Q, Seed) + PA_WeatherValueNoiseGradient(Q * 2.03 + 31.0, Seed + 1u) * (0.5 * 2.03);
+			Gradient = Gradient + G * Weight;
+			Weights2 += Weight * Weight;
+		}
+	}
+	return cross(P, Gradient) * (PA_W33_EDDY_NORM * F.Eddy.x / sqrt(max(Weights2, 1e-9)));
+}
+
+/** The flow at unit P (model frame): bands + eddies + storm vortices. */
+FPAFlowmapFlow PA_W38Flow(float3 P, FPAWeatherInputs In, FPAFlowmapParams F)
+{
+	const float Horizontal = sqrt(max(P.x * P.x + P.y * P.y, 1e-12));
+	const float3 East = float3(-P.y / Horizontal, P.x / Horizontal, 0.0);
+	const float3 North = cross(P, East);
+	const float Psi = asin(clamp(P.z, -1.0, 1.0)) * (180.0 / PA_W_PI) - In.ThermalEquator * (180.0 / PA_W_PI);
+	const float2 Band = PA_W38Bands(Psi, In, F);
+
+	FPAFlowmapFlow Flow;
+	Flow.Wind = East * Band.x + North * Band.y + PA_W38EddyWind(P, In, F);
+	Flow.Vortex = 0.0;
+	Flow.Core = 0.0;
+	const float TanInflow = tan(F.Storm.y * (PA_W_PI / 180.0));
+	for (int I = 0; I < NumWeatherStorms; ++I)
+	{
+		const float3 C = WeatherStorm0[I].xyz;
+		const float CosD = dot(C, P);
+		if (CosD < WeatherStorm3[I].z)
+		{
+			continue;
+		}
+		const float Intensity = WeatherStorm1[I].w;
+		const float CoreKm = max(WeatherStorm0[I].w * F.Storm.x, 1.0);
+		const float D = acos(clamp(CosD, -1.0, 1.0)) * In.RadiusKm;
+		const float3 Tangent = cross(C, P);
+		const float TangentLength = length(Tangent);
+		if (TangentLength < 1e-6)
+		{
+			continue;
+		}
+		const float X = D / CoreKm;
+		const float Envelope = exp(-(D * D) / (9.0 * CoreKm * CoreKm));
+		const float Vt = WeatherStorm3[I].x * F.Extra.x * Intensity * In.WindScale * 2.0 * X / (1.0 + X * X) * Envelope;
+		const float3 Inward = normalize(C - P * CosD);
+		Flow.Wind = Flow.Wind + Tangent * (WeatherStorm2[I].x * Vt / TangentLength) + Inward * (Vt * TanInflow);
+		Flow.Vortex = max(Flow.Vortex, Intensity * exp(-(D * D) / (2.56 * CoreKm * CoreKm)));
+		Flow.Core = max(Flow.Core, Intensity * exp(-(D * D) / (0.64 * CoreKm * CoreKm)));
+	}
+	return Flow;
+}
+
+/** Zonal wind (m/s) of the bands at unit Q (the anchor drift). */
+float PA_W38ZonalWind(float3 Q, FPAWeatherInputs In, FPAFlowmapParams F)
+{
+	const float Psi = asin(clamp(Q.z, -1.0, 1.0)) * (180.0 / PA_W_PI) - In.ThermalEquator * (180.0 / PA_W_PI);
+	return PA_W38Bands(Psi, In, F).x;
+}
+
+/** The cloud noise of one anchor at the trace point Q (unit): 3 octaves; the anchor drifts east with the bands since its birth. */
+float PA_W38Noise(float3 Q, float AgeHours, uint Seed, FPAWeatherInputs In, FPAFlowmapParams F)
+{
+	const float CosLat = sqrt(max(1.0 - Q.z * Q.z, 0.04));
+	const float Drift = PA_W38ZonalWind(Q, In, F) * PA_W_KMH * AgeHours / (In.RadiusKm * CosLat);
+	const float3 R = PA_WeatherRotZ(Q, -Drift);
+	const float Frequency = In.RadiusKm / (F.Noise.x * PA_W33Scale(In.RadiusKm));
+	return PA_WeatherFbm(R * Frequency, Seed)
+		+ F.Noise.y * PA_WeatherFbm(R * (Frequency / PA_W38_OCTAVE_RATIO2) + 41.0, Seed + 7u)
+		+ F.Noise.z * PA_WeatherFbm(R * (Frequency / PA_W38_OCTAVE_RATIO3) + 83.0, Seed + 13u);
+}
+
+/** Standard normal CDF (tanh approximation, |error| < 2e-4). */
+float PA_W38Phi(float X)
+{
+	return 0.5 + 0.5 * tanh(0.7978846 * (X + 0.044715 * X * X * X));
+}
+
+/** Target cloud fraction at Psi (degrees from the thermal equator) without storms. */
+float PA_W38CoverProfile(float Psi, float Longitude, FPAWeatherInputs In, FPAFlowmapParams F, out float Itcz)
+{
+	const float A = abs(Psi);
+	const float H = In.HadleyDegrees;
+	const float Fe = In.FerrelDegrees;
+	const float Mid = 0.5 * (H + Fe);
+	float Base = lerp(F.Cover.y, F.Cover.z, smoothstep(0.8 * H, Mid, A));
+	Base = lerp(Base, F.Cover.w, smoothstep(Fe, Fe + 15.0, A));
+	const float Meander = PA_W38_ITCZ_MEANDER * sin(2.0 * Longitude + In.MeanderPhase) + 2.0 * sin(5.0 * Longitude - 0.7 * In.MeanderPhase);
+	Itcz = PA_WeatherGauss(Psi, Meander, PA_W38_ITCZ_WIDTH);
+	return lerp(Base, F.Cover.x, Itcz);
+}
+
+FPAWeatherSample PA_EvaluateWeatherFlowmap(float3 P, FPAWeatherInputs In)
+{
+	const FPAFlowmapParams F = PA_LoadFlowmapParams();
+	const FPAFlowmapFlow Here = PA_W38Flow(P, In, F);
+
+	// Backward trace through the frozen flow; the noise of both anchors is averaged over the last trace points (streaks).
+	const float Scale = PA_W33Scale(In.RadiusKm);
+	const float Dt = F.Eddy.z * Scale * 3600.0 / (float)PA_W38_TRACE_STEPS / (In.RadiusKm * 1000.0);   // m/s -> radians
+	const int StreakPoints = clamp((int)(F.Eddy.w * (float)PA_W38_TRACE_STEPS + 0.5), 1, PA_W38_TRACE_STEPS);
+	float3 Q = P;
+	float3 WindQ = Here.Wind;
+	float Sum0 = 0.0;
+	float Sum1 = 0.0;
+	float WeightSum = 0.0;
+	for (int S = 1; S <= PA_W38_TRACE_STEPS; ++S)
+	{
+		const float3 Mid = normalize(Q - WindQ * (0.5 * Dt));
+		Q = normalize(Q - PA_W38Flow(Mid, In, F).Wind * Dt);
+		if (S < PA_W38_TRACE_STEPS)
+		{
+			WindQ = PA_W38Flow(Q, In, F).Wind;
+		}
+		const int K = S - (PA_W38_TRACE_STEPS - StreakPoints);
+		if (K > 0)
+		{
+			// the streak window: the last points, spaced along the path (the trace step), weighted toward the end
+			const float W = (float)K;
+			if (In.NoiseWeight0 > 0.0)
+			{
+				Sum0 += W * PA_W38Noise(Q, In.NoiseAge0, In.NoiseSeed0 + PA_W38_SEED_OFFSET, In, F);
+			}
+			if (In.NoiseWeight1 > 0.0)
+			{
+				Sum1 += W * PA_W38Noise(Q, In.NoiseAge1, In.NoiseSeed1 + PA_W38_SEED_OFFSET, In, F);
+			}
+			WeightSum += W;
+		}
+	}
+	const float Norm = sqrt(max(In.NoiseWeight0 * In.NoiseWeight0 + In.NoiseWeight1 * In.NoiseWeight1, 1e-9));
+	const float Field = (In.NoiseWeight0 * Sum0 + In.NoiseWeight1 * Sum1) / (WeightSum * Norm);
+	const float Std = PA_W38_NOISE_STD * PA_W38_STREAK_STD * sqrt(1.0 + F.Noise.y * F.Noise.y + F.Noise.z * F.Noise.z);
+	const float Rank = PA_W38Phi(Field / Std);
+
+	// Cloud amount: latitude profile + storms; the rank above (1 - fraction) is cloud.
+	const float Psi = asin(clamp(P.z, -1.0, 1.0)) * (180.0 / PA_W_PI) - In.ThermalEquator * (180.0 / PA_W_PI);
+	float Itcz;
+	const float Fraction = min(0.95, PA_W38CoverProfile(Psi, atan2(P.y, P.x), In, F, Itcz) + F.Storm.z * Here.Vortex);
+	const float Excess = Rank - (1.0 - Fraction);
+	const float Stormy = max(Here.Core, F.Storm.w * Itcz);
+
+	const float Horizontal = sqrt(max(P.x * P.x + P.y * P.y, 1e-12));
+	const float3 East = float3(-P.y / Horizontal, P.x / Horizontal, 0.0);
+	FPAWeatherSample Sample;
+	Sample.Cover = saturate(0.37 + F.Noise.w * Excess);
+	Sample.Humidity = 0.5 + 0.25 * smoothstep(0.0, 0.3, Excess) + 0.4 * Stormy * smoothstep(-0.05, 0.25, Excess);
+	Sample.WindEast = dot(Here.Wind, East);
+	Sample.WindNorth = dot(Here.Wind, cross(P, East));
+	return Sample;
+}

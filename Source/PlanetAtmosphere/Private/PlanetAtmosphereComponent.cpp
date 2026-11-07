@@ -108,6 +108,28 @@ FPlanetWeatherParameters UPlanetAtmosphereComponent::GetValidatedWeatherParamete
 	W.CycloneRadiusKm = FMath::Clamp(CycloneRadius, 50000.0, 5000000.0) / 1000.0;
 	W.TropicalCyclonesPerHemisphere = FMath::Clamp(static_cast<double>(TropicalCyclonesPerHemisphere), 0.0, 4.0);
 	W.WindScale = FMath::Clamp(static_cast<double>(WindScale), 0.0, 5.0);
+	// Step 38: flowmap weather (km for the lengths).
+	W.FlowTradeWind = FMath::Clamp(static_cast<double>(FlowTradeWind), 0.0, 60.0);
+	W.FlowJetWind = FMath::Clamp(static_cast<double>(FlowJetWind), 0.0, 80.0);
+	W.FlowPolarWind = FMath::Clamp(static_cast<double>(FlowPolarWind), 0.0, 40.0);
+	W.FlowMeridionalWind = FMath::Clamp(static_cast<double>(FlowMeridionalWind), 0.0, 20.0);
+	W.FlowEddyWind = FMath::Clamp(static_cast<double>(FlowEddyWind), 0.0, 40.0);
+	W.FlowEddyScaleKm = FMath::Clamp(FlowEddyScale, 100000.0, 10000000.0) / 1000.0;
+	W.FlowAdvectionHours = FMath::Clamp(static_cast<double>(FlowAdvectionHours), 0.0, 400.0);
+	W.FlowStreakShare = FMath::Clamp(static_cast<double>(FlowStreakShare), 0.0, 1.0);
+	W.FlowNoiseScaleKm = FMath::Clamp(FlowNoiseScale, 100000.0, 10000000.0) / 1000.0;
+	W.FlowNoiseOctave2 = FMath::Clamp(static_cast<double>(FlowNoiseOctave2), 0.0, 3.0);
+	W.FlowNoiseOctave3 = FMath::Clamp(static_cast<double>(FlowNoiseOctave3), 0.0, 3.0);
+	W.FlowEdgeSharpness = FMath::Clamp(static_cast<double>(FlowEdgeSharpness), 0.1, 5.0);
+	W.FlowCloudItcz = FMath::Clamp(static_cast<double>(FlowCloudItcz), 0.0, 1.0);
+	W.FlowCloudSubtropics = FMath::Clamp(static_cast<double>(FlowCloudSubtropics), 0.0, 1.0);
+	W.FlowCloudMidLatitudes = FMath::Clamp(static_cast<double>(FlowCloudMidLatitudes), 0.0, 1.0);
+	W.FlowCloudPoles = FMath::Clamp(static_cast<double>(FlowCloudPoles), 0.0, 1.0);
+	W.FlowStormCoreRatio = FMath::Clamp(static_cast<double>(FlowStormCoreRatio), 0.1, 2.0);
+	W.FlowStormInflowDegrees = FMath::Clamp(static_cast<double>(FlowStormInflow), 0.0, 60.0);
+	W.FlowStormCloud = FMath::Clamp(static_cast<double>(FlowStormCloud), 0.0, 1.0);
+	W.FlowItczStorminess = FMath::Clamp(static_cast<double>(FlowItczStorminess), 0.0, 1.0);
+	W.FlowStormWindScale = FMath::Clamp(static_cast<double>(FlowStormWindScale), 0.0, 5.0);
 	return W;
 }
 
