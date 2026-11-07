@@ -192,19 +192,23 @@ public:
 	double CloudFairWeatherDepth = 1200.0;
 
 	/**
-	 * Step 37: size in meters of the cloud heaps -- rounded domes of the cloud tops (flat bases), large (this) and small
-	 * (1/3 of this) on top of them, so that cloud masses read as lumpy volumes from high orbit instead of a flat plate.
+	 * Step 37b: size in meters of the macro clouds -- the same cloud shape (cell noise) as the individual clouds, at this
+	 * size and at 1/4 of it. They gather the clouds into big masses with gaps between them and raise their tops, so that
+	 * the clouds read as volumes from high orbit instead of a flat plate. Applies wherever the weather has clouds.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1000.0", ClampMax = "1000000.0"))
-	double CloudHeapScale = 40000.0;
+	double CloudHeapScale = 48000.0;
 
-	/** Step 37: strength of the heaps (how much the cloud top height varies). 0 = no heaps (flat tops of Step 36). */
+	/**
+	 * Step 37b: height of the macro clouds relative to their size (1 = 8 % of the size for the large ones, 12 % for the
+	 * small ones, before the vertical exaggeration). 0 = no macro clouds (flat tops of Step 36).
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "0.0", UIMax = "4.0"))
-	float CloudHeapAmplitude = 1.6f;
+	float CloudHeapAmplitude = 1.0f;
 
-	/** Step 37: share of the heap strength in fair weather (1 inside weather masses, where the heaps are tallest). */
+	/** Step 37b: share of the macro cloud height where the weather has few clouds (1 where it has many). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float CloudHeapFairWeather = 0.35f;
+	float CloudHeapFairWeather = 0.7f;
 
 	/**
 	 * Step 37: art-directed vertical exaggeration of the clouds seen from far away. Between Exaggeration Start Altitude and

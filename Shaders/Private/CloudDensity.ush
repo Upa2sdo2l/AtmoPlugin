@@ -44,10 +44,12 @@ struct FPACloudLayer
 	float ClusterScale;    // cm, Step 32 cluster level
 	float MesoScale;       // cm, Step 32 meso cells
 	float FairDepth;       // cm, depth of fair-weather clouds
-	// Step 37: relief of the global level (cloud heaps). The vertical exaggeration is applied on the CPU (Thickness, FairDepth).
-	float HeapScale;       // cm, size of the large heaps (the small ones are PA_CLOUD_HEAP_SMALL_RATIO x this)
-	float HeapAmplitude;   // 0 = no heaps (Step 36 depth)
-	float HeapFairWeather; // share of the heap amplitude in fair weather (1 inside weather masses)
+	// Step 37b: relief of the global level (macro clouds). The vertical exaggeration is applied on the CPU (Thickness,
+	// FairDepth); ReliefExaggeration (the applied factor) scales the macro heights the same way.
+	float HeapScale;          // cm, size of the large macro clouds (the small ones are PA_CLOUD_MACRO_SCALE[1] x this)
+	float HeapAmplitude;      // height / size of the macro clouds (x PA_CLOUD_MACRO_HEIGHT); 0 = none (Step 36 clouds)
+	float HeapFairWeather;    // share of the macro height in thin weather (1 where the weather fraction is >= 2/3)
+	float ReliefExaggeration; // applied vertical exaggeration (AtmosphereCloudRelief.w, >= 1)
 	// Phase 5 / Step 29: the planet's weather (AtmosphereWeatherInfo).
 	int WeatherEnabled;    // 0 = no weather for this planet: Coverage is the cloud fraction everywhere
 	float WeatherRowA;     // first atlas rows of the two snapshots around the weather time, interpolation weight
@@ -66,17 +68,19 @@ static const float PA_CLOUD_MASS_EDGE_FRACTION = 0.6; // cloud fraction factor a
 static const float PA_CLOUD_THICK_LOW = 0.70;         // RHe -> storm factor (depth, top height, density)
 static const float PA_CLOUD_THICK_HIGH = 1.0;
 static const float PA_CLOUD_HUMIDITY_COVERAGE = 0.4;  // RHe shift per unit of (Coverage - 0.5) x 2
-// Step 37 (prototype p37): heaps = union of spherical domes, one per cell of a 3D lattice around the planet (random centre
-// +-0.4 cell, radius 0.6 x (0.7..1.3) cells, height 0.45..1), large (HeapScale) + 0.45 x small (0.33 x HeapScale). They
-// scale the local cloud depth (flat bases); each octave fades to its mean between 0.25 and 0.6 x its scale of footprint.
-static const float PA_CLOUD_HEAP_RADIUS = 0.6;
-static const float PA_CLOUD_HEAP_SMALL_RATIO = 0.33;
-static const float PA_CLOUD_HEAP_SMALL_WEIGHT = 0.45;
-static const float PA_CLOUD_HEAP_MEAN = 0.340;        // mean of one octave over the sphere (measured, p37)
-static const float PA_CLOUD_HEAP_MAX = 1.45;          // 1 + small weight
-static const float PA_CLOUD_HEAP_FADE_START = 0.25;
-static const float PA_CLOUD_HEAP_FADE_END = 0.6;
-static const float PA_CLOUD_HEAP_MIN_FACTOR = 0.15;   // lowest depth factor between heaps
+// Step 37b (prototype p38): macro clouds = the SAME cell noise as the clouds (PA_CloudCellNoise) at HeapScale and
+// 0.25 x HeapScale, constant along the column. Each level (1) gathers the local cloud fraction into big clouds with gaps
+// between them (x 1 + CLUMP (2 u - 1), not in storms) and (2) raises their tops by a dome over its threshold, of height
+// proportional to its size (x HeapAmplitude x the applied exaggeration). Replaces the Step 37 dome lattice.
+static const int PA_CLOUD_MACRO_LEVELS = 2;
+static const float PA_CLOUD_MACRO_SCALE[2] = { 1.0, 0.25 };     // x HeapScale
+static const float PA_CLOUD_MACRO_HEIGHT[2] = { 0.08, 0.12 };   // top height / size at HeapAmplitude 1 (before exaggeration)
+static const float PA_CLOUD_MACRO_WEIGHT[2] = { 0.6, 0.4 };     // share of each level in the clump value
+static const float3 PA_CLOUD_MACRO_OFFSET[2] = { float3(113.7, -57.3, 29.1), float3(-71.9, 44.6, -13.2) };   // x the level scale
+static const float PA_CLOUD_MACRO_FRACTION_BASE = 0.25;         // area of the macro domes: base + slope x weather fraction
+static const float PA_CLOUD_MACRO_FRACTION_SLOPE = 0.15;
+static const float PA_CLOUD_MACRO_DOME = 0.5;                   // dome profile exponent of the excess
+static const float PA_CLOUD_MACRO_CLUMP = 1.5;                  // gathering of the local fraction into the macro clouds
 // Step 35: softer edges of the weather masses for large footprints (far views): the contrast range widens toward
 // [0.06, 0.70] (same cloud amount within ~1 %) at half strength between 3 and 15 km of footprint.
 static const float PA_CLOUD_SOFT_FAR_START = 3.0e5;   // cm
@@ -208,70 +212,6 @@ float PA_CloudHeightFraction(FPACloudLayer Layer, float Altitude)
 	return (Altitude - Layer.BottomAltitude) / Layer.Thickness;
 }
 
-/** Step 37: union of spherical domes, one per unit cell around Q (value 0..1). */
-float PA_CloudHeapDomes(float3 Q, uint Seed)
-{
-	const float3 Cell = floor(Q);
-	float Best = 0.0;
-	for (int DZ = -1; DZ <= 1; ++DZ)
-	{
-		for (int DY = -1; DY <= 1; ++DY)
-		{
-			for (int DX = -1; DX <= 1; ++DX)
-			{
-				const int X = (int)Cell.x + DX;
-				const int Y = (int)Cell.y + DY;
-				const int Z = (int)Cell.z + DZ;
-				const uint A = ((uint)X * 73856093u) ^ ((uint)Y * 19349663u) ^ ((uint)Z * 83492791u) ^ Seed;
-				const uint3 H0 = PA_Pcg3d(uint3(A, Seed, 0u));
-				const uint3 H1 = PA_Pcg3d(uint3(A, Seed, 1u));
-				const float K = 1.0 / 16777216.0;
-				const float3 U0 = float3((float)(H0.x >> 8u), (float)(H0.y >> 8u), (float)(H0.z >> 8u)) * K;
-				const float U1X = (float)(H1.x >> 8u) * K;
-				const float U1Y = (float)(H1.y >> 8u) * K;
-				const float3 Centre = float3((float)X, (float)Y, (float)Z) + 0.5 + 0.8 * (U0 - 0.5);
-				const float Radius = PA_CLOUD_HEAP_RADIUS * (0.7 + 0.6 * U1X);
-				const float3 D = Q - Centre;
-				const float D2 = dot(D, D) / (Radius * Radius);
-				if (D2 < 1.0)
-				{
-					Best = max(Best, (0.45 + 0.55 * U1Y) * sqrt(1.0 - D2));
-				}
-			}
-		}
-	}
-	return Best;
-}
-
-/** Step 37: heap field at Direction (0..PA_CLOUD_HEAP_MAX); each octave fades to its mean when the footprint resolves it no more. */
-float PA_CloudHeapField(FPACloudLayer Layer, float3 Direction, float Footprint)
-{
-	const float LargeScale = Layer.HeapScale;
-	const float SmallScale = Layer.HeapScale * PA_CLOUD_HEAP_SMALL_RATIO;
-	const float WLarge = 1.0 - smoothstep(PA_CLOUD_HEAP_FADE_START, PA_CLOUD_HEAP_FADE_END, Footprint / LargeScale);
-	const float WSmall = 1.0 - smoothstep(PA_CLOUD_HEAP_FADE_START, PA_CLOUD_HEAP_FADE_END, Footprint / SmallScale);
-	float Large = PA_CLOUD_HEAP_MEAN;
-	float Small = PA_CLOUD_HEAP_MEAN;
-	[branch]
-	if (WLarge > 0.0)
-	{
-		Large = lerp(PA_CLOUD_HEAP_MEAN, PA_CloudHeapDomes(Direction * (Layer.PlanetRadius / LargeScale), 0x1234567u), WLarge);
-	}
-	[branch]
-	if (WSmall > 0.0)
-	{
-		Small = lerp(PA_CLOUD_HEAP_MEAN,
-			PA_CloudHeapDomes(Direction * (Layer.PlanetRadius / SmallScale) + float3(17.3, -5.1, 9.7), 0x7654321u), WSmall);
-	}
-	return Large + PA_CLOUD_HEAP_SMALL_WEIGHT * Small;
-}
-
-/** Step 37: heap amplitude at a point: weaker in fair weather, full inside weather masses (Interior from PA_CloudWeather). */
-float PA_CloudHeapAmplitude(FPACloudLayer Layer, float Interior)
-{
-	return Layer.HeapAmplitude * lerp(Layer.HeapFairWeather, 1.0, Interior);
-}
-
 /**
  * Weather at Direction (planet local, unit): x = cloud fraction, y = storm factor (0 fair weather, 1 deep storm clouds).
  * Step 34: the storm factor and a broken mass edge come from the weather humidity (how deep inside a cloud mass).
@@ -314,9 +254,9 @@ float PA_CloudMaxTopAltitude(FPACloudLayer Layer, float3 Direction)
 	{
 		return Layer.BottomAltitude + min(Layer.Thickness, Base);
 	}
-	// Step 37: the highest heap (soft cap at the layer top, as in the density).
-	const float Raw = Base * (1.0 + PA_CloudHeapAmplitude(Layer, Weather.z)
-		* (PA_CLOUD_HEAP_MAX - PA_CLOUD_HEAP_MEAN * (1.0 + PA_CLOUD_HEAP_SMALL_WEIGHT)));
+	// Step 37b: the highest macro cloud (soft cap at the layer top, as in the density).
+	const float Raw = Base + Layer.HeapAmplitude * Layer.ReliefExaggeration * Layer.HeapScale
+		* (PA_CLOUD_MACRO_HEIGHT[0] * PA_CLOUD_MACRO_SCALE[0] + PA_CLOUD_MACRO_HEIGHT[1] * PA_CLOUD_MACRO_SCALE[1]);
 	return Layer.BottomAltitude + Layer.Thickness * (1.0 - exp(-Raw / Layer.Thickness));
 }
 
@@ -377,6 +317,33 @@ float PA_CloudCellNoise(FPACloudLayer Layer, float3 PC, float3 PosPlanetLocal, f
 	const float MB = PA_CLOUD_BILLOW_WEIGHT * MissingB;
 	MissingStd = sqrt(MP * MP + MW * MW + MB * MB) * InvNorm;
 	return saturate(0.5 + 1.5 * (PA_CLOUD_CELL_PERLIN_WEIGHT * NP + PA_CLOUD_CELL_WORLEY_WEIGHT * NW + PA_CLOUD_BILLOW_WEIGHT * NB) * InvNorm);
+}
+
+/**
+ * Step 37b: macro clouds over Direction (unit, planet local). x = clump value (0..1, mean 0.5) that gathers the local
+ * fraction into big clouds, y = extra top height (cm). Fraction = weather cloud fraction. Two PA_CloudCellNoise per call.
+ */
+float2 PA_CloudMacro(FPACloudLayer Layer, float3 Direction, float Fraction, float Footprint)
+{
+	float Height = 0.0;
+	float Clump = 0.0;
+	const float MacroFraction = saturate(PA_CLOUD_MACRO_FRACTION_BASE + PA_CLOUD_MACRO_FRACTION_SLOPE * Fraction);
+	const float T = PA_CloudQuantileCell(1.0 - MacroFraction);
+	const float Amp = Layer.HeapAmplitude * Layer.ReliefExaggeration * lerp(Layer.HeapFairWeather, 1.0, saturate(Fraction * 1.5));
+	for (int K = 0; K < PA_CLOUD_MACRO_LEVELS; ++K)
+	{
+		FPACloudLayer Macro = Layer;
+		Macro.ShapeScale = Layer.HeapScale * PA_CLOUD_MACRO_SCALE[K];
+		const float3 P = Direction * (Layer.PlanetRadius + Layer.BottomAltitude) + PA_CLOUD_MACRO_OFFSET[K] * Macro.ShapeScale;
+		float NP;
+		float NW;
+		float Missing;
+		const float U = PA_CloudCellNoise(Macro, P, P, Footprint, NP, NW, Missing);
+		const float E = saturate((U - T) / max(1.0 - T, 1e-3));
+		Height += Amp * PA_CLOUD_MACRO_HEIGHT[K] * Macro.ShapeScale * pow(E, PA_CLOUD_MACRO_DOME);
+		Clump += PA_CLOUD_MACRO_WEIGHT[K] * U;
+	}
+	return float2(Clump, Height);
 }
 
 /**
@@ -452,7 +419,10 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	const float MesoVisible = 1.0 - smoothstep(PA_CLOUD_MESO_FADE_START, PA_CLOUD_MESO_FADE_END, Footprint / Layer.MesoScale);
 	const float UMeso = 0.5 + (UM - 0.5) * MesoVisible;
 	const float Fraction4 = Fraction * Fraction * Fraction * Fraction;
-	const float LocalFraction = saturate(CloudFraction * MaskK * (1.0 + PA_CLOUD_MESO_AMPLITUDE * (1.0 - Fraction4) * (2.0 * UMeso - 1.0)));
+	// Step 37b: macro clouds (the cloud cell noise at HeapScale, 0.25 x HeapScale) gather the fraction and raise the tops.
+	const float2 Macro = Layer.HeapAmplitude > 0.0 ? PA_CloudMacro(Layer, Direction, Fraction, Footprint) : float2(0.5, 0.0);
+	const float MacroClump = max(0.0, 1.0 + PA_CLOUD_MACRO_CLUMP * (1.0 - Storm) * (2.0 * Macro.x - 1.0));
+	const float LocalFraction = saturate(CloudFraction * MaskK * MacroClump * (1.0 + PA_CLOUD_MESO_AMPLITUDE * (1.0 - Fraction4) * (2.0 * UMeso - 1.0)));
 	if (LocalFraction <= 1e-3)
 	{
 		return 0.0;
@@ -465,10 +435,8 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	float Depth = min(Layer.Thickness, DepthRaw);
 	if (Layer.HeapAmplitude > 0.0)
 	{
-		// Step 37: heaps scale the top height (flat bases); a soft cap at the layer top keeps the tallest ones rounded.
-		const float Heap = PA_CloudHeapField(Layer, Direction, Footprint);
-		DepthRaw *= max(PA_CLOUD_HEAP_MIN_FACTOR,
-			1.0 + PA_CloudHeapAmplitude(Layer, Weather.z) * (Heap - PA_CLOUD_HEAP_MEAN * (1.0 + PA_CLOUD_HEAP_SMALL_WEIGHT)));
+		// Step 37b: macro clouds add top height (flat bases); a soft cap at the layer top keeps the tallest ones rounded.
+		DepthRaw += Macro.y;
 		Depth = Layer.Thickness * (1.0 - exp(-DepthRaw / Layer.Thickness));
 	}
 	const float H = H0 / max(Depth, 1.0);
