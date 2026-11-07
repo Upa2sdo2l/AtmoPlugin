@@ -69,14 +69,22 @@ static const float PA_CLOUD_THICK_LOW = 0.70;         // RHe -> storm factor (de
 static const float PA_CLOUD_THICK_HIGH = 1.0;
 static const float PA_CLOUD_HUMIDITY_COVERAGE = 0.4;  // RHe shift per unit of (Coverage - 0.5) x 2
 // Step 37b (prototype p38): macro clouds = the SAME cell noise as the clouds (PA_CloudCellNoise) at HeapScale and
-// 0.25 x HeapScale, constant along the column. Each level (1) gathers the local cloud fraction into big clouds with gaps
-// between them (x 1 + CLUMP (2 u - 1), not in storms) and (2) raises their tops by a dome over its threshold, of height
+// 0.25 x HeapScale (+ 4 x HeapScale since Step 39b, height only), constant along the column. Each level (1) gathers
+// the local cloud fraction into big clouds with gaps between them (x 1 + CLUMP (2 u - 1), not in storms) and (2)
+// raises their tops by a dome over its threshold, of height
 // proportional to its size (x HeapAmplitude x the applied exaggeration). Replaces the Step 37 dome lattice.
-static const int PA_CLOUD_MACRO_LEVELS = 2;
-static const float PA_CLOUD_MACRO_SCALE[2] = { 1.0, 0.25 };     // x HeapScale
-static const float PA_CLOUD_MACRO_HEIGHT[2] = { 0.08, 0.12 };   // top height / size at HeapAmplitude 1 (before exaggeration)
-static const float PA_CLOUD_MACRO_WEIGHT[2] = { 0.6, 0.4 };     // share of each level in the clump value
-static const float3 PA_CLOUD_MACRO_OFFSET[2] = { float3(113.7, -57.3, 29.1), float3(-71.9, 44.6, -13.2) };   // x the level scale
+// Step 39b: a third level at 4 x HeapScale (192 km) gives relief that is still several pixels wide from the whole-planet
+// view; it only raises the tops (no clump weight: the weather already shapes the masses at that scale).
+static const int PA_CLOUD_MACRO_LEVELS = 3;
+static const float PA_CLOUD_MACRO_SCALE[3] = { 1.0, 0.25, 4.0 };       // x HeapScale
+static const float PA_CLOUD_MACRO_HEIGHT[3] = { 0.08, 0.12, 0.04 };    // top height / size at HeapAmplitude 1 (before exaggeration)
+static const float PA_CLOUD_MACRO_WEIGHT[3] = { 0.6, 0.4, 0.0 };       // share of each level in the clump value
+static const float3 PA_CLOUD_MACRO_OFFSET[3] = { float3(113.7, -57.3, 29.1), float3(-71.9, 44.6, -13.2), float3(37.3, 91.1, -66.4) };   // x the level scale
+// Step 39b: far relief. The effective medium of unresolved columns is weighted toward the column top, (1 + k) H^k
+// (integral 1 over the column), so that from far a cloud mass has a TOP SURFACE that follows the macro relief and is lit /
+// self-shadowed by the normal light march, instead of a uniform haze over the whole column (flat white layers from far,
+// user's UE test). Resolved clouds are unchanged.
+static const float PA_CLOUD_FAR_TOP_EXPONENT = 4.0;
 static const float PA_CLOUD_MACRO_FRACTION_BASE = 0.25;         // area of the macro domes: base + slope x weather fraction
 static const float PA_CLOUD_MACRO_FRACTION_SLOPE = 0.15;
 static const float PA_CLOUD_MACRO_DOME = 0.5;                   // dome profile exponent of the excess
@@ -242,6 +250,12 @@ float3 PA_CloudWeather(FPACloudLayer Layer, float3 Direction, float Footprint)
 		Interior);
 }
 
+/** Step 39b: the 192 km level only exists with the far exaggeration (x1 near the planet -> 0, >= x5 -> full). */
+float PA_CloudMacroLevelShare(FPACloudLayer Layer, int K)
+{
+	return K == 2 ? saturate((Layer.ReliefExaggeration - 1.0) / 4.0) : 1.0;
+}
+
 /**
  * Upper bound of the cloud-top altitude over Direction (planet local, unit): the deepest clouds the weather allows there.
  * Callers march only up to it (Step 32: a 0.6 km fair-weather field no longer shares its samples with 7 km of empty layer).
@@ -256,7 +270,8 @@ float PA_CloudMaxTopAltitude(FPACloudLayer Layer, float3 Direction)
 	}
 	// Step 37b: the highest macro cloud (soft cap at the layer top, as in the density).
 	const float Raw = Base + Layer.HeapAmplitude * Layer.ReliefExaggeration * Layer.HeapScale
-		* (PA_CLOUD_MACRO_HEIGHT[0] * PA_CLOUD_MACRO_SCALE[0] + PA_CLOUD_MACRO_HEIGHT[1] * PA_CLOUD_MACRO_SCALE[1]);
+		* (PA_CLOUD_MACRO_HEIGHT[0] * PA_CLOUD_MACRO_SCALE[0] + PA_CLOUD_MACRO_HEIGHT[1] * PA_CLOUD_MACRO_SCALE[1]
+			+ PA_CLOUD_MACRO_HEIGHT[2] * PA_CLOUD_MACRO_SCALE[2] * PA_CloudMacroLevelShare(Layer, 2));
 	return Layer.BottomAltitude + Layer.Thickness * (1.0 - exp(-Raw / Layer.Thickness));
 }
 
@@ -327,7 +342,7 @@ float PA_CloudCellNoise(FPACloudLayer Layer, float3 PC, float3 PosPlanetLocal, f
 
 /**
  * Step 37b: macro clouds over Direction (unit, planet local). x = clump value (0..1, mean 0.5) that gathers the local
- * fraction into big clouds, y = extra top height (cm). Fraction = weather cloud fraction. Two PA_CloudCellNoise per call.
+ * fraction into big clouds, y = extra top height (cm). Fraction = weather cloud fraction. Three PA_CloudCellNoise per call (Step 39b).
  */
 float2 PA_CloudMacro(FPACloudLayer Layer, float3 Direction, float Fraction, float Footprint)
 {
@@ -338,6 +353,10 @@ float2 PA_CloudMacro(FPACloudLayer Layer, float3 Direction, float Fraction, floa
 	const float Amp = Layer.HeapAmplitude * Layer.ReliefExaggeration * lerp(Layer.HeapFairWeather, 1.0, saturate(Fraction * 1.5));
 	for (int K = 0; K < PA_CLOUD_MACRO_LEVELS; ++K)
 	{
+		if (PA_CloudMacroLevelShare(Layer, K) <= 0.0)
+		{
+			continue;   // the 192 km level near the planet (no clump weight, no height)
+		}
 		FPACloudLayer Macro = Layer;
 		Macro.ShapeScale = Layer.HeapScale * PA_CLOUD_MACRO_SCALE[K];
 		const float3 P = Direction * (Layer.PlanetRadius + Layer.BottomAltitude) + PA_CLOUD_MACRO_OFFSET[K] * Macro.ShapeScale;
@@ -346,7 +365,7 @@ float2 PA_CloudMacro(FPACloudLayer Layer, float3 Direction, float Fraction, floa
 		float Missing;
 		const float U = PA_CloudCellNoise(Macro, P, P, Footprint, NP, NW, Missing);
 		const float E = saturate((U - T) / max(1.0 - T, 1e-3));
-		Height += Amp * PA_CLOUD_MACRO_HEIGHT[K] * Macro.ShapeScale * pow(E, PA_CLOUD_MACRO_DOME);
+		Height += Amp * PA_CLOUD_MACRO_HEIGHT[K] * Macro.ShapeScale * pow(E, PA_CLOUD_MACRO_DOME) * PA_CloudMacroLevelShare(Layer, K);
 		Clump += PA_CLOUD_MACRO_WEIGHT[K] * U;
 	}
 	return float2(Clump, Height);
@@ -425,7 +444,7 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	const float MesoVisible = 1.0 - smoothstep(PA_CLOUD_MESO_FADE_START, PA_CLOUD_MESO_FADE_END, Footprint / Layer.MesoScale);
 	const float UMeso = 0.5 + (UM - 0.5) * MesoVisible;
 	const float Fraction4 = Fraction * Fraction * Fraction * Fraction;
-	// Step 37b: macro clouds (the cloud cell noise at HeapScale, 0.25 x HeapScale) gather the fraction and raise the tops.
+	// Step 37b: macro clouds (the cloud cell noise at HeapScale, 0.25 x and 4 x HeapScale) gather the fraction and raise the tops.
 	const float2 Macro = Layer.HeapAmplitude > 0.0 ? PA_CloudMacro(Layer, Direction, Fraction, Footprint) : float2(0.5, 0.0);
 	const float MacroClump = max(0.0, 1.0 + PA_CLOUD_MACRO_CLUMP * (1.0 - Storm) * (2.0 * Macro.x - 1.0));
 	const float LocalFraction = saturate(CloudFraction * MaskK * MacroClump * (1.0 + PA_CLOUD_MESO_AMPLITUDE * (1.0 - Fraction4) * (2.0 * UMeso - 1.0)));
@@ -510,7 +529,8 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	const float CoverHere = (1.0 - PA_CloudCdfCell(Threshold)) * Base;   // expected cover at this height
 	const float Profile = PA_CloudColumnProfile(ThresholdFraction);
 	const float Effective = SigmaColumn * CoverHere / max(ThresholdFraction * Profile, 1e-4) / max(Layer.Extinction, 1e-12);
-	return lerp(Effective, Fine, Resolved2);
+	const float FarTop = lerp(1.0, (1.0 + PA_CLOUD_FAR_TOP_EXPONENT) * pow(saturate(H), PA_CLOUD_FAR_TOP_EXPONENT), 1.0 - Resolved2);   // Step 39b
+	return lerp(Effective * FarTop, Fine, Resolved2);
 }
 
 /** PA_SampleCloudDensityEx without the local height (light marches, shadows, debug views). */
