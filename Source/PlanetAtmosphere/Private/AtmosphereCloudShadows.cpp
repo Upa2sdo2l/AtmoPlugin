@@ -256,7 +256,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		InstanceParameters.AtmosphereCloudData[Index].X, InstanceParameters.AtmosphereCloudData[Index].Y,
 		static_cast<float>(Planet.CloudFairWeatherDepthBaseUU), static_cast<float>(InstanceParameters.CloudTopClamp));
 	ContentKey[4] = InstanceParameters.AtmosphereCloudRelief[Index];   // Step 37b: macro clouds (w = exaggeration: excluded below)
-	ContentKey[4].W = 1.0f;
+	ContentKey[4].W = 1.0f + static_cast<float>(Inputs.WeatherParams.CloudMapEnable);   // Step 40: the cloud map shapes the clouds
 	const bool bSamePlanet = Entry.bHasPlanet && Entry.PlanetId == Planet.PlanetId;
 	const bool bSameWeather = PlanetAtmosphere::Weather::SameParameters(Entry.Weather, Planet.Weather);
 	if (!bSamePlanet || !bSameWeather || FMemory::Memcmp(Entry.ContentKey, ContentKey, sizeof(ContentKey)) != 0)

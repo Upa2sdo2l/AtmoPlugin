@@ -1,0 +1,43 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Step 40 (AD-52, prototype p40) — cloud map bake. One texel = PA_CloudMapBake (CloudDensity.ush, AD-1): the large
+// scales of the cloud layer (weather of ONE snapshot -> clusters -> meso -> macro clouds) at the texel centre, with the
+// noise faded at the texel size. Same cube-sphere layout as the weather atlas (WeatherCommon.ush): face f of the
+// snapshot = columns [f Res, (f + 1) Res), rows [CloudMapBakeRowBase, + Res). Scheduled by AtmosphereWeather.cpp right
+// after the weather faces it reads. Dispatch: (Res / 8, Res / 8, faces) groups.
+//   r = local cloud fraction, g = local depth / layer thickness, b = storm factor, a = weather cloud fraction
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereShaderData.ush"
+
+RWTexture2D<float4> OutCloudMap;
+int CloudMapBakeResolution;       // texels per face side
+int CloudMapBakeRowBase;          // first cloud map row of the snapshot
+float CloudMapBakeWeatherRow;     // first weather atlas row of the same snapshot
+int CloudMapBakeAtmosphere;       // index of the planet in the atmosphere arrays
+float4 CloudMapBakeFaces[6];      // x = cube face written by dispatch slice z
+
+[numthreads(8, 8, 1)]
+void BakeCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int Res = CloudMapBakeResolution;
+	if (DispatchThreadId.x >= (uint)Res || DispatchThreadId.y >= (uint)Res || DispatchThreadId.z >= 6u)
+	{
+		return;
+	}
+	const int Face = (int)CloudMapBakeFaces[DispatchThreadId.z].x;
+	const float A = ((float)DispatchThreadId.x + 0.5) / (float)Res * 2.0 - 1.0;
+	const float B = ((float)DispatchThreadId.y + 0.5) / (float)Res * 2.0 - 1.0;
+
+	FPACloudLayer Layer = PA_MakeCloudLayer(PA_LoadAtmosphere(CloudMapBakeAtmosphere));
+	// The snapshot alone (no interpolation), never the map itself.
+	Layer.WeatherEnabled = 1;
+	Layer.WeatherRowA = CloudMapBakeWeatherRow;
+	Layer.WeatherRowB = CloudMapBakeWeatherRow;
+	Layer.WeatherBlend = 0.0;
+	Layer.CloudMapEnabled = 0;
+	const float Texel = (Layer.PlanetRadius + Layer.BottomAltitude) * 1.5707963 / (float)Res;
+	const float3 Direction = normalize(PA_WeatherFaceDirection(Face, A, B));
+	OutCloudMap[int2(Face * Res + (int)DispatchThreadId.x, CloudMapBakeRowBase + (int)DispatchThreadId.y)] =
+		saturate(PA_CloudMapBake(Layer, Direction, Texel));
+}

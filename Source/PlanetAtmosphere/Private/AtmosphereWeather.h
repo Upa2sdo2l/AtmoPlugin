@@ -7,6 +7,7 @@
 #include "RendererInterface.h"
 #include "RenderGraphDefinitions.h"
 #include "AtmosphereShaders.h"
+#include "AtmosphereNoiseTextures.h"
 #include "PlanetAtmosphereTypes.h"
 
 class FRDGBuilder;
@@ -26,6 +27,8 @@ struct FAtmosphereWeatherInputs
 	/** The packed atmospheres of the view (sorted near -> far, NumAtmospheres entries). */
 	TConstArrayView<FAtmosphereVisibleInstance> Planets;
 	FAtmosphereWeatherTime Time;
+	/** Step 40: noise textures for the cloud map bake (nullptr = no cloud map this frame). */
+	const FPlanetAtmosphereNoiseTexturesRDG* Noise = nullptr;
 };
 
 /**
@@ -56,6 +59,12 @@ struct FAtmosphereWeatherInputs
  *    same graph always binds it.
  *  - Time-dependent inputs (storms, noise anchors, phases) are computed on the CPU in double precision
  *    (AtmosphereWeatherModel.h); the time on the GPU is only ever a small age.
+ *  - Step 40 (AD-52): the CLOUD MAP, a second atlas with the same slots and snapshot rows at
+ *    r.PlanetAtmosphere.CloudMap.Resolution (RGBA8: local fraction, depth / thickness, storm, weather fraction), baked by
+ *    FAtmosphereCloudMapBakeCS from each weather face right after it is built (same graph), and fully re-baked when the
+ *    planet's cloud parameters change (CloudKey). Needs the noise textures and constant exaggeration
+ *    (r.PlanetAtmosphere.CloudExaggerationMode 1: the map holds the exaggerated layer); released with the weather atlas
+ *    or when disabled.
  */
 class FPlanetAtmosphereWeather : public FRenderResource
 {
@@ -64,7 +73,8 @@ public:
 	 * Render thread (RDG setup), before the raymarch. Builds the missing snapshots of the view's planets (stat
 	 * PlanetAtmosphere.Weather), writes InOutParameters.AtmosphereWeatherInfo for all NumAtmospheres entries and returns
 	 * the atlas, or nullptr when there is no weather this frame (disabled, no weather time, released).
-	 * OutResolution = texels per face side.
+	 * OutResolution = texels per face side. Step 40: OutCloudMap = the cloud map (complete for every planet with weather),
+	 * or nullptr; OutCloudMapResolution = its texels per face side.
 	 */
 	FRDGTextureRef Update(
 		FRDGBuilder& GraphBuilder,
@@ -72,7 +82,9 @@ public:
 		uint32 FrameNumber,
 		const FAtmosphereWeatherInputs& Inputs,
 		FAtmosphereInstanceParameters& InOutParameters,
-		int32& OutResolution);
+		int32& OutResolution,
+		FRDGTextureRef& OutCloudMap,
+		int32& OutCloudMapResolution);
 
 	/** Render thread: frees the slots of planets not rendered for a while, and the atlas when nothing uses it. */
 	void CollectGarbage(uint32 FrameNumber);
@@ -86,6 +98,7 @@ private:
 		bool bAssigned = false;
 		double TimeSeconds = 0.0;   // k x interval (compared exactly: same expression every frame)
 		uint8 FacesDone = 0;        // bit f = face f written
+		uint8 CloudFacesDone = 0;   // Step 40: bit f = face f of the cloud map baked (from the weather face)
 	};
 
 	struct FSlot
@@ -103,10 +116,14 @@ private:
 		uint32 RateSampleFrame = 0;
 		double TimePerFrame = 0.0;
 		FSnapshot Snapshots[PlanetAtmosphere::Weather::NumSnapshots];
+		// Step 40: the cloud parameters the cloud map of this slot was baked with (a change re-bakes it).
+		bool bCloudKeyValid = false;
+		FVector4f CloudKey[4];
 	};
 
 	static bool SameWeather(const FSlot& Slot, const FAtmosphereVisibleInstance& Planet);
 	void ResetAtlas(int32 NewResolution, int32 NewCapacity);
+	void ResetCloudMap();
 
 	FCriticalSection Mutex;
 	TRefCountPtr<IPooledRenderTarget> Atlas;
@@ -115,6 +132,9 @@ private:
 	int32 FlowWarp = -1;   // r.PlanetAtmosphere.Weather.FlowWarp the atlas was built with (a change rebuilds it)
 	uint32 AtlasLastUsedFrame = 0;
 	TArray<FSlot> Slots;
+	// Step 40: cloud map (same slots / snapshot rows, CloudMapResolution texels per face side).
+	TRefCountPtr<IPooledRenderTarget> CloudMap;
+	int32 CloudMapResolution = 0;
 };
 
 namespace PlanetAtmosphere::Weather

@@ -222,6 +222,17 @@ namespace PlanetAtmosphere::CVars
 	};
 	FWeatherSettings GetWeatherSettings();
 
+	/** r.PlanetAtmosphere.CloudMap* (Step 40), validated. The map needs constant exaggeration (GetCloudExaggerationMode 1). */
+	struct FCloudMapSettings
+	{
+		bool bEnabled = true;
+		int32 Resolution = 768;   // texels per cube-face side, multiple of 8 in [128, 2048]
+	};
+	FCloudMapSettings GetCloudMapSettings();
+
+	/** r.PlanetAtmosphere.CloudExaggerationMode (Step 40): 1 = constant (default), 0 = by camera altitude (Step 37). */
+	int32 GetCloudExaggerationMode();
+
 	/** r.PlanetAtmosphere.Weather.TimeScale — game seconds of weather per world second (default clock), [0, 1e6]. */
 	double GetWeatherTimeScale();
 

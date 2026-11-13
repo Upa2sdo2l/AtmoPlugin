@@ -319,7 +319,9 @@ FPAWeatherSample PA_EvaluateWeatherFlowmap(float3 P, FPAWeatherInputs In)
 	const float Stormy = max(S.Core, F.Storm.w * Itcz);
 
 	FPAWeatherSample Sample;
-	Sample.Cover = saturate(0.37 + F.Noise.y * Excess);
+	// Step 41: unclamped (a signed margin around the mass edge, about -0.4..1.2): Coverage offsets it to move the edges
+	// (CloudDensity.ush PA_CloudWeather); the debug view saturates it.
+	Sample.Cover = 0.37 + F.Noise.y * Excess;
 	Sample.Humidity = 0.5 + 0.25 * smoothstep(0.0, 0.3, Excess) + 0.4 * Stormy * smoothstep(-0.05, 0.25, Excess);
 	const float3 Wind = East * Band.x + North * Band.y + S.Swirl * PA_W38_SWIRL_WIND;
 	Sample.WindEast = dot(Wind, East);

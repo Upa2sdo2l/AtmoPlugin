@@ -106,7 +106,7 @@ struct FPAWeatherInputs
 
 struct FPAWeatherSample
 {
-	float Cover;     // cloud water / coverage, 0..1
+	float Cover;     // cloud water / coverage, 0..1 (FlowWarp 2: unclamped since Step 41, signed margin around the mass edge)
 	float Humidity;  // effective relative humidity, 0..1
 	float WindEast;  // m/s
 	float WindNorth; // m/s
