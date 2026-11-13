@@ -22,6 +22,8 @@ FPlanetAtmosphereSceneProxy::FPlanetAtmosphereSceneProxy(const UPlanetAtmosphere
 	, CloudHeapAmplitude(FMath::Clamp(InComponent->CloudHeapAmplitude, 0.0f, 10.0f))
 	, CloudHeapFairWeather(FMath::Clamp(InComponent->CloudHeapFairWeather, 0.0f, 1.0f))
 	, CloudVerticalExaggeration(FMath::Clamp(InComponent->CloudVerticalExaggeration, 1.0f, 20.0f))
+	, CloudFairWeatherExaggeration(FMath::Clamp(InComponent->CloudFairWeatherExaggeration, 1.0f, 20.0f))
+	, CloudFairWeatherFraction(FMath::Clamp(InComponent->CloudFairWeatherFraction, 0.0f, 1.0f))
 	, CloudExaggerationStartUU(FMath::Clamp(InComponent->CloudExaggerationStartAltitude, 100.0, 1.0e8) * PlanetAtmosphere::MetersToUnrealUnits)
 	, CloudExaggerationFullUU(FMath::Clamp(InComponent->CloudExaggerationFullAltitude, 200.0, 1.0e9) * PlanetAtmosphere::MetersToUnrealUnits)
 	, RaymarchSteps(FMath::Clamp(InComponent->RaymarchSteps, 16, 256))
@@ -97,6 +99,8 @@ FAtmosphereVisibleInstance FPlanetAtmosphereSceneProxy::MakeVisibleInstance() co
 	Instance.CloudHeapAmplitude = CloudHeapAmplitude;
 	Instance.CloudHeapFairWeather = CloudHeapFairWeather;
 	Instance.CloudVerticalExaggeration = CloudVerticalExaggeration;
+	Instance.CloudFairWeatherExaggeration = CloudFairWeatherExaggeration;
+	Instance.CloudFairWeatherFraction = CloudFairWeatherFraction;
 	Instance.CloudExaggerationStartUU = CloudExaggerationStartUU;
 	Instance.CloudExaggerationFullUU = CloudExaggerationFullUU;
 	Instance.CloudExaggerationApplied = 1.0f;

@@ -262,6 +262,7 @@ namespace PlanetAtmosphere
 					OutParameters.AtmosphereWeatherClimate[Index] = Zero;
 					OutParameters.AtmosphereCloudData[Index] = Zero;
 					OutParameters.AtmosphereCloudRelief[Index] = Zero;
+					OutParameters.AtmosphereCloudShape[Index] = FVector4f(1.0f, 1.0f, 0.0f, 0.0f);
 					continue;
 				}
 
@@ -318,6 +319,13 @@ namespace PlanetAtmosphere
 					Instance.CloudHeapAmplitude,
 					Instance.CloudHeapFairWeather,
 					Instance.CloudExaggerationApplied);
+				// Step 42 (used with the cloud map only): fair-weather clouds at their own exaggeration (relative to the applied
+				// one, <= 1) and their cloud fraction inside fair-weather masses.
+				OutParameters.AtmosphereCloudShape[Index] = FVector4f(
+					FMath::Clamp(Instance.CloudFairWeatherExaggeration / FMath::Max(Instance.CloudExaggerationApplied, 1.0f), 0.01f, 1.0f),
+					FMath::Clamp(Instance.CloudFairWeatherFraction, 0.0f, 1.0f),
+					0.0f,
+					0.0f);
 				OutParameters.AtmosphereAxisX[Index] = ToAxis4f(Instance.PlanetAxisX);
 				OutParameters.AtmosphereAxisY[Index] = ToAxis4f(Instance.PlanetAxisY);
 				OutParameters.AtmosphereAxisZ[Index] = ToAxis4f(Instance.PlanetAxisZ);

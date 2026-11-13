@@ -57,6 +57,8 @@ struct FPACloudLayer
 	float HeapFairWeather;    // share of the macro height in thin weather (1 where the weather fraction is >= 2/3)
 	float ReliefExaggeration; // applied vertical exaggeration (AtmosphereCloudRelief.w, >= 1)
 	int CloudMapEnabled;      // Step 40: 1 = the large scales come from the baked cloud map (PA_SampleCloudMap)
+	float FairRelief;         // Step 42: fair-weather exaggeration / the applied one (<= 1; 1 = Step 40); depth + macro tops
+	float FairFraction;       // Step 42: cloud fraction cap inside fair-weather masses (cumulus fields; 1 = Step 40)
 	// Phase 5 / Step 29: the planet's weather (AtmosphereWeatherInfo).
 	int WeatherEnabled;    // 0 = no weather for this planet: Coverage is the cloud fraction everywhere
 	float WeatherRowA;     // first atlas rows of the two snapshots around the weather time, interpolation weight
@@ -112,11 +114,22 @@ static const float PA_CLOUD_EDGE_WIDTH = 0.07;       // soft width of the cloud 
 static const float PA_CLOUD_VERTICAL_STRETCH = 0.3;  // cloud-level noise: vertical coordinate x 0.3 (coherent columns)
 static const float PA_CLOUD_DOME_EXPONENT = 2.0;     // threshold rises with (height in the local depth)^2: domed tops
 // Step 40 (cloud map only, prototype p40): shape of tall clouds and their walls.
-static const float PA_CLOUD_SKIN = 2.0;               // x ShapeScale: domes only in this skin under the local top
+static const float PA_CLOUD_SKIN = 1.2;               // x ShapeScale: domes only in this skin under the local top (42: 2 -> 1.2)
 static const float PA_CLOUD_SKIN_FILL = 1.0;          // below the skin the fraction grows to x (1 + this): one body
 static const float PA_CLOUD_MAP_WARP_SCALE = 4.0;     // x ShapeScale: 3D warp of the cloud map lookup (bulging walls)
 static const float PA_CLOUD_MAP_WARP_AMPLITUDE = 2.0; // x ShapeScale: warp displacement (std)
 static const float PA_CLOUD_MAP_WARP_NOISE_STD = 0.18;   // std of the base shape noise (normalises the warp)
+// Step 42 (cloud map only, prototype p42): rounder cumulus -- lower round domes, 3D-er cells in the skin, coarser billows,
+// denser edges, less erosion / edge variation / fringe warp; + the far-amount calibration of the effective medium.
+static const float PA_CLOUD42_VERTICAL_STRETCH = 0.6;   // (0.3)
+static const float PA_CLOUD42_DETAIL_SCALE = 0.4;       // (0.25)
+static const float PA_CLOUD42_EDGE_DENSITY = 0.3;       // (0.12)
+static const float PA_CLOUD42_CORE_WIDTH = 0.3;         // (0.6)
+static const float PA_CLOUD42_EROSION_STRENGTH = 0.25;  // (0.6)
+static const float PA_CLOUD42_EDGE_VARIATION = 0.25;    // (0.7)
+static const float PA_CLOUD42_EDGE_WIDTH = 0.04;        // (0.07)
+static const float PA_CLOUD42_WARP = 0.2;               // (0.5)
+static const float PA_CLOUD42_UNION_LAYER = 0.5;        // x ShapeScale: vertically independent layers of a tall column
 static const float PA_CLOUD_EDGE_DENSITY = 0.12;     // density at the cloud edge ...
 static const float PA_CLOUD_CORE_WIDTH = 0.6;        // ... rising to 1 over this much noise above the threshold (32b: 0.3 -> 0.6)
 static const float PA_CLOUD_UNRESOLVED_DENSITY = 0.6;   // mean density inside unresolved clouds (effective medium)
@@ -448,7 +461,8 @@ float4 PA_CloudLargeScales(FPACloudLayer Layer, float3 Direction, float Footprin
 {
 	// Weather: cloud fraction (contrast) and storm factor.
 	const float3 Weather = PA_CloudWeather(Layer, Direction, Footprint);
-	const float Fraction = Weather.x;
+	// Step 42 (prototype p42): fair-weather masses are cumulus FIELDS (fraction <= FairFraction); only storms close up.
+	const float Fraction = Weather.x * lerp(Layer.FairFraction, 1.0, smoothstep(0.0, 0.6, Weather.y));
 	const float Storm = Weather.y;
 	if (Fraction <= 0.0)
 	{
@@ -480,7 +494,11 @@ float4 PA_CloudLargeScales(FPACloudLayer Layer, float3 Direction, float Footprin
 	// Local depth: shallow fair-weather clouds (thinner toward the cluster edges), deep storms (tops follow the clusters).
 	const float DeepDepth = Layer.Thickness * (0.45 + 0.55 * smoothstep(0.2, 0.8, UK));
 	// Step 32c: at most the layer (storm tops with +30 % meso relief used to be cut by the layer top instead of domed).
-	float DepthRaw = lerp(Layer.FairDepth * (0.6 + 0.4 * MaskK), DeepDepth, Storm) * (1.0 + PA_CLOUD_MESO_RELIEF * (2.0 * UMeso - 1.0));
+	// Step 42: fair-weather clouds get a smaller exaggeration than storms (shallow cumulus from the ground, tall storms from
+	// orbit): their depth and macro tops x FairRelief, fading to the full factor with the storm factor.
+	const float FairX = lerp(Layer.FairRelief, 1.0, Storm);
+	float DepthRaw = lerp(Layer.FairDepth * Layer.FairRelief * (0.6 + 0.4 * MaskK), DeepDepth, Storm)
+		* (1.0 + PA_CLOUD_MESO_RELIEF * (2.0 * UMeso - 1.0));
 	// Step 39c: exact early-out before the macro clouds (~half of the density cost): above the highest top they could make.
 	if (Layer.HeapAmplitude > 0.0
 		&& H0 >= Layer.Thickness * (1.0 - exp(-(DepthRaw + PA_CloudMacroMaxHeight(Layer, Fraction)) / Layer.Thickness)))
@@ -505,7 +523,7 @@ float4 PA_CloudLargeScales(FPACloudLayer Layer, float3 Direction, float Footprin
 	if (Layer.HeapAmplitude > 0.0)
 	{
 		// Step 37b: macro clouds add top height (flat bases); a soft cap at the layer top keeps the tallest ones rounded.
-		DepthRaw += Macro.y;
+		DepthRaw += Macro.y * FairX;
 		Depth = Layer.Thickness * (1.0 - exp(-DepthRaw / Layer.Thickness));
 	}
 	return float4(LocalFraction, Depth, Storm, Fraction);
@@ -610,15 +628,26 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	LocalHeight = H;
 	LocalDepth = Depth;
 
+	// Step 42 (prototype p42, cloud map only): rounder clouds -- the shape constants of the map path (PA_CLOUD42_*).
+	const bool bSkin = Layer.CloudMapEnabled != 0;
+	const float EdgeVariation = bSkin ? PA_CLOUD42_EDGE_VARIATION : PA_CLOUD_EDGE_VARIATION;
+	const float ErosionStrength = bSkin ? PA_CLOUD42_EROSION_STRENGTH : PA_CLOUD_EROSION_STRENGTH;
+	const float VerticalStretch = bSkin ? PA_CLOUD42_VERTICAL_STRETCH : PA_CLOUD_VERTICAL_STRETCH;
+	const float EdgeWidth = bSkin ? PA_CLOUD42_EDGE_WIDTH : PA_CLOUD_EDGE_WIDTH;
+	const float DetailScaleK = bSkin ? PA_CLOUD42_DETAIL_SCALE : PA_CLOUD_DETAIL_SCALE;
+	const float BillowWarp = bSkin ? PA_CLOUD42_WARP : PA_CLOUD_WARP;
+	const float EdgeDensity = bSkin ? PA_CLOUD42_EDGE_DENSITY : PA_CLOUD_EDGE_DENSITY;
+	const float CoreWidth = bSkin ? PA_CLOUD42_CORE_WIDTH : PA_CLOUD_CORE_WIDTH;
+
 	// Step 32b: edge character per region (~3 km): some clouds billowy and sharp, others ragged with wide soft edges.
 	const float EdgeScale = Layer.ShapeScale * PA_CLOUD_EDGE_VARIATION_SCALE;
 	// Step 40 (cloud map): the edge character varies in 3D too (a 2D one draws vertical stripes on tall cloud walls).
 	const float3 PV = Layer.CloudMapEnabled != 0 ? PosPlanetLocal / EdgeScale : Direction * (Layer.PlanetRadius / EdgeScale);
 	const float NV = PA_SampleBaseShapeNoise(PV + float3(-41.7, 9.2, 28.4), Footprint / EdgeScale);
 	const float EdgeK = smoothstep(-0.25, 0.25, NV);
-	const float ErosionScale = lerp(1.0 - PA_CLOUD_EDGE_VARIATION, 1.0 + PA_CLOUD_EDGE_VARIATION, EdgeK);
-	const float EdgeWidthScale = lerp(1.0 - 0.6 * PA_CLOUD_EDGE_VARIATION, 1.0 + 1.5 * PA_CLOUD_EDGE_VARIATION, EdgeK);
-	const float ErosionK = Layer.Erosion * PA_CLOUD_EROSION_STRENGTH * ErosionScale;
+	const float ErosionScale = lerp(1.0 - EdgeVariation, 1.0 + EdgeVariation, EdgeK);
+	const float EdgeWidthScale = lerp(1.0 - 0.6 * EdgeVariation, 1.0 + 1.5 * EdgeVariation, EdgeK);
+	const float ErosionK = Layer.Erosion * ErosionStrength * ErosionScale;
 
 	// Cloud level (Step 32b): vertically coherent CELL noise (separate compact clouds); threshold from the local fraction,
 	// raised by what the billows will erode (the resolved clouds keep the requested amount), rising with height (domes);
@@ -628,11 +657,10 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	// Step 40 (cloud map): the domes live in a skin of PA_CLOUD_SKIN x ShapeScale under the local top; below it the cloud
 	// level is true 3D (vertically coherent columns only in the skin) and the cells widen into one body, so a tall cloud is
 	// one mass with a domed top instead of a needle whose dome spans the whole depth (prototype p40).
-	const bool bSkin = Layer.CloudMapEnabled != 0;
 	const float Skin = bSkin ? min(PA_CLOUD_SKIN * Layer.ShapeScale, Depth) : Depth;
 	const float ZC = bSkin
-		? H0 * PA_CLOUD_VERTICAL_STRETCH + (1.0 - PA_CLOUD_VERTICAL_STRETCH) * min(H0 - (Depth - Skin), 0.0)
-		: H0 * PA_CLOUD_VERTICAL_STRETCH;
+		? H0 * VerticalStretch + (1.0 - VerticalStretch) * min(H0 - (Depth - Skin), 0.0)
+		: H0 * VerticalStretch;
 	const float3 PC = Direction * (Layer.PlanetRadius + Layer.BottomAltitude + ZC);
 	float MissingC;
 	float NP;
@@ -644,7 +672,8 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 		const float HD = saturate((H0 - (Depth - Skin)) / max(Skin, 1.0));
 		const float Below = saturate((Depth - Skin - H0) / max(Skin, 1.0));
 		const float BodyFraction = saturate(ThresholdFraction * (1.0 + PA_CLOUD_SKIN_FILL * Below));
-		Threshold = lerp(PA_CloudQuantileCell(1.0 - BodyFraction), 1.02, pow(HD, PA_CLOUD_DOME_EXPONENT));
+		// Step 42: round (spherical) dome profile instead of HD^2 -- the cloud keeps its width up into the skin.
+		Threshold = lerp(PA_CloudQuantileCell(1.0 - BodyFraction), 1.02, 1.0 - sqrt(saturate(1.0 - HD * HD)));
 	}
 	else
 	{
@@ -652,7 +681,7 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	}
 	Threshold = max(Threshold, lerp(PA_CLOUD_BASE_RELIEF * Storm, -0.01, smoothstep(0.0, PA_CLOUD_BASE_ZONE, H)));
 	const float Base = smoothstep(0.0, 0.06, H);
-	const float Cover = PA_CloudSoftStep(UC, Threshold, PA_CLOUD_EDGE_WIDTH * EdgeWidthScale, MissingC) * Base;
+	const float Cover = PA_CloudSoftStep(UC, Threshold, EdgeWidth * EdgeWidthScale, MissingC) * Base;
 	if (Cover <= 0.0)
 	{
 		return 0.0;
@@ -660,8 +689,8 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 
 	// Billows: Worley detail, billowy (inverted) at the base, wispy toward the top. Step 32b: its coordinates are warped by
 	// the noises already sampled above (curled, torn fringes at no extra fetch).
-	const float DetailScale = Layer.ShapeScale * PA_CLOUD_DETAIL_SCALE;
-	const float3 PW = PosPlanetLocal + float3(NP, NW, NV) * (PA_CLOUD_WARP * Layer.ShapeScale);
+	const float DetailScale = Layer.ShapeScale * DetailScaleK;
+	const float3 PW = PosPlanetLocal + float3(NP, NW, NV) * (BillowWarp * Layer.ShapeScale);
 	float MissingW;
 	const float UW = saturate(0.5 + 1.5 * PA_SampleDetailNoiseLod(PW / DetailScale, Footprint / DetailScale, MissingW));
 	const float DetailInvert = saturate(H * 1.5);
@@ -669,7 +698,7 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	const float MissingDetail = 1.5 * MissingW * abs(1.0 - 2.0 * DetailInvert);
 	const float StormDensity = lerp(0.8, 1.3, Storm);
 	const float LocalFraction4 = LocalFraction * LocalFraction * LocalFraction * LocalFraction;
-	const float Core = max(PA_CLOUD_EDGE_DENSITY + (1.0 - PA_CLOUD_EDGE_DENSITY) * smoothstep(Threshold, Threshold + PA_CLOUD_CORE_WIDTH, UC),
+	const float Core = max(EdgeDensity + (1.0 - EdgeDensity) * smoothstep(Threshold, Threshold + CoreWidth, UC),
 		LocalFraction4);   // closed decks stay solid
 
 	// Resolved: the eroded cloud shape. Unresolved: effective medium of a column (see the header).
@@ -684,7 +713,12 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	const float Tau = InCloud * Layer.Extinction * Depth;
 	const float ColumnCover = LocalFraction * (1.0 - PA_CLOUD_EROSION_LOSS * ErosionK * (1.0 - LocalFraction4))
 		* (1.0 - PA_CLOUD_DECK_LOSS * LocalFraction4);
-	const float SigmaColumn = -log(max(1.0 - ColumnCover * (1.0 - exp(-Tau)), 1e-6)) / Depth;
+	// Step 42 (cloud map): a tall column holds several vertically independent layers of the (3D) cloud level, so seen from
+	// far it covers more than one: union of 1 + Depth / (PA_CLOUD42_UNION_LAYER x ShapeScale) of them (calibrated on 8
+	// fair-weather + 6 storm sites: far / near mean opacity 0.89 / 0.91, was 0.54 / 0.91).
+	const float Layers = bSkin ? 1.0 + Depth / (PA_CLOUD42_UNION_LAYER * Layer.ShapeScale) : 1.0;
+	const float ColumnCoverU = bSkin ? 1.0 - pow(max(1.0 - ColumnCover, 0.0), Layers) : ColumnCover;
+	const float SigmaColumn = -log(max(1.0 - ColumnCoverU * (1.0 - exp(-Tau)), 1e-6)) / Depth;
 	const float CoverHere = (1.0 - PA_CloudCdfCell(Threshold)) * Base;   // expected cover at this height
 	const float Profile = PA_CloudColumnProfile(ThresholdFraction);
 	const float Effective = SigmaColumn * CoverHere / max(ThresholdFraction * Profile, 1e-4) / max(Layer.Extinction, 1e-12);

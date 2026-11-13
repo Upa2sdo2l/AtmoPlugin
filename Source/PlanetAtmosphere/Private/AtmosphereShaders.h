@@ -63,6 +63,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereInstanceParameters, )
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereCloudData, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	// Step 37: heap scale (cm), heap amplitude, heap share in fair weather, vertical exaggeration of this view
 	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereCloudRelief, [PLANET_ATMOSPHERE_MAX_VISIBLE])
+	// Step 42 (cloud map only): fair-weather exaggeration / applied one, cloud fraction cap in fair-weather masses
+	SHADER_PARAMETER_ARRAY(FVector4f, AtmosphereCloudShape, [PLANET_ATMOSPHERE_MAX_VISIBLE])
 	// r.PlanetAtmosphere.CloudTopClamp (Step 32): marches end at the deepest clouds the weather allows.
 	SHADER_PARAMETER(int32, CloudTopClamp)
 END_SHADER_PARAMETER_STRUCT()
