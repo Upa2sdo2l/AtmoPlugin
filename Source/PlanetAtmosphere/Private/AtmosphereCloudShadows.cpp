@@ -241,7 +241,7 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 	// key -- the key holds the unexaggerated top / fair depth; an exaggeration change rebuilds the back set in the
 	// background and crossfades, like a sun move (it restarted both sets with the fallback march every step: shadows
 	// jumped and visibly rebuilt while zooming, user's UE test). ----
-	FVector4f ContentKey[6];
+	FVector4f ContentKey[5];
 	ContentKey[0] = FVector4f(
 		InstanceParameters.AtmosphereData0[Index].W, InstanceParameters.AtmosphereData1[Index].W,
 		InstanceParameters.AtmosphereData2[Index].Y, static_cast<float>(Settings.MinExtentCm));
@@ -257,7 +257,6 @@ FRDGTextureRef FPlanetAtmosphereCloudShadows::Update(
 		static_cast<float>(Planet.CloudFairWeatherDepthBaseUU), static_cast<float>(InstanceParameters.CloudTopClamp));
 	ContentKey[4] = InstanceParameters.AtmosphereCloudRelief[Index];   // Step 37b: macro clouds (w = exaggeration: excluded below)
 	ContentKey[4].W = 1.0f + static_cast<float>(Inputs.WeatherParams.CloudMapEnable);   // Step 40: the cloud map shapes the clouds
-	ContentKey[5] = FVector4f(Planet.CloudFairWeatherExaggeration, Planet.CloudFairWeatherFraction, 0.0f, 0.0f);   // Step 42
 	const bool bSamePlanet = Entry.bHasPlanet && Entry.PlanetId == Planet.PlanetId;
 	const bool bSameWeather = PlanetAtmosphere::Weather::SameParameters(Entry.Weather, Planet.Weather);
 	if (!bSamePlanet || !bSameWeather || FMemory::Memcmp(Entry.ContentKey, ContentKey, sizeof(ContentKey)) != 0)

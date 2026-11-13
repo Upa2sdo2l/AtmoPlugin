@@ -120,9 +120,6 @@ struct FAtmosphereVisibleInstance
 	float CloudHeapAmplitude = 0.0f;
 	float CloudHeapFairWeather = 0.0f;
 	float CloudVerticalExaggeration = 1.0f;
-	/** Step 42 (cloud map): exaggeration of the fair-weather clouds (<= the full one) and cloud fraction in fair masses. */
-	float CloudFairWeatherExaggeration = 1.0f;
-	float CloudFairWeatherFraction = 1.0f;
 	double CloudExaggerationStartUU = 0.0;
 	double CloudExaggerationFullUU = 0.0;
 	/** Set per view (AtmosphereRenderer ApplyCloudExaggeration): the factor already applied to CloudTop / fair depth. */

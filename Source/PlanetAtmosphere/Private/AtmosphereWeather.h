@@ -118,7 +118,7 @@ private:
 		FSnapshot Snapshots[PlanetAtmosphere::Weather::NumSnapshots];
 		// Step 40: the cloud parameters the cloud map of this slot was baked with (a change re-bakes it).
 		bool bCloudKeyValid = false;
-		FVector4f CloudKey[5];
+		FVector4f CloudKey[4];
 	};
 
 	static bool SameWeather(const FSlot& Slot, const FAtmosphereVisibleInstance& Planet);

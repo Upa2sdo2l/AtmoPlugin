@@ -36,9 +36,6 @@ void BakeCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Layer.WeatherRowB = CloudMapBakeWeatherRow;
 	Layer.WeatherBlend = 0.0;
 	Layer.CloudMapEnabled = 0;
-	// Step 42: the map holds the shallow fair-weather clouds / cumulus fields of the map path.
-	Layer.FairRelief = AtmosphereCloudShape[CloudMapBakeAtmosphere].x;
-	Layer.FairFraction = AtmosphereCloudShape[CloudMapBakeAtmosphere].y;
 	const float Texel = (Layer.PlanetRadius + Layer.BottomAltitude) * 1.5707963 / (float)Res;
 	const float3 Direction = normalize(PA_WeatherFaceDirection(Face, A, B));
 	OutCloudMap[int2(Face * Res + (int)DispatchThreadId.x, CloudMapBakeRowBase + (int)DispatchThreadId.y)] =

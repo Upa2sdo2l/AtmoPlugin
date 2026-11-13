@@ -69,8 +69,6 @@ public:
 	const float CloudHeapAmplitude;
 	const float CloudHeapFairWeather;
 	const float CloudVerticalExaggeration;
-	const float CloudFairWeatherExaggeration;   // Step 42
-	const float CloudFairWeatherFraction;
 	const double CloudExaggerationStartUU;
 	const double CloudExaggerationFullUU;
 	const int32 RaymarchSteps;

@@ -49,7 +49,6 @@ namespace
 		Dst.AtmosphereWeatherClimate[DstIndex] = Src.AtmosphereWeatherClimate[SrcIndex];
 		Dst.AtmosphereCloudData[DstIndex] = Src.AtmosphereCloudData[SrcIndex];
 		Dst.AtmosphereCloudRelief[DstIndex] = Src.AtmosphereCloudRelief[SrcIndex];
-		Dst.AtmosphereCloudShape[DstIndex] = Src.AtmosphereCloudShape[SrcIndex];
 	}
 
 	/**

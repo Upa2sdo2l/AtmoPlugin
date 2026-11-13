@@ -223,22 +223,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1.0", UIMax = "12.0"))
 	float CloudVerticalExaggeration = 3.0f;
 
-	/**
-	 * Step 42 (with the cloud map): vertical exaggeration of the FAIR-WEATHER clouds (cumulus fields), at most
-	 * CloudVerticalExaggeration; storm clouds keep the full factor. Lower = shallower cumulus with open sky between them
-	 * from the ground, while the storm masses stay tall from orbit. Re-bakes the cloud map.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1.0", UIMax = "12.0"))
-	float CloudFairWeatherExaggeration = 1.5f;
-
-	/**
-	 * Step 42 (with the cloud map): share of the sky the clouds cover INSIDE a fair-weather mass of the weather (a cumulus
-	 * field with sky gaps); storm masses close up to an overcast deck. 1 = Step 40 (fair masses overcast too). Re-bakes the
-	 * cloud map.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float CloudFairWeatherFraction = 0.65f;
-
 	/** Step 37: camera altitude in meters below which the clouds are not exaggerated (CloudExaggerationMode 0 only). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "100.0"))
 	double CloudExaggerationStartAltitude = 30000.0;

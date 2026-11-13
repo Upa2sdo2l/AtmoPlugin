@@ -122,7 +122,7 @@ namespace
 	 * Step 40: the cloud parameters a cloud map depends on (everything PA_CloudLargeScales reads, after the exaggeration of
 	 * this view, + the noise source). Values come from the packed instance parameters, so the comparison is exact.
 	 */
-	void MakeCloudKey(const FAtmosphereInstanceParameters& Parameters, int32 Index, int32 NoiseSource, FVector4f (&OutKey)[5])
+	void MakeCloudKey(const FAtmosphereInstanceParameters& Parameters, int32 Index, int32 NoiseSource, FVector4f (&OutKey)[4])
 	{
 		const FVector4f& D0 = Parameters.AtmosphereData0[Index];
 		const FVector4f& D1 = Parameters.AtmosphereData1[Index];
@@ -132,12 +132,11 @@ namespace
 		OutKey[1] = FVector4f(D2.W, D3.X, static_cast<float>(NoiseSource), 0.0f);   // shape scale, erosion, noise source
 		OutKey[2] = Parameters.AtmosphereCloudData[Index];
 		OutKey[3] = Parameters.AtmosphereCloudRelief[Index];
-		OutKey[4] = Parameters.AtmosphereCloudShape[Index];   // Step 42
 	}
 
-	bool SameCloudKey(const FVector4f (&A)[5], const FVector4f (&B)[5])
+	bool SameCloudKey(const FVector4f (&A)[4], const FVector4f (&B)[4])
 	{
-		for (int32 Index = 0; Index < 5; ++Index)
+		for (int32 Index = 0; Index < 4; ++Index)
 		{
 			if (A[Index] != B[Index])
 			{
@@ -549,13 +548,13 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 			// built); everything again when the planet's cloud parameters changed.
 			if (CloudMapTexture != nullptr)
 			{
-				FVector4f Key[5];
+				FVector4f Key[4];
 				MakeCloudKey(InOutParameters, Index, NoiseSource, Key);
 				if (!Slot.bCloudKeyValid || !SameCloudKey(Slot.CloudKey, Key))
 				{
 					UE_CLOG(Slot.bCloudKeyValid, LogPlanetAtmosphere, Log, TEXT("Weather: planet %u cloud parameters changed, cloud map of slot %d re-baked"),
 						Slot.PlanetId, SlotIndex);
-					for (int32 KeyIndex = 0; KeyIndex < 5; ++KeyIndex)
+					for (int32 KeyIndex = 0; KeyIndex < 4; ++KeyIndex)
 					{
 						Slot.CloudKey[KeyIndex] = Key[KeyIndex];
 					}

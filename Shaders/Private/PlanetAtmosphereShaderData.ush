@@ -51,9 +51,6 @@ float4 AtmosphereWeatherClimate[PA_MAX_ATMOSPHERES];
 float4 AtmosphereCloudData[PA_MAX_ATMOSPHERES];
 // Step 37: x = heap scale (cm), y = heap amplitude, z = heap share in fair weather, w = vertical exaggeration of this view.
 float4 AtmosphereCloudRelief[PA_MAX_ATMOSPHERES];
-// Step 42 (cloud map only): x = fair-weather exaggeration / the applied one (<= 1), y = cloud fraction cap inside fair-weather
-// masses, zw unused.
-float4 AtmosphereCloudShape[PA_MAX_ATMOSPHERES];
 // r.PlanetAtmosphere.CloudTopClamp (Step 32): marches end at the deepest clouds the weather allows (PA_CloudRayTopAltitude):
 // 0 = off, 1 = Step 32 point count by the path length, 2 = Step 39 fixed point count, continuous (default).
 int CloudTopClamp;
@@ -142,10 +139,6 @@ FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
 	Layer.WeatherBlend = WeatherInfo.w;
 	// Step 40: the cloud map exists for every planet with weather when CloudMapEnable (AtmosphereWeather.cpp).
 	Layer.CloudMapEnabled = (CloudMapEnable != 0 && Layer.WeatherEnabled != 0) ? 1 : 0;
-	// Step 42: shallow fair-weather clouds / cumulus fields with the map only (1 / 1 = Step 40 large scales).
-	const float4 Shape = AtmosphereCloudShape[A.Index];
-	Layer.FairRelief = Layer.CloudMapEnabled != 0 ? Shape.x : 1.0;
-	Layer.FairFraction = Layer.CloudMapEnabled != 0 ? Shape.y : 1.0;
 	return Layer;
 }
 
