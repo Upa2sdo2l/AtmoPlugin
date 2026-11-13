@@ -27,6 +27,12 @@
 // with optical depth tau over the local cloud depth -> sigma = -ln(1 - f (1 - e^-tau)) / depth, distributed over the
 // height like the cover; the cloud amount then stays the same from 50 m to 16 km pixels (prototype: <= 0.05, Phase 5
 // up to 0.27) and the far image has no "salt".
+//
+// Step 40 (AD-52, prototype p40): the levels from the weather to the macro clouds (PA_CloudLargeScales) are baked into a
+// CLOUD MAP per weather snapshot (CloudMapBake.usf, ~5 km texels): the density reads one bilinear fetch instead of
+// ~11 noise / atlas fetches. With the map (FPACloudLayer.CloudMapEnabled, constant vertical exaggeration) the shape of
+// tall clouds changes too: domes only in a skin under the top, one body below it (no needles), a 3D edge noise and a 3D
+// warp of the map lookup (no "fir tree" walls). Without the map the density is the Step 39c one, unchanged.
 
 #include "/Plugin/PlanetAtmosphere/Private/PlanetAtmosphereNoise.ush"
 #include "/Plugin/PlanetAtmosphere/Private/WeatherAtlas.ush"
@@ -50,6 +56,7 @@ struct FPACloudLayer
 	float HeapAmplitude;      // height / size of the macro clouds (x PA_CLOUD_MACRO_HEIGHT); 0 = none (Step 36 clouds)
 	float HeapFairWeather;    // share of the macro height in thin weather (1 where the weather fraction is >= 2/3)
 	float ReliefExaggeration; // applied vertical exaggeration (AtmosphereCloudRelief.w, >= 1)
+	int CloudMapEnabled;      // Step 40: 1 = the large scales come from the baked cloud map (PA_SampleCloudMap)
 	// Phase 5 / Step 29: the planet's weather (AtmosphereWeatherInfo).
 	int WeatherEnabled;    // 0 = no weather for this planet: Coverage is the cloud fraction everywhere
 	float WeatherRowA;     // first atlas rows of the two snapshots around the weather time, interpolation weight
@@ -103,6 +110,12 @@ static const float PA_CLOUD_CLUSTER_WIDTH = 0.15;    // soft width of the cluste
 static const float PA_CLOUD_EDGE_WIDTH = 0.07;       // soft width of the cloud edges (stretched noise units)
 static const float PA_CLOUD_VERTICAL_STRETCH = 0.3;  // cloud-level noise: vertical coordinate x 0.3 (coherent columns)
 static const float PA_CLOUD_DOME_EXPONENT = 2.0;     // threshold rises with (height in the local depth)^2: domed tops
+// Step 40 (cloud map only, prototype p40): shape of tall clouds and their walls.
+static const float PA_CLOUD_SKIN = 2.0;               // x ShapeScale: domes only in this skin under the local top
+static const float PA_CLOUD_SKIN_FILL = 1.0;          // below the skin the fraction grows to x (1 + this): one body
+static const float PA_CLOUD_MAP_WARP_SCALE = 4.0;     // x ShapeScale: 3D warp of the cloud map lookup (bulging walls)
+static const float PA_CLOUD_MAP_WARP_AMPLITUDE = 2.0; // x ShapeScale: warp displacement (std)
+static const float PA_CLOUD_MAP_WARP_NOISE_STD = 0.18;   // std of the base shape noise (normalises the warp)
 static const float PA_CLOUD_EDGE_DENSITY = 0.12;     // density at the cloud edge ...
 static const float PA_CLOUD_CORE_WIDTH = 0.6;        // ... rising to 1 over this much noise above the threshold (32b: 0.3 -> 0.6)
 static const float PA_CLOUD_UNRESOLVED_DENSITY = 0.6;   // mean density inside unresolved clouds (effective medium)
@@ -432,35 +445,19 @@ float PA_CloudErode(float X, float Detail, float K, float MissingDetail)
 }
 
 /**
- * Normalized cloud density (multiply by the extinction coefficient to get sigma_t; may exceed 1 in storm cores).
- *
- * PosPlanetLocal : sample position relative to the planet center, in the planet's local frame (cm).
- * Altitude       : |PosPlanetLocal| - PlanetRadius (cm).
- * Footprint      : noise footprint at this sample (cm, NoiseFootprintScale x pixel); fades the detail smaller than it.
- * LocalHeight    : Step 32c: height of the sample inside its local cloud (0 base .. 1 top of the local depth; 0 where
- *                  the density is 0). The lighting darkens the sky light toward the bases with it.
- * LocalDepth     : Step 36: depth of the local cloud (cm; 0 where the density is 0). With LocalHeight it gives the
- *                  cloud above / below the sample (sky light occlusion, ground bounce).
+ * Large scales of the cloud layer over Direction: x = local cloud fraction (weather x clusters x macro clump x meso),
+ * y = local depth (cm), z = storm factor, w = weather fraction. H0 (cm above the base) is used only for exact early-outs
+ * (negative = evaluate everything: the cloud map bake). Step 40: this is what the cloud map stores.
  */
-float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint, out float LocalHeight,
-	out float LocalDepth)
+float4 PA_CloudLargeScales(FPACloudLayer Layer, float3 Direction, float Footprint, float H0)
 {
-	LocalHeight = 0.0;
-	LocalDepth = 0.0;
-	const float H0 = Altitude - Layer.BottomAltitude;
-	if (H0 <= 0.0 || H0 >= Layer.Thickness)
-	{
-		return 0.0;
-	}
-	const float3 Direction = PosPlanetLocal / max(length(PosPlanetLocal), 1.0);
-
 	// Weather: cloud fraction (contrast) and storm factor.
 	const float3 Weather = PA_CloudWeather(Layer, Direction, Footprint);
 	const float Fraction = Weather.x;
 	const float Storm = Weather.y;
 	if (Fraction <= 0.0)
 	{
-		return 0.0;   // exact: Coverage 0 or a clear weather zone
+		return float4(0.0, 0.0, Storm, 0.0);   // exact: Coverage 0 or a clear weather zone
 	}
 
 	// Cluster level: soft local fraction. Two samples at incommensurate scales break the texture tiling.
@@ -493,7 +490,7 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	if (Layer.HeapAmplitude > 0.0
 		&& H0 >= Layer.Thickness * (1.0 - exp(-(DepthRaw + PA_CloudMacroMaxHeight(Layer, Fraction)) / Layer.Thickness)))
 	{
-		return 0.0;
+		return float4(0.0, 0.0, Storm, Fraction);
 	}
 	// Step 37b: macro clouds (the cloud cell noise at HeapScale, 0.25 x and 4 x HeapScale) gather the fraction and raise the tops.
 	float2 Macro = float2(0.5, 0.0);
@@ -503,15 +500,11 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 		Macro = PA_CloudMacro(Layer, Direction, Fraction, Footprint, DepthRaw, H0, bAbove);
 		if (bAbove)
 		{
-			return 0.0;
+			return float4(0.0, 0.0, Storm, Fraction);
 		}
 	}
 	const float MacroClump = max(0.0, 1.0 + PA_CLOUD_MACRO_CLUMP * (1.0 - Storm) * (2.0 * Macro.x - 1.0));
 	const float LocalFraction = saturate(CloudFraction * MaskK * MacroClump * (1.0 + PA_CLOUD_MESO_AMPLITUDE * (1.0 - Fraction4) * (2.0 * UMeso - 1.0)));
-	if (LocalFraction <= 1e-3)
-	{
-		return 0.0;
-	}
 
 	float Depth = min(Layer.Thickness, DepthRaw);
 	if (Layer.HeapAmplitude > 0.0)
@@ -520,17 +513,113 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 		DepthRaw += Macro.y;
 		Depth = Layer.Thickness * (1.0 - exp(-DepthRaw / Layer.Thickness));
 	}
-	const float H = H0 / max(Depth, 1.0);
-	if (H >= 1.0)
+	return float4(LocalFraction, Depth, Storm, Fraction);
+}
+
+// ---- Step 40: baked cloud map. Cube-sphere atlas laid out like the weather atlas (same snapshot rows, scaled to its
+// resolution): x local fraction, y depth / thickness, z storm, w weather fraction; built from PA_CloudLargeScales at the
+// texel footprint whenever a weather snapshot is built. One bilinear fetch per density sample. ----
+// C++: FAtmosphereWeatherAtlasParameters (AtmosphereShaders.h), map built by CloudMapBake.usf (AtmosphereWeather.cpp).
+Texture2D<float4> CloudMap;            // the transmittance LUT pool when there is no map (never sampled then)
+SamplerState CloudMapSampler;          // bilinear, clamp
+int CloudMapResolution;                // texels per face side
+float4 CloudMapSizeAndInvSize;         // xy = atlas size (texels), zw = 1 / size
+int CloudMapEnable;                    // 1 = every planet with weather has its cloud map (FPACloudLayer.CloudMapEnabled)
+
+float4 PA_SampleCloudMapSnapshot(float3 Direction, float RowBase)
+{
+	const FPAWeatherFaceCoord Coord = PA_WeatherFaceCoord(Direction);
+	const float Res = (float)CloudMapResolution;
+	const float2 FaceTexel = clamp((float2(Coord.A, Coord.B) + 1.0) * (0.5 * Res), 0.5, Res - 0.5);
+	const float2 UV = (float2((float)Coord.Face * Res, RowBase) + FaceTexel) * CloudMapSizeAndInvSize.zw;
+	return CloudMap.SampleLevel(CloudMapSampler, UV, 0);
+}
+
+float4 PA_SampleCloudMap(FPACloudLayer Layer, float3 Direction)
+{
+	const float RowScale = (float)CloudMapResolution / max((float)WeatherResolution, 1.0);
+	const float4 A = PA_SampleCloudMapSnapshot(Direction, (float)Layer.WeatherRowA * RowScale);
+	if (Layer.WeatherBlend <= 0.0)
+	{
+		return A;
+	}
+	const float4 B = PA_SampleCloudMapSnapshot(Direction, (float)Layer.WeatherRowB * RowScale);
+	return lerp(A, B, Layer.WeatherBlend);
+}
+
+/** One cloud map texel: centre Direction (planet local, unit), texel size Footprint (cm). */
+float4 PA_CloudMapBake(FPACloudLayer Layer, float3 Direction, float Footprint)
+{
+	const float4 L = PA_CloudLargeScales(Layer, Direction, Footprint, -1.0);
+	return float4(L.x, saturate(L.y / max(Layer.Thickness, 1.0)), L.z, L.w);
+}
+
+/**
+ * Normalized cloud density (multiply by the extinction coefficient to get sigma_t; may exceed 1 in storm cores).
+ *
+ * PosPlanetLocal : sample position relative to the planet center, in the planet's local frame (cm).
+ * Altitude       : |PosPlanetLocal| - PlanetRadius (cm).
+ * Footprint      : noise footprint at this sample (cm, NoiseFootprintScale x pixel); fades the detail smaller than it.
+ * LocalHeight    : Step 32c: height of the sample inside its local cloud (0 base .. 1 top of the local depth; 0 where
+ *                  the density is 0). The lighting darkens the sky light toward the bases with it.
+ * LocalDepth     : Step 36: depth of the local cloud (cm; 0 where the density is 0). With LocalHeight it gives the
+ *                  cloud above / below the sample (sky light occlusion, ground bounce).
+ */
+float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float Altitude, float Footprint, out float LocalHeight,
+	out float LocalDepth)
+{
+	LocalHeight = 0.0;
+	LocalDepth = 0.0;
+	const float H0 = Altitude - Layer.BottomAltitude;
+	if (H0 <= 0.0 || H0 >= Layer.Thickness)
 	{
 		return 0.0;
 	}
+	const float3 Direction = PosPlanetLocal / max(length(PosPlanetLocal), 1.0);
+
+	float LocalFraction;
+	float Depth;
+	float Storm;
+	float Fraction;
+	if (Layer.CloudMapEnabled != 0)
+	{
+		// Step 40: one fetch of the baked cloud map replaces weather + clusters + meso + macro clouds (~11 fetches).
+		// Step 40: the map is read through a 3D warp of a few km that varies with height (the walls of tall clouds bulge
+		// in and out instead of rising as straight vertical faces with the cells stacked into "fir trees", prototype p40).
+		const float WarpScale = PA_CLOUD_MAP_WARP_SCALE * Layer.ShapeScale;
+		const float3 QW = PosPlanetLocal / WarpScale;
+		const float W1 = PA_SampleBaseShapeNoise(QW + float3(11.3, -27.1, 4.6), Footprint / WarpScale);
+		const float W2 = PA_SampleBaseShapeNoise(QW + float3(-38.2, 15.7, -9.4), Footprint / WarpScale);
+		const float3 T1 = normalize(cross(abs(Direction.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0), Direction));
+		const float3 T2 = cross(Direction, T1);
+		const float WarpAmplitude = PA_CLOUD_MAP_WARP_AMPLITUDE * Layer.ShapeScale / (PA_CLOUD_MAP_WARP_NOISE_STD * Layer.PlanetRadius);
+		const float4 Map = PA_SampleCloudMap(Layer, normalize(Direction + (T1 * W1 + T2 * W2) * WarpAmplitude));
+		LocalFraction = Map.x;
+		Depth = Map.y * Layer.Thickness;
+		Storm = Map.z;
+		Fraction = Map.w;
+	}
+	else
+	{
+		const float4 Large = PA_CloudLargeScales(Layer, Direction, Footprint, H0);
+		LocalFraction = Large.x;
+		Depth = Large.y;
+		Storm = Large.z;
+		Fraction = Large.w;
+	}
+	if (LocalFraction <= 1e-3 || H0 >= Depth)
+	{
+		return 0.0;
+	}
+	const float H = H0 / max(Depth, 1.0);
 	LocalHeight = H;
 	LocalDepth = Depth;
 
 	// Step 32b: edge character per region (~3 km): some clouds billowy and sharp, others ragged with wide soft edges.
 	const float EdgeScale = Layer.ShapeScale * PA_CLOUD_EDGE_VARIATION_SCALE;
-	const float NV = PA_SampleBaseShapeNoise(Direction * (Layer.PlanetRadius / EdgeScale) + float3(-41.7, 9.2, 28.4), Footprint / EdgeScale);
+	// Step 40 (cloud map): the edge character varies in 3D too (a 2D one draws vertical stripes on tall cloud walls).
+	const float3 PV = Layer.CloudMapEnabled != 0 ? PosPlanetLocal / EdgeScale : Direction * (Layer.PlanetRadius / EdgeScale);
+	const float NV = PA_SampleBaseShapeNoise(PV + float3(-41.7, 9.2, 28.4), Footprint / EdgeScale);
 	const float EdgeK = smoothstep(-0.25, 0.25, NV);
 	const float ErosionScale = lerp(1.0 - PA_CLOUD_EDGE_VARIATION, 1.0 + PA_CLOUD_EDGE_VARIATION, EdgeK);
 	const float EdgeWidthScale = lerp(1.0 - 0.6 * PA_CLOUD_EDGE_VARIATION, 1.0 + 1.5 * PA_CLOUD_EDGE_VARIATION, EdgeK);
@@ -541,12 +630,31 @@ float PA_SampleCloudDensityEx(FPACloudLayer Layer, float3 PosPlanetLocal, float 
 	// storms get ragged bases; flat bases otherwise.
 	const float ThresholdFraction = saturate(LocalFraction
 		/ max(1.0 - PA_CLOUD_EROSION_COMPENSATION * ErosionK * pow(1.0 - LocalFraction, PA_CLOUD_EROSION_COMPENSATION_EXPONENT), 0.2));
-	const float3 PC = Direction * (Layer.PlanetRadius + Layer.BottomAltitude + H0 * PA_CLOUD_VERTICAL_STRETCH);
+	// Step 40 (cloud map): the domes live in a skin of PA_CLOUD_SKIN x ShapeScale under the local top; below it the cloud
+	// level is true 3D (vertically coherent columns only in the skin) and the cells widen into one body, so a tall cloud is
+	// one mass with a domed top instead of a needle whose dome spans the whole depth (prototype p40).
+	const bool bSkin = Layer.CloudMapEnabled != 0;
+	const float Skin = bSkin ? min(PA_CLOUD_SKIN * Layer.ShapeScale, Depth) : Depth;
+	const float ZC = bSkin
+		? H0 * PA_CLOUD_VERTICAL_STRETCH + (1.0 - PA_CLOUD_VERTICAL_STRETCH) * min(H0 - (Depth - Skin), 0.0)
+		: H0 * PA_CLOUD_VERTICAL_STRETCH;
+	const float3 PC = Direction * (Layer.PlanetRadius + Layer.BottomAltitude + ZC);
 	float MissingC;
 	float NP;
 	float NW;
 	const float UC = PA_CloudCellNoise(Layer, PC, PosPlanetLocal, Footprint, NP, NW, MissingC);
-	float Threshold = lerp(PA_CloudQuantileCell(1.0 - ThresholdFraction), 1.02, pow(H, PA_CLOUD_DOME_EXPONENT));
+	float Threshold;
+	if (bSkin)
+	{
+		const float HD = saturate((H0 - (Depth - Skin)) / max(Skin, 1.0));
+		const float Below = saturate((Depth - Skin - H0) / max(Skin, 1.0));
+		const float BodyFraction = saturate(ThresholdFraction * (1.0 + PA_CLOUD_SKIN_FILL * Below));
+		Threshold = lerp(PA_CloudQuantileCell(1.0 - BodyFraction), 1.02, pow(HD, PA_CLOUD_DOME_EXPONENT));
+	}
+	else
+	{
+		Threshold = lerp(PA_CloudQuantileCell(1.0 - ThresholdFraction), 1.02, pow(H, PA_CLOUD_DOME_EXPONENT));
+	}
 	Threshold = max(Threshold, lerp(PA_CLOUD_BASE_RELIEF * Storm, -0.01, smoothstep(0.0, PA_CLOUD_BASE_ZONE, H)));
 	const float Base = smoothstep(0.0, 0.06, H);
 	const float Cover = PA_CloudSoftStep(UC, Threshold, PA_CLOUD_EDGE_WIDTH * EdgeWidthScale, MissingC) * Base;

@@ -349,6 +349,8 @@ namespace PlanetAtmosphere
 	static void ApplyCloudExaggeration(const FSceneView& View, TArray<FAtmosphereVisibleInstance>& Instances)
 	{
 		const FVector3d ViewOrigin = View.ViewMatrices.GetViewOrigin();
+		// Step 40: constant mode (default) = the full factor at every camera altitude (a fixed art scale, like the cloud map).
+		const bool bConstant = CVars::GetCloudExaggerationMode() == 1;
 		for (FAtmosphereVisibleInstance& Instance : Instances)
 		{
 			Instance.CloudExaggerationApplied = 1.0f;
@@ -359,13 +361,17 @@ namespace PlanetAtmosphere
 			{
 				continue;
 			}
-			const double CameraAltitude = (ViewOrigin - Instance.PlanetCenterWorld).Length() - R.Planet;
-			const double Start = FMath::Max(Instance.CloudExaggerationStartUU, 1.0);
-			const double Full = FMath::Max(Instance.CloudExaggerationFullUU, Start * 1.01);
-			const double X = FMath::Clamp(FMath::Loge(FMath::Max(CameraAltitude, 1.0) / Start) / FMath::Loge(Full / Start), 0.0, 1.0);
-			double Factor = 1.0 + (Instance.CloudVerticalExaggeration - 1.0) * (X * X * (3.0 - 2.0 * X));
-			const double Step = FMath::Loge(1.04);
-			Factor = FMath::Exp(FMath::RoundToDouble(FMath::Loge(Factor) / Step) * Step);
+			double Factor = Instance.CloudVerticalExaggeration;
+			if (!bConstant)
+			{
+				const double CameraAltitude = (ViewOrigin - Instance.PlanetCenterWorld).Length() - R.Planet;
+				const double Start = FMath::Max(Instance.CloudExaggerationStartUU, 1.0);
+				const double Full = FMath::Max(Instance.CloudExaggerationFullUU, Start * 1.01);
+				const double X = FMath::Clamp(FMath::Loge(FMath::Max(CameraAltitude, 1.0) / Start) / FMath::Loge(Full / Start), 0.0, 1.0);
+				Factor = 1.0 + (Instance.CloudVerticalExaggeration - 1.0) * (X * X * (3.0 - 2.0 * X));
+				const double Step = FMath::Loge(1.04);
+				Factor = FMath::Exp(FMath::RoundToDouble(FMath::Loge(Factor) / Step) * Step);
+			}
 			const double MaxTop = FMath::Max(R.AtmosphereTop - 1.0e5, R.CloudTop);
 			const double NewTop = FMath::Min(R.CloudBottom + (R.CloudTop - R.CloudBottom) * Factor, MaxTop);
 			Factor = (NewTop - R.CloudBottom) / (R.CloudTop - R.CloudBottom);
@@ -459,9 +465,12 @@ namespace PlanetAtmosphere
 			FAtmosphereWeatherInputs WeatherInputs;
 			WeatherInputs.Planets = TConstArrayView<FAtmosphereVisibleInstance>(Instances.GetData(), Parameters->AtmosphereParams.NumAtmospheres);
 			WeatherInputs.Time = WeatherTime;
+			WeatherInputs.Noise = &NoiseTextures;   // Step 40: cloud map bake
 			int32 WeatherResolution = 0;
-			const FRDGTextureRef WeatherAtlas = Weather::Get().Update(
-				GraphBuilder, GlobalShaderMap, View.Family->FrameNumber, WeatherInputs, Parameters->AtmosphereParams, WeatherResolution);
+			FRDGTextureRef CloudMap = nullptr;
+			int32 CloudMapResolution = 0;
+			const FRDGTextureRef WeatherAtlas = Weather::Get().Update(GraphBuilder, GlobalShaderMap, View.Family->FrameNumber, WeatherInputs,
+				Parameters->AtmosphereParams, WeatherResolution, CloudMap, CloudMapResolution);
 			FAtmosphereWeatherAtlasParameters& WeatherParams = Parameters->WeatherParams;
 			WeatherParams.WeatherAtlas = WeatherAtlas ? WeatherAtlas : Luts.Transmittance;
 			WeatherParams.WeatherSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
@@ -470,6 +479,16 @@ namespace PlanetAtmosphere
 			WeatherParams.WeatherAtlasSizeAndInvSize = FVector4f(
 				static_cast<float>(WeatherExtent.X), static_cast<float>(WeatherExtent.Y),
 				1.0f / static_cast<float>(FMath::Max(WeatherExtent.X, 1)), 1.0f / static_cast<float>(FMath::Max(WeatherExtent.Y, 1)));
+			// Step 40: the cloud map (complete for every planet with weather); without it the weather slot's texture is bound
+			// (CloudMapEnable 0: never sampled).
+			WeatherParams.CloudMap = CloudMap ? CloudMap : WeatherParams.WeatherAtlas;
+			WeatherParams.CloudMapSampler = WeatherParams.WeatherSampler;
+			WeatherParams.CloudMapResolution = FMath::Max(CloudMapResolution, 1);
+			const FIntPoint CloudMapExtent = CloudMap ? CloudMap->Desc.Extent : FIntPoint(1, 1);
+			WeatherParams.CloudMapSizeAndInvSize = FVector4f(
+				static_cast<float>(CloudMapExtent.X), static_cast<float>(CloudMapExtent.Y),
+				1.0f / static_cast<float>(FMath::Max(CloudMapExtent.X, 1)), 1.0f / static_cast<float>(FMath::Max(CloudMapExtent.Y, 1)));
+			WeatherParams.CloudMapEnable = CloudMap ? 1 : 0;
 		}
 
 		// Phase 4 / Step 22: cloud shadow cascades of the primary planet (largest on screen, with hysteresis), updated

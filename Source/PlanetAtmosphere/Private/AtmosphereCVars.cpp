@@ -508,6 +508,31 @@ namespace
 		TEXT("Game hours added to the weather clock (testing: jump forward / backward in the weather; the snapshots are rebuilt at once)."),
 		ECVF_RenderThreadSafe);
 
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudMap(
+		TEXT("r.PlanetAtmosphere.CloudMap"),
+		1,
+		TEXT("Step 40: the large scales of the clouds (weather, clusters, meso, macro clouds) are baked into a cloud map per weather\n")
+		TEXT("snapshot, and the density reads one fetch of it instead of ~11. With the map, tall clouds get domes only under their\n")
+		TEXT("top, one body below (no needles) and bulging walls (no fir trees). Needs weather and\n")
+		TEXT("r.PlanetAtmosphere.CloudExaggerationMode 1. 0 = off (Step 39c density)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudMapResolution(
+		TEXT("r.PlanetAtmosphere.CloudMap.Resolution"),
+		768,
+		TEXT("Step 40: texels per cube-face side of the cloud map (768 = ~5 km per texel on a 2500 km planet, ~13 km on an\n")
+		TEXT("Earth-size one). Memory per planet: 6 x Res^2 x 3 snapshots x 4 bytes (768: 42 MB). Rounded down to a multiple of 8,\n")
+		TEXT("clamped to [128, 2048] and to the texture height limit (3 Res x planet slots <= 16384)."),
+		ECVF_RenderThreadSafe);
+
+	TAutoConsoleVariable<int32> CVarPlanetAtmosphereCloudExaggerationMode(
+		TEXT("r.PlanetAtmosphere.CloudExaggerationMode"),
+		1,
+		TEXT("Step 40: vertical exaggeration of the clouds (component CloudVerticalExaggeration).\n")
+		TEXT("1 = constant (default): the same factor from the ground to orbit, like a fixed art scale; needed by the cloud map.\n")
+		TEXT("0 = Step 37: x1 below CloudExaggerationStart, rising to the full factor at CloudExaggerationFull (camera altitude)."),
+		ECVF_RenderThreadSafe);
+
 	TAutoConsoleVariable<int32> CVarPlanetAtmosphereWeatherResolution(
 		TEXT("r.PlanetAtmosphere.Weather.Resolution"),
 		256,
@@ -786,6 +811,19 @@ namespace PlanetAtmosphere::CVars
 		Settings.FacesPerFrame = FMath::Clamp(CVarPlanetAtmosphereWeatherFacesPerFrame.GetValueOnAnyThread(false), 1, 6);
 		Settings.FlowWarp = FMath::Clamp(CVarPlanetAtmosphereWeatherFlowWarp.GetValueOnAnyThread(false), 0, 2);
 		return Settings;
+	}
+
+	FCloudMapSettings GetCloudMapSettings()
+	{
+		FCloudMapSettings Settings;
+		Settings.bEnabled = CVarPlanetAtmosphereCloudMap.GetValueOnAnyThread(false) != 0 && GetCloudExaggerationMode() == 1;
+		Settings.Resolution = FMath::Clamp(CVarPlanetAtmosphereCloudMapResolution.GetValueOnAnyThread(false) / 8 * 8, 128, 2048);
+		return Settings;
+	}
+
+	int32 GetCloudExaggerationMode()
+	{
+		return FMath::Clamp(CVarPlanetAtmosphereCloudExaggerationMode.GetValueOnAnyThread(false), 0, 1);
 	}
 
 	double GetWeatherTimeScale()

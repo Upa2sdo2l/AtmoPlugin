@@ -137,6 +137,8 @@ FPACloudLayer PA_MakeCloudLayer(FPAAtmosphere A)
 	Layer.WeatherRowA = WeatherInfo.y;
 	Layer.WeatherRowB = WeatherInfo.z;
 	Layer.WeatherBlend = WeatherInfo.w;
+	// Step 40: the cloud map exists for every planet with weather when CloudMapEnable (AtmosphereWeather.cpp).
+	Layer.CloudMapEnabled = (CloudMapEnable != 0 && Layer.WeatherEnabled != 0) ? 1 : 0;
 	return Layer;
 }
 

@@ -118,6 +118,98 @@ namespace
 			bSynchronous ? TEXT("synchronous") : TEXT("background"), TimeSeconds / 3600.0, RowBase, NumFaceJobs, In.NumStorms, In.NumActiveStorms);
 	}
 
+	/**
+	 * Step 40: the cloud parameters a cloud map depends on (everything PA_CloudLargeScales reads, after the exaggeration of
+	 * this view, + the noise source). Values come from the packed instance parameters, so the comparison is exact.
+	 */
+	void MakeCloudKey(const FAtmosphereInstanceParameters& Parameters, int32 Index, int32 NoiseSource, FVector4f (&OutKey)[4])
+	{
+		const FVector4f& D0 = Parameters.AtmosphereData0[Index];
+		const FVector4f& D1 = Parameters.AtmosphereData1[Index];
+		const FVector4f& D2 = Parameters.AtmosphereData2[Index];
+		const FVector4f& D3 = Parameters.AtmosphereData3[Index];
+		OutKey[0] = FVector4f(D0.W, D1.W, D2.X, D2.Y);   // radius, cloud bottom, cloud top, coverage
+		OutKey[1] = FVector4f(D2.W, D3.X, static_cast<float>(NoiseSource), 0.0f);   // shape scale, erosion, noise source
+		OutKey[2] = Parameters.AtmosphereCloudData[Index];
+		OutKey[3] = Parameters.AtmosphereCloudRelief[Index];
+	}
+
+	bool SameCloudKey(const FVector4f (&A)[4], const FVector4f (&B)[4])
+	{
+		for (int32 Index = 0; Index < 4; ++Index)
+		{
+			if (A[Index] != B[Index])
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Step 40: bakes the faces in FaceMask of one snapshot of one planet into the cloud map (after its weather faces). */
+	void AddCloudMapBakePass(
+		FRDGBuilder& GraphBuilder,
+		FGlobalShaderMap* GlobalShaderMap,
+		const FAtmosphereInstanceParameters& InstanceParameters,
+		int32 AtmosphereIndex,
+		FRDGTextureRef WeatherAtlas,
+		int32 WeatherResolution,
+		int32 WeatherRowBase,
+		FRDGTextureRef CloudMapTexture,
+		int32 CloudMapResolution,
+		int32 CloudMapRowBase,
+		const FPlanetAtmosphereNoiseTexturesRDG& Noise,
+		uint8 FaceMask)
+	{
+		using namespace PlanetAtmosphere::Weather;
+
+		FAtmosphereCloudMapBakeCS::FParameters* Parameters = GraphBuilder.AllocParameters<FAtmosphereCloudMapBakeCS::FParameters>();
+		Parameters->AtmosphereParams = InstanceParameters;
+		FAtmosphereWeatherAtlasParameters& WeatherParams = Parameters->WeatherParams;
+		const FIntPoint Extent = WeatherAtlas->Desc.Extent;
+		WeatherParams.WeatherAtlas = WeatherAtlas;
+		WeatherParams.WeatherSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		WeatherParams.WeatherResolution = WeatherResolution;
+		WeatherParams.WeatherAtlasSizeAndInvSize = FVector4f(static_cast<float>(Extent.X), static_cast<float>(Extent.Y),
+			1.0f / static_cast<float>(Extent.X), 1.0f / static_cast<float>(Extent.Y));
+		WeatherParams.CloudMap = WeatherAtlas;   // never sampled by the bake (CloudMapEnable 0)
+		WeatherParams.CloudMapSampler = WeatherParams.WeatherSampler;
+		WeatherParams.CloudMapResolution = 1;
+		WeatherParams.CloudMapSizeAndInvSize = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+		WeatherParams.CloudMapEnable = 0;
+		Parameters->OutCloudMap = GraphBuilder.CreateUAV(CloudMapTexture);
+		Parameters->CloudMapBakeResolution = CloudMapResolution;
+		Parameters->CloudMapBakeRowBase = CloudMapRowBase;
+		Parameters->CloudMapBakeWeatherRow = static_cast<float>(WeatherRowBase);
+		Parameters->CloudMapBakeAtmosphere = AtmosphereIndex;
+		int32 NumFaceJobs = 0;
+		for (int32 Face = 0; Face < NumFaces; ++Face)
+		{
+			Parameters->CloudMapBakeFaces[Face] = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
+		}
+		for (int32 Face = 0; Face < NumFaces; ++Face)
+		{
+			if (FaceMask & (1u << Face))
+			{
+				Parameters->CloudMapBakeFaces[NumFaceJobs++] = FVector4f(static_cast<float>(Face), 0.0f, 0.0f, 0.0f);
+			}
+		}
+		Parameters->BaseNoiseTexture = Noise.BaseShape;
+		Parameters->ErosionNoiseTexture = Noise.Erosion;
+		Parameters->DetailNoiseTexture = Noise.Detail;
+		Parameters->NoiseSampler = TStaticSamplerState<SF_Trilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
+		Parameters->NoiseSource = static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource());
+
+		const int32 Groups = FMath::DivideAndRoundUp(CloudMapResolution, FAtmosphereCloudMapBakeCS::ThreadGroupSize);
+		TShaderMapRef<FAtmosphereCloudMapBakeCS> ComputeShader(GlobalShaderMap);
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("PlanetAtmosphere.CloudMap %d^2, %d face(s)", CloudMapResolution, NumFaceJobs),
+			ComputeShader,
+			Parameters,
+			FIntVector(Groups, Groups, NumFaceJobs));
+	}
+
 	TGlobalResource<FPlanetAtmosphereWeather> GPlanetAtmosphereWeather;
 }
 
@@ -126,9 +218,25 @@ bool FPlanetAtmosphereWeather::SameWeather(const FSlot& Slot, const FAtmosphereV
 	return Slot.RadiusKm == Planet.RadiiUU.Planet / 1.0e5 && PlanetAtmosphere::Weather::SameParameters(Slot.Parameters, Planet.Weather);
 }
 
+void FPlanetAtmosphereWeather::ResetCloudMap()
+{
+	CloudMap.SafeRelease();
+	CloudMapResolution = 0;
+	for (FSlot& Slot : Slots)
+	{
+		Slot.bCloudKeyValid = false;
+		for (FSnapshot& Snapshot : Slot.Snapshots)
+		{
+			Snapshot.CloudFacesDone = 0;
+		}
+	}
+}
+
 void FPlanetAtmosphereWeather::ResetAtlas(int32 NewResolution, int32 NewCapacity)
 {
 	Atlas.SafeRelease();
+	CloudMap.SafeRelease();
+	CloudMapResolution = 0;
 	Resolution = NewResolution;
 	Capacity = NewCapacity;
 	Slots.Init(FSlot(), NewCapacity);
@@ -140,13 +248,17 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 	uint32 FrameNumber,
 	const FAtmosphereWeatherInputs& Inputs,
 	FAtmosphereInstanceParameters& InOutParameters,
-	int32& OutResolution)
+	int32& OutResolution,
+	FRDGTextureRef& OutCloudMap,
+	int32& OutCloudMapResolution)
 {
 	using namespace PlanetAtmosphere::Weather;
 	SCOPE_CYCLE_COUNTER(STAT_PlanetAtmosphere_Weather);
 	FScopeLock Lock(&Mutex);
 
 	OutResolution = 0;
+	OutCloudMap = nullptr;
+	OutCloudMapResolution = 0;
 	for (int32 Index = 0; Index < PLANET_ATMOSPHERE_MAX_VISIBLE; ++Index)
 	{
 		InOutParameters.AtmosphereWeatherInfo[Index] = FVector4f(-1.0f, 0.0f, 0.0f, 0.0f);
@@ -295,6 +407,38 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 		AtlasTexture = GraphBuilder.RegisterExternalTexture(Atlas);
 	}
 
+	// ---- Step 40: cloud map of this graph (same slots / snapshot rows). Created on first use, for a new atlas or a new
+	// resolution (everything re-baked below); released when disabled. ----
+	const PlanetAtmosphere::CVars::FCloudMapSettings MapSettings = PlanetAtmosphere::CVars::GetCloudMapSettings();
+	FRDGTextureRef CloudMapTexture = nullptr;
+	bool bNewCloudMap = false;
+	if (MapSettings.bEnabled && Inputs.Noise != nullptr)
+	{
+		const int32 MapRes = FMath::Max(8, FMath::Min(MapSettings.Resolution, 16384 / (NumSnapshots * Capacity)) / 8 * 8);
+		if (!CloudMap.IsValid() || CloudMapResolution != MapRes)
+		{
+			ResetCloudMap();
+			CloudMapResolution = MapRes;
+			const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
+				FIntPoint(NumFaces * MapRes, NumSnapshots * MapRes * Capacity),
+				PF_R8G8B8A8,
+				FClearValueBinding::Black,
+				ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
+			CloudMapTexture = GraphBuilder.CreateTexture(Desc, TEXT("PlanetAtmosphere.CloudMap"));
+			bNewCloudMap = true;
+		}
+		else
+		{
+			CloudMapTexture = GraphBuilder.RegisterExternalTexture(CloudMap);
+		}
+	}
+	else if (CloudMap.IsValid())
+	{
+		ResetCloudMap();
+		UE_LOG(LogPlanetAtmosphere, Log, TEXT("Weather: cloud map released (disabled)"));
+	}
+	const int32 NoiseSource = static_cast<int32>(PlanetAtmosphere::CVars::GetNoiseSource());
+
 	// ---- Snapshots on the global time grid t_k = k x interval: k and k + 1 displayed (built now if missing), k + 2 ahead. ----
 	const double Interval = Settings.SnapshotIntervalSeconds;
 	const double GridPosition = Inputs.Time.Seconds / Interval;
@@ -400,6 +544,40 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 				}
 			}
 
+			// Step 40: cloud map faces for the weather faces that exist (all of the displayed snapshots, the ahead one as it is
+			// built); everything again when the planet's cloud parameters changed.
+			if (CloudMapTexture != nullptr)
+			{
+				FVector4f Key[4];
+				MakeCloudKey(InOutParameters, Index, NoiseSource, Key);
+				if (!Slot.bCloudKeyValid || !SameCloudKey(Slot.CloudKey, Key))
+				{
+					UE_CLOG(Slot.bCloudKeyValid, LogPlanetAtmosphere, Log, TEXT("Weather: planet %u cloud parameters changed, cloud map of slot %d re-baked"),
+						Slot.PlanetId, SlotIndex);
+					for (int32 KeyIndex = 0; KeyIndex < 4; ++KeyIndex)
+					{
+						Slot.CloudKey[KeyIndex] = Key[KeyIndex];
+					}
+					Slot.bCloudKeyValid = true;
+					for (FSnapshot& Snapshot : Slot.Snapshots)
+					{
+						Snapshot.CloudFacesDone = 0;
+					}
+				}
+				for (int32 Ring = 0; Ring < NumSnapshots; ++Ring)
+				{
+					FSnapshot& Snapshot = Slot.Snapshots[Ring];
+					const uint8 CloudMissing = static_cast<uint8>(Snapshot.FacesDone & ~Snapshot.CloudFacesDone);
+					if (Snapshot.bAssigned && CloudMissing != 0)
+					{
+						const int32 SnapshotSlot = SlotIndex * NumSnapshots + Ring;
+						AddCloudMapBakePass(GraphBuilder, GlobalShaderMap, InOutParameters, Index, AtlasTexture, Res, SnapshotSlot * Res,
+							CloudMapTexture, CloudMapResolution, SnapshotSlot * CloudMapResolution, *Inputs.Noise, CloudMissing);
+						Snapshot.CloudFacesDone = static_cast<uint8>(Snapshot.CloudFacesDone | CloudMissing);
+					}
+				}
+			}
+
 			InOutParameters.AtmosphereWeatherInfo[Index] = FVector4f(
 				static_cast<float>(SlotIndex), static_cast<float>(SnapshotRow[0]), static_cast<float>(SnapshotRow[1]), Blend);
 			// Step 28: zonal temperature inputs for DebugMode 17 (thermal equator at the current weather time, double on the CPU).
@@ -418,8 +596,17 @@ FRDGTextureRef FPlanetAtmosphereWeather::Update(
 		UE_LOG(LogPlanetAtmosphere, Log, TEXT("Weather: atlas %d x %d RGBA16F, %d planet slot(s) x %d snapshots x 6 faces of %d^2 (%u bytes) [ComputeMemorySize]"),
 			NumFaces * Res, NumSnapshots * Res * Capacity, Capacity, NumSnapshots, Res, Atlas.IsValid() ? Atlas->ComputeMemorySize() : 0u);
 	}
+	if (bNewCloudMap)
+	{
+		CloudMap = GraphBuilder.ConvertToExternalTexture(CloudMapTexture);
+		UE_LOG(LogPlanetAtmosphere, Log, TEXT("Weather: cloud map %d x %d RGBA8, %d planet slot(s) x %d snapshots x 6 faces of %d^2 (%u bytes) [ComputeMemorySize]"),
+			NumFaces * CloudMapResolution, NumSnapshots * CloudMapResolution * Capacity, Capacity, NumSnapshots, CloudMapResolution,
+			CloudMap.IsValid() ? CloudMap->ComputeMemorySize() : 0u);
+	}
 	AtlasLastUsedFrame = FrameNumber;
 	OutResolution = Res;
+	OutCloudMap = CloudMapTexture;
+	OutCloudMapResolution = CloudMapTexture != nullptr ? CloudMapResolution : 0;
 	return AtlasTexture;
 }
 

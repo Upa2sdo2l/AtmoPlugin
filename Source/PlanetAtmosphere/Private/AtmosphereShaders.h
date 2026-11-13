@@ -77,6 +77,13 @@ BEGIN_SHADER_PARAMETER_STRUCT(FAtmosphereWeatherAtlasParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState, WeatherSampler)
 	SHADER_PARAMETER(int32, WeatherResolution)
 	SHADER_PARAMETER(FVector4f, WeatherAtlasSizeAndInvSize)
+	// Step 40: the cloud map (CloudDensity.ush), same slots / snapshot rows as the weather atlas at CloudMapResolution.
+	// CloudMapEnable 0 = no map this frame (the weather atlas or the transmittance pool is bound: never sampled).
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, CloudMap)
+	SHADER_PARAMETER_SAMPLER(SamplerState, CloudMapSampler)
+	SHADER_PARAMETER(int32, CloudMapResolution)
+	SHADER_PARAMETER(FVector4f, CloudMapSizeAndInvSize)
+	SHADER_PARAMETER(int32, CloudMapEnable)
 END_SHADER_PARAMETER_STRUCT()
 
 /** Cloud shadow cascades (Phase 4). Must match PA_SHADOW_CASCADES (Shaders/Private/CloudShadowCommon.ush). */
@@ -279,6 +286,40 @@ public:
 		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm1, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
 		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm2, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
 		SHADER_PARAMETER_ARRAY(FVector4f, WeatherStorm3, [PLANET_ATMOSPHERE_WEATHER_MAX_STORMS])
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/**
+ * Step 40: cloud map bake (Shaders/Private/CloudMapBake.usf, entry BakeCS): PA_CloudMapBake (CloudDensity.ush, AD-1) at the
+ * texel centres of up to 6 cube faces of one snapshot of one planet, reading that snapshot of the weather atlas.
+ * Dispatch: (Res / 8, Res / 8, faces) groups. Scheduled by AtmosphereWeather.cpp after the weather faces.
+ */
+class FAtmosphereCloudMapBakeCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FAtmosphereCloudMapBakeCS);
+	SHADER_USE_PARAMETER_STRUCT(FAtmosphereCloudMapBakeCS, FGlobalShader);
+
+	/** Must match [numthreads(8, 8, 1)] in the .usf. */
+	static constexpr int32 ThreadGroupSize = 8;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereInstanceParameters, AtmosphereParams)
+		// The weather atlas (read); its CloudMap slot holds the weather atlas too (never sampled by the bake).
+		SHADER_PARAMETER_STRUCT_INCLUDE(FAtmosphereWeatherAtlasParameters, WeatherParams)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, OutCloudMap)
+		SHADER_PARAMETER(int32, CloudMapBakeResolution)
+		SHADER_PARAMETER(int32, CloudMapBakeRowBase)
+		SHADER_PARAMETER(float, CloudMapBakeWeatherRow)
+		SHADER_PARAMETER(int32, CloudMapBakeAtmosphere)
+		// x = cube face written by dispatch slice z
+		SHADER_PARAMETER_ARRAY(FVector4f, CloudMapBakeFaces, [6])
+		// Same noise inputs as the raymarch (PlanetAtmosphereNoise.ush).
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, BaseNoiseTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, ErosionNoiseTexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture3D<float>, DetailNoiseTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, NoiseSampler)
+		SHADER_PARAMETER(int32, NoiseSource)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

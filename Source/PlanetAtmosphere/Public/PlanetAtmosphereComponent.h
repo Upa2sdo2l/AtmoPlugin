@@ -216,15 +216,17 @@ public:
 	 * near the planet) to x this, so that the relief of the cloud masses is readable from orbit. 1 = off. Step 39b: default
 	 * 5 -> 9 (the soft cap at the exaggerated layer top flattened the tallest macro clouds from far). Capped 1 km below the
 	 * atmosphere top.
+	 * Step 40: with r.PlanetAtmosphere.CloudExaggerationMode 1 (default) the factor is CONSTANT, from the ground to orbit
+	 * (a fixed art scale; the cloud map needs it), default 9 -> 3. The two altitudes below then do nothing.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "1.0", UIMax = "12.0"))
-	float CloudVerticalExaggeration = 9.0f;
+	float CloudVerticalExaggeration = 3.0f;
 
-	/** Step 37: camera altitude in meters below which the clouds are not exaggerated. */
+	/** Step 37: camera altitude in meters below which the clouds are not exaggerated (CloudExaggerationMode 0 only). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "100.0"))
 	double CloudExaggerationStartAltitude = 30000.0;
 
-	/** Step 37: camera altitude in meters from which the full exaggeration applies. */
+	/** Step 37: camera altitude in meters from which the full exaggeration applies (CloudExaggerationMode 0 only). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds|Relief", meta = (ClampMin = "200.0"))
 	double CloudExaggerationFullAltitude = 600000.0;
 
