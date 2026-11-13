@@ -154,9 +154,10 @@ public:
 	double CloudTopRadius = 1010000.0;
 
 	/**
-	 * Cloud amount. With planetary weather (r.PlanetAtmosphere.Weather 1) it scales the weather's local cloud water:
-	 * 0.5 = the weather as it is (~55 % of an Earth-like planet clouded), below = drier, above = more overcast (0.65 gives
-	 * ~85 %); 0 and 1 = no clouds / overcast everywhere. Without weather it is the cloud fraction everywhere.
+	 * Cloud amount. With planetary weather (r.PlanetAtmosphere.Weather 1) it moves the edges of the weather's cloud masses
+	 * (Step 41): 0.5 = the weather as it is, below = smaller masses, above = larger ones; the clouds inside keep their
+	 * thickness and density. 0 and 1 = (nearly) no clouds / overcast. Without weather it is the cloud fraction everywhere.
+	 * Changing it re-bakes the cloud map (Step 40).
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clouds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CloudCoverage = 0.5f;
